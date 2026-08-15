@@ -409,6 +409,58 @@ type streamKey struct {
 	entity string
 }
 
+type SequenceGap struct {
+	StreamKind   string
+	StreamEntity string
+	Missing      []uint64
+}
+
+func (s *Store) SequenceGaps() ([]SequenceGap, error) {
+	events, err := s.LoadEvents()
+	if err != nil {
+		return nil, err
+	}
+	byStream := make(map[streamKey][]model.Event)
+	for _, event := range events {
+		key := streamKey{kind: string(event.Stream.Kind), entity: event.Stream.Entity}
+		byStream[key] = append(byStream[key], event)
+	}
+	streams := make([]streamKey, 0, len(byStream))
+	for key := range byStream {
+		streams = append(streams, key)
+	}
+	sort.Slice(streams, func(i, j int) bool {
+		if streams[i].kind != streams[j].kind {
+			return streams[i].kind < streams[j].kind
+		}
+		return streams[i].entity < streams[j].entity
+	})
+	var gaps []SequenceGap
+	for _, key := range streams {
+		streamEvents := byStream[key]
+		sort.Slice(streamEvents, func(i, j int) bool {
+			return streamEvents[i].Sequence < streamEvents[j].Sequence
+		})
+		var missing []uint64
+		expected := uint64(1)
+		for _, event := range streamEvents {
+			for expected < event.Sequence {
+				missing = append(missing, expected)
+				expected++
+			}
+			expected = event.Sequence + 1
+		}
+		if len(missing) > 0 {
+			gaps = append(gaps, SequenceGap{
+				StreamKind:   key.kind,
+				StreamEntity: key.entity,
+				Missing:      missing,
+			})
+		}
+	}
+	return gaps, nil
+}
+
 func (s *Store) RepairSequenceGaps() error {
 	events, err := s.LoadEvents()
 	if err != nil {

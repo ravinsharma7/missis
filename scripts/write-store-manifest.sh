@@ -3,5 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-mkdir -p issues/missis-store
-MISSIS_STORE=".missis-store/missis.db" go run ./tools/store-manifest > issues/missis-store/manifest.json
+store_path="${MISSIS_STORE:-.missis-store/missis.db}"
+manifest_path="${MISSIS_MANIFEST_PATH:-issues/missis-store/manifest.json}"
+mkdir -p "$(dirname "$manifest_path")"
+MISSIS_STORE="$store_path" go run ./tools/store-manifest > "$manifest_path"

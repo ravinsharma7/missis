@@ -21,12 +21,14 @@ echo "== black-box tests =="
 MISSIS_BIN="$bin" go test ./testsuite/blackbox
 
 required_file="$tmpdir/required.txt"
-grep -E '^\| PH1-' specs/phase1-requirements.md | sed -E 's/^\| ([^ ]+) .*/\1/' > "$required_file"
+phase1_requirements="${MISSIS_PHASE1_REQUIREMENTS_PATH:-specs/phase1-requirements.md}"
+should_backlog="${MISSIS_SHOULD_BACKLOG_PATH:-issues/phase1-should-backlog.md}"
+grep -E '^\| PH1-' "$phase1_requirements" | sed -E 's/^\| ([^ ]+) .*/\1/' > "$required_file"
 awk -F'|' '/^\| N[0-9]+ / {
   id=$2; decision=$3;
   gsub(/ /, "", id); gsub(/ /, "", decision);
   if (decision == "adopt") print id;
-}' issues/phase1-should-backlog.md >> "$required_file"
+}' "$should_backlog" >> "$required_file"
 
 coverage_manifest="$tmpdir/coverage.txt"
 go run ./tools/coverage > "$coverage_manifest"
