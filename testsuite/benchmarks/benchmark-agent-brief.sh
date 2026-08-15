@@ -8,10 +8,11 @@
 #
 # Manual-only harness: every run is a real `codex exec` session against a
 # scratch project and consumes model tokens/credits. It is intentionally
-# outside the Go test suite so `go test ./...` never triggers it.
+# outside the Go test suite so `go test ./...` never triggers it. All scratch
+# files live under ./temp, never /tmp.
 #
 # Usage:
-#   testsuite/benchmarks/benchmark-agent-brief.sh [--iterations N] [--plan] [--provider P]
+#   testsuite/benchmarks/benchmark-agent-brief.sh [--iterations N] [--plan] [--provider P] [--baseline-ref REF] [--keep]
 #
 # Env:
 #   CODEX_BIN             codex binary to run (default: codex from PATH)
@@ -19,6 +20,7 @@
 #   CODEX_EXTRA_ARGS      extra flags for `codex exec` (e.g. --model deepseek-v4-pro)
 #   CODEX_MODEL           override the detected model label
 #   CODEX_MODEL_PROVIDER  override the detected provider label
+#   BASELINE_REF          git ref used for the pre-change baseline (default: HEAD)
 #
 # Requires: codex CLI on PATH, go, jq. Budget 1-3 minutes per iteration.
 
@@ -27,6 +29,8 @@ set -euo pipefail
 ITERATIONS=1
 PLAN_ONLY=0
 PROVIDER_OVERRIDE=""
+BASELINE_REF="${BASELINE_REF:-HEAD}"
+KEEP=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--iterations)
@@ -40,6 +44,14 @@ while [ $# -gt 0 ]; do
 	--provider)
 		PROVIDER_OVERRIDE="$2"
 		shift 2
+		;;
+	--baseline-ref)
+		BASELINE_REF="$2"
+		shift 2
+		;;
+	--keep)
+		KEEP=1
+		shift
 		;;
 	-h | --help)
 		sed -n '2,28p' "${BASH_SOURCE[0]}"
@@ -57,9 +69,11 @@ CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CONFIG_FILE="$CODEX_HOME_DIR/config.toml"
 SKILL_DIR="$CODEX_HOME_DIR/skills/missis"
 SKILL_HIDDEN="$CODEX_HOME_DIR/skills/.missis.benchmark-hidden"
-OUT_DIR="$(mktemp -d)"
-BIN_DIR="$(mktemp -d)"
-BIN_HEAD_DIR="$(mktemp -d)"
+TEMP_ROOT="$REPO_DIR/temp"
+RUN_DIR="$TEMP_ROOT/run-$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_DIR="$RUN_DIR/logs"
+BIN_DIR="$RUN_DIR/bin"
+BIN_HEAD_DIR="$RUN_DIR/bin-head"
 BIN="$BIN_DIR/missis"
 BIN_HEAD="$BIN_HEAD_DIR/missis"
 CODEX_BIN="${CODEX_BIN:-codex}"
@@ -87,7 +101,7 @@ prepare_catalog() {
 	if [ -n "$catpath" ]; then
 		# Newer catalogs (e.g. deepseek) advertise a "max" reasoning effort that
 		# older codex CLIs cannot parse. Patch a temp copy so the run works.
-		CATALOG_PATCHED="$OUT_DIR/models-patched.json"
+		CATALOG_PATCHED="$RUN_DIR/models-patched.json"
 		sed 's/"effort": "max"/"effort": "xhigh"/g' "$catpath" >"$CATALOG_PATCHED"
 		CODEX_CATALOG_ARG="-c model_catalog_json=$CATALOG_PATCHED"
 	fi
@@ -133,11 +147,23 @@ MATRIX=(
 	"skill|0|1"
 	"brief|1|1"
 )
+RESULT_ROWS=""
+POINTER_AGENTS_MD='## missis quick reference
+
+Run `missis --agent-brief` before ticket work. It prints the exact command
+surface and rules from the CLI itself.'
 
 if [ "$PLAN_ONLY" = 1 ]; then
 	echo "provider: $PROVIDER_LABEL  model: $MODEL_LABEL  family: $FAMILY  effort: $EFFORT_LABEL"
 	echo "source: $CODEX_CONFIG_FILE"
 	echo "catalog: $(catalog_path)"
+	echo "baseline ref: $BASELINE_REF"
+	echo "temp root: $TEMP_ROOT"
+	if [ -d "$SKILL_DIR" ]; then
+		echo "skill: $SKILL_DIR (present)"
+	else
+		echo "skill: $SKILL_DIR (absent)"
+	fi
 	echo
 	echo "config matrix (no codex sessions will run):"
 	printf '%-10s %-10s %-8s\n' "config" "pointer" "skill"
@@ -150,6 +176,8 @@ if [ "$PLAN_ONLY" = 1 ]; then
 	echo "run without --plan to execute."
 	exit 0
 fi
+
+mkdir -p "$LOG_DIR" "$BIN_DIR" "$BIN_HEAD_DIR" "$RUN_DIR/projects"
 
 cleanup() {
 	if [ -d "$SKILL_HIDDEN" ] && [ ! -d "$SKILL_DIR" ]; then
@@ -171,8 +199,8 @@ fi
 
 echo "building missis from $REPO_DIR"
 (cd "$REPO_DIR" && go build -o "$BIN" ./cmd/missis)
-# Baseline must run the pre-change CLI: build HEAD into a separate dir.
-git -C "$REPO_DIR" archive HEAD | tar -x -C "$BIN_HEAD_DIR"
+# Baseline must run the pre-change CLI: build BASELINE_REF into a separate dir.
+git -C "$REPO_DIR" archive "$BASELINE_REF" | tar -x -C "$BIN_HEAD_DIR"
 (cd "$BIN_HEAD_DIR" && go build -o "$BIN_HEAD" ./cmd/missis)
 prepare_catalog
 
@@ -183,15 +211,9 @@ setup_project() {
 	cp "$REPO_DIR/.missis.d/context.md" "$scratch/.missis.d/context.md"
 	cp "$REPO_DIR/.missis.d/active.example.md" "$scratch/.missis.d/active.example.md"
 	if [ "$use_pointer" = "1" ]; then
-		cp "$REPO_DIR/AGENTS.md" "$scratch/AGENTS.md"
-	else
-		# Baseline: the committed AGENTS.md (pre-pointer) when available;
-		# otherwise the working copy with the quick-reference section stripped.
-		if git -C "$REPO_DIR" show HEAD:AGENTS.md >"$scratch/AGENTS.md" 2>/dev/null; then
-			:
-		else
-			awk '/^## missis quick reference$/ { exit } { print }' "$REPO_DIR/AGENTS.md" >"$scratch/AGENTS.md"
-		fi
+		# Hermetic, self-contained pointer fixture. Baseline/skill get no
+		# AGENTS.md and never inherit this project's AG1-AG7 instructions.
+		printf '%s\n' "$POINTER_AGENTS_MD" >"$scratch/AGENTS.md"
 	fi
 }
 
@@ -204,10 +226,13 @@ run_config() {
 		mv "$SKILL_DIR" "$SKILL_HIDDEN"
 	fi
 	for i in $(seq 1 "$ITERATIONS"); do
-		local scratch log code start_ns end_ns wall tickets execs turns outcome
-		scratch="$(mktemp -d)"
-		log="$OUT_DIR/${name}-${i}.log"
+		local scratch log code start_ns end_ns started_at wall tickets execs turns outcome
+		scratch="$RUN_DIR/projects/${name}-${i}"
+		rm -rf "$scratch"
+		mkdir -p "$scratch"
+		log="$LOG_DIR/${name}-${i}.log"
 		setup_project "$scratch" "$use_pointer" "$missis_bin"
+		started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		start_ns="$(date +%s%N)"
 		code=0
 		PATH="$bin_dir:$PATH" timeout 900 "$CODEX_BIN" exec ${CODEX_CATALOG_ARG:-} \
@@ -223,10 +248,10 @@ run_config() {
 		else
 			outcome="blocked"
 		fi
-		printf '%s %s %s %s\n' "$PROVIDER_LABEL" "$MODEL_LABEL" "$FAMILY" "$EFFORT_LABEL" >"$OUT_DIR/${name}-${i}.provider"
-		printf '%-8s %8s %6s %6s %9s %6s  %s\n' \
-			"$name" "${wall}s" "$execs" "$turns" "$tickets" "$code" "$outcome"
-		rm -rf "$scratch"
+		printf '%s %s %s %s\n' "$PROVIDER_LABEL" "$MODEL_LABEL" "$FAMILY" "$EFFORT_LABEL" >"$LOG_DIR/${name}-${i}.provider"
+		printf '%-9s %8s %6s %6s %9s %6s  %s\n' \
+			"${name}#${i}" "${wall}s" "$execs" "$turns" "$tickets" "$code" "$outcome"
+		RESULT_ROWS+="| ${name}#${i} | $MODEL_LABEL | $started_at | ${wall}s | $execs | $turns | $tickets | $code | $outcome | [log](logs/${name}-${i}.log) |"$'\n'
 	done
 }
 
@@ -235,8 +260,9 @@ echo "codex: $CODEX_BIN ($("$CODEX_BIN" --version 2>&1 | tail -1))"
 if [ -n "$CATALOG_PATCHED" ]; then
 echo "catalog: patched to $CATALOG_PATCHED (max->xhigh for CLI compat)"
 fi
-echo "scratch logs: $OUT_DIR"
-printf '%-8s %8s %6s %6s %9s %6s  %s\n' "config" "wall" "execs" "turns" "tickets" "exit" "outcome"
+echo "temp root: $TEMP_ROOT"
+echo "logs: $LOG_DIR"
+printf '%-9s %8s %6s %6s %9s %6s  %s\n' "config" "wall" "execs" "turns" "tickets" "exit" "outcome"
 for row in "${MATRIX[@]}"; do
 	IFS='|' read -r name use_pointer enable_skill <<<"$row"
 	if [ "$name" = "baseline" ]; then
@@ -246,6 +272,39 @@ for row in "${MATRIX[@]}"; do
 	fi
 done
 
+{
+	printf '# Agent brief benchmark — %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	printf -- '- provider: %s\n' "$PROVIDER_LABEL"
+	printf -- '- model: %s\n' "$MODEL_LABEL"
+	printf -- '- family: %s\n' "$FAMILY"
+	printf -- '- effort: %s\n' "$EFFORT_LABEL"
+	printf -- '- codex: %s\n' "$("$CODEX_BIN" --version 2>&1 | tail -1)"
+	printf -- '- catalog: %s\n' "$(catalog_path)"
+	if [ -n "$CATALOG_PATCHED" ]; then
+		printf -- '- catalog patch: %s (max -> xhigh)\n' "$CATALOG_PATCHED"
+	fi
+	printf -- '- baseline ref: %s\n' "$BASELINE_REF"
+	printf -- '- iterations per config: %s\n' "$ITERATIONS"
+	printf -- '- prompt: create a missis ticket\n\n'
+	printf '| config | model | started_at | wall | exec calls | turns | tickets | exit | outcome | log |\n'
+	printf '|---|---|---|---|---|---|---|---|---|---|\n'
+	printf '%s' "$RESULT_ROWS"
+	printf '\nLogs: logs/ (relative to this directory)\n'
+} > "$RUN_DIR/results.md"
+echo "results: $RUN_DIR/results.md"
+if [ "$KEEP" = "1" ]; then
+	KEEP_DIR="$REPO_DIR/testsuite/benchmarks/results"
+	mkdir -p "$KEEP_DIR"
+	KEEP_PATH="$KEEP_DIR/$(basename "$RUN_DIR")"
+	mkdir -p "$KEEP_PATH/logs"
+	cp -R "$LOG_DIR/." "$KEEP_PATH/logs/"
+	cp "$RUN_DIR/results.md" "$KEEP_PATH/results.md"
+	if [ -f "$RUN_DIR/models-patched.json" ]; then
+		cp "$RUN_DIR/models-patched.json" "$KEEP_PATH/models-patched.json"
+	fi
+	echo "kept: $KEEP_PATH"
+fi
+
 cat <<'EOF'
 
 Notes:
@@ -254,5 +313,9 @@ Notes:
 - baseline and pointer run with the missis skill moved aside; skill and brief
   run with it enabled. The skill is restored at exit.
 - baseline uses the AGENTS.md and missis binary from HEAD (pre-change), so it
-  reproduces the old discovery path; the other configs use the working tree.
+  uses the BASELINE_REF binary and gets no AGENTS.md; pointer/brief get only
+  the quick-reference section from this repo, never the full project AGENTS.md.
+- a per-run results.md plus raw transcripts under ./temp/run-*/logs map every
+  row to its model, iteration, timestamp, and log file; --keep copies the whole
+  run folder into testsuite/benchmarks/results/ so it is portable.
 EOF

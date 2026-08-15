@@ -26,18 +26,20 @@ func TestAgentBrief(t *testing.T) {
 	}
 	for _, want := range []string{
 		"store:",
-		"project: p1",
-		"group: g1",
-		"focus: brief work",
-		"ticket: #1",
 		"missis new",
 		"missis show",
 		"missis set",
 		"No destructive delete",
 		"do not block on a question",
+		"missis show --context",
 	} {
 		if !strings.Contains(result.stdout, want) {
 			t.Errorf("--agent-brief output missing %q:\n%s", want, result.stdout)
+		}
+	}
+	for _, forbidden := range []string{"project: p1", "group: g1", "focus: brief work", "ticket: #1"} {
+		if strings.Contains(result.stdout, forbidden) {
+			t.Errorf("--agent-brief output should not include session bias %q:\n%s", forbidden, result.stdout)
 		}
 	}
 }
@@ -62,11 +64,11 @@ func TestAgentBriefJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.stdout), &body); err != nil {
 		t.Fatalf("json: %v\n%s", err, result.stdout)
 	}
-	if body["focus"] != "json focus" {
-		t.Errorf("focus = %v", body["focus"])
+	if _, ok := body["focus"]; ok {
+		t.Errorf("JSON should not include focus: %v", body["focus"])
 	}
-	if body["ticket"] != "#3" {
-		t.Errorf("ticket = %v", body["ticket"])
+	if _, ok := body["ticket"]; ok {
+		t.Errorf("JSON should not include ticket: %v", body["ticket"])
 	}
 	commands, ok := body["commands"].([]any)
 	if !ok || len(commands) == 0 {
@@ -75,5 +77,45 @@ func TestAgentBriefJSON(t *testing.T) {
 	rules, ok := body["rules"].([]any)
 	if !ok || len(rules) == 0 {
 		t.Errorf("rules missing or empty: %v", body["rules"])
+	}
+}
+
+func TestInstallSkill(t *testing.T) {
+	t.Parallel()
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("---\nname: missis\ndescription: test\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+
+	result := runMissis(t, "", "--install-skill", "--from", src, "--dest", dest)
+	if result.code != 0 {
+		t.Fatalf("install failed: %d %s", result.code, result.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "SKILL.md")); err != nil {
+		t.Fatalf("skill not installed: %v", err)
+	}
+
+	again := runMissis(t, "", "--install-skill", "--from", src, "--dest", dest)
+	if again.code == 0 {
+		t.Fatalf("expected already-installed error, got success")
+	}
+
+	forced := runMissis(t, "", "--install-skill", "--from", src, "--dest", dest, "--force")
+	if forced.code != 0 {
+		t.Fatalf("forced install failed: %d %s", forced.code, forced.stderr)
+	}
+}
+
+func TestPointerSnippet(t *testing.T) {
+	t.Parallel()
+	result := runMissis(t, "", "--pointer")
+	if result.code != 0 {
+		t.Fatalf("--pointer failed: %d %s", result.code, result.stderr)
+	}
+	for _, want := range []string{"## missis quick reference", "missis --agent-brief", "missis show --context"} {
+		if !strings.Contains(result.stdout, want) {
+			t.Errorf("--pointer missing %q:\n%s", want, result.stdout)
+		}
 	}
 }

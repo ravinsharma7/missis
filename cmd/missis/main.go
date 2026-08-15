@@ -102,9 +102,19 @@ missis show [#REF] [--json|--format markdown] [--search S] [--status S] [--type 
 missis set <REF> <VALUE> [--add] [--retract [--recursive] [--reason R]] [--json]`
 
 const agentBriefRules = `- No destructive delete; use --retract --reason instead.
-- If a ticket is requested without a title, derive it from the active focus and state the assumption; do not block on a question.
+- If a ticket is requested without a title, derive it from the session focus in .missis.d/active.local.md (or active.example.md) and state the assumption; do not block on a question.
 - Prefer missis refs (#N) over free text.
-- Use --json for machine-readable output.`
+- Use --json for machine-readable output.
+- For the active project/group/focus, run: missis show --context`
+
+const agentPointerSnippet = `## missis quick reference
+
+Run ` + "`missis --agent-brief`" + ` once before ticket work. It prints the exact
+new/show/set syntax and the rules from the CLI itself; do not copy that syntax
+into this file. For the active session focus, run ` + "`missis show --context`" + `.
+
+When asked to create a ticket without a title, derive one from the active
+focus and state the assumption; do not block on a clarifying question.`
 
 func buildVersion() (string, string) {
 	version := "dev"
@@ -269,28 +279,15 @@ func runAgentBrief(args []string) int {
 		printError(err, exitInvalid, jsonMode, nil)
 		return exitInvalid
 	}
-	project, group, focus, ticket := readActivePointer()
 	if jsonMode {
 		writeJSON(map[string]any{
 			"store":    storePath,
-			"project":  project,
-			"group":    group,
-			"focus":    focus,
-			"ticket":   ticket,
 			"commands": strings.Split(agentBriefCommands, "\n"),
 			"rules":    strings.Split(agentBriefRules, "\n"),
 		})
 		return exitSuccess
 	}
 	fmt.Printf("store: %s\n", storePath)
-	fmt.Printf("project: %s\n", project)
-	fmt.Printf("group: %s\n", group)
-	if focus != "" {
-		fmt.Printf("focus: %s\n", focus)
-	}
-	if ticket != "" {
-		fmt.Printf("ticket: %s\n", ticket)
-	}
 	fmt.Println("\ncommands:")
 	for _, line := range strings.Split(agentBriefCommands, "\n") {
 		fmt.Printf("  %s\n", line)
@@ -300,6 +297,114 @@ func runAgentBrief(args []string) int {
 		fmt.Printf("  %s\n", line)
 	}
 	return exitSuccess
+}
+
+func runPointer() int {
+	fmt.Println(agentPointerSnippet)
+	return exitSuccess
+}
+
+func runInstallSkill(args []string) int {
+	from := ""
+	dest := ""
+	force := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--from":
+			if i+1 < len(args) {
+				from = args[i+1]
+				i++
+			}
+		case "--dest":
+			if i+1 < len(args) {
+				dest = args[i+1]
+				i++
+			}
+		case "--force":
+			force = true
+		}
+	}
+	src, err := resolveSkillSource(from)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitInvalid
+	}
+	if dest == "" {
+		dest = defaultSkillDest()
+	}
+	if _, statErr := os.Stat(filepath.Join(dest, "SKILL.md")); statErr == nil && !force {
+		fmt.Fprintf(os.Stderr, "missis skill already installed at %s (use --force to overwrite)\n", dest)
+		return exitInvalid
+	}
+	if err := copyDir(src, dest); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitStorage
+	}
+	fmt.Printf("installed missis skill to %s\n", dest)
+	fmt.Println("the skill is available on the next agent turn")
+	return exitSuccess
+}
+
+func resolveSkillSource(from string) (string, error) {
+	if from != "" {
+		abs, err := filepath.Abs(from)
+		if err != nil {
+			return "", err
+		}
+		if _, err := os.Stat(filepath.Join(abs, "SKILL.md")); err != nil {
+			return "", fmt.Errorf("skill source not found at %s", abs)
+		}
+		return abs, nil
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		candidate := filepath.Join(dir, "tools", "skills", "missis")
+		if _, statErr := os.Stat(filepath.Join(candidate, "SKILL.md")); statErr == nil {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", fmt.Errorf("skill source not found; run from a missis checkout or pass --from <dir>")
+}
+
+func defaultSkillDest() string {
+	home := os.Getenv("CODEX_HOME")
+	if home == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return filepath.Join(".codex", "skills", "missis")
+		}
+		home = filepath.Join(userHome, ".codex")
+	}
+	return filepath.Join(home, "skills", "missis")
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return relErr
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
 }
 
 func runInit(args []string) int {
@@ -435,6 +540,12 @@ func main() {
 	if os.Args[1] == "--agent-brief" {
 		os.Exit(runAgentBrief(os.Args[2:]))
 	}
+	if os.Args[1] == "--pointer" {
+		os.Exit(runPointer())
+	}
+	if os.Args[1] == "--install-skill" {
+		os.Exit(runInstallSkill(os.Args[2:]))
+	}
 	if os.Args[1] == "--self-update-check" || os.Args[1] == "--self-update" {
 		jsonMode := false
 		for _, arg := range os.Args[2:] {
@@ -469,7 +580,7 @@ func usage() {
 
 func usageText() string {
 	return "usage:\n" +
-		"  missis [--version|--help] [--init|--start] [--self-update-check|--self-update] [--agent-brief [--json]]\n" +
+		"  missis [--version|--help] [--init|--start] [--self-update-check|--self-update] [--agent-brief [--json]] [--pointer] [--install-skill [--from DIR] [--dest DIR] [--force]]\n" +
 		"  missis new|show|set ...\n"
 }
 

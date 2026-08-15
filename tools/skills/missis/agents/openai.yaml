@@ -1,0 +1,4 @@
+interface:
+  display_name: "missis tickets"
+  short_description: "Create, view, and update missis tickets via the missis CLI"
+  default_prompt: "Use missis to create, show, or update a ticket in this project."
