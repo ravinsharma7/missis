@@ -128,6 +128,7 @@ type moduleVersion struct {
 func latestModuleVersion() (moduleVersion, error) {
 	var info moduleVersion
 	cmd := exec.Command("go", "list", "-m", "-json", modulePath+"@latest")
+	cmd.Env = append(os.Environ(), "GOPROXY=direct")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return info, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
@@ -166,6 +167,7 @@ func runSelfUpdate(jsonMode bool) int {
 		return exitStorage
 	}
 	cmd := exec.Command("go", "install", modulePath+"/cmd/missis@latest")
+	cmd.Env = append(os.Environ(), "GOPROXY=direct")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		printError(fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output))), exitStorage, jsonMode, nil)
