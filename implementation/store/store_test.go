@@ -206,6 +206,23 @@ func TestCheckConsistencyHealthy(t *testing.T) {
 	}
 }
 
+func TestJournalModeWAL(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	s, err := Open(filepath.Join(tmp, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var mode string
+	if err := s.reader.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal mode = %q, want wal", mode)
+	}
+}
+
 func TestLoadLinkEventsEquivalence(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
