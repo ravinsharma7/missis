@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
@@ -94,6 +95,8 @@ type errorResult struct {
 	MissingObligations []string `json:"missing_obligations"`
 }
 
+const modulePath = "github.com/ravinsharma7/missis"
+
 func buildVersion() (string, string) {
 	version := "dev"
 	commit := "unknown"
@@ -117,6 +120,68 @@ func buildVersion() (string, string) {
 	return version, commit
 }
 
+type moduleVersion struct {
+	Version string `json:"Version"`
+	Time    string `json:"Time"`
+}
+
+func latestModuleVersion() (moduleVersion, error) {
+	var info moduleVersion
+	cmd := exec.Command("go", "list", "-m", "-json", modulePath+"@latest")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return info, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if err := json.Unmarshal(output, &info); err != nil {
+		return info, err
+	}
+	return info, nil
+}
+
+func runSelfUpdateCheck(jsonMode bool) int {
+	currentVersion, currentCommit := buildVersion()
+	latest, err := latestModuleVersion()
+	if err != nil {
+		printError(err, exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	if jsonMode {
+		writeJSON(map[string]string{
+			"current_version": currentVersion,
+			"current_commit":  currentCommit,
+			"latest_version":  latest.Version,
+			"latest_time":     latest.Time,
+		})
+		return exitSuccess
+	}
+	fmt.Printf("current version=%s commit=%s\n", currentVersion, currentCommit)
+	fmt.Printf("latest version=%s time=%s\n", latest.Version, latest.Time)
+	return exitSuccess
+}
+
+func runSelfUpdate(jsonMode bool) int {
+	latest, err := latestModuleVersion()
+	if err != nil {
+		printError(err, exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	cmd := exec.Command("go", "install", modulePath+"/cmd/missis@latest")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		printError(fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output))), exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	if jsonMode {
+		writeJSON(map[string]string{
+			"status":         "updated",
+			"latest_version": latest.Version,
+		})
+		return exitSuccess
+	}
+	fmt.Printf("updated to %s\n", latest.Version)
+	return exitSuccess
+}
+
 func printVersion(jsonMode bool) {
 	version, commit := buildVersion()
 	if jsonMode {
@@ -133,6 +198,18 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(exitInvalid)
+	}
+	if os.Args[1] == "--self-update-check" || os.Args[1] == "--self-update" {
+		jsonMode := false
+		for _, arg := range os.Args[2:] {
+			if arg == "--json" {
+				jsonMode = true
+			}
+		}
+		if os.Args[1] == "--self-update-check" {
+			os.Exit(runSelfUpdateCheck(jsonMode))
+		}
+		os.Exit(runSelfUpdate(jsonMode))
 	}
 	var code int
 	switch os.Args[1] {

@@ -45,6 +45,18 @@ missis show --version
 missis show --health
 ```
 
+Check for a newer published module:
+
+```bash
+missis --self-update-check
+```
+
+Update the installed binary:
+
+```bash
+missis --self-update
+```
+
 # Viewing tickets
 
 `show` reads the event ledger and derives the current projection on demand. It
