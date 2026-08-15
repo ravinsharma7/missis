@@ -2,16 +2,18 @@ package store
 
 import (
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	_ "modernc.org/sqlite"
 
 	"github.com/ravinsharma7/missis/implementation/model"
@@ -32,14 +34,19 @@ type AppendOutcome struct {
 type TicketSummary struct {
 	Ref        string
 	ID         model.TicketID
+	Number     uint64
 	Title      string
 	Status     string
 	RecordedAt time.Time
 }
 
 type Store struct {
-	db *sql.DB
+	writer *sql.DB
+	reader *sql.DB
 }
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 func Open(path string) (*Store, error) {
 	if path == "" {
@@ -50,56 +57,154 @@ func Open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	writer, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		db.Close()
+	if err := configureDB(writer); err != nil {
+		writer.Close()
 		return nil, err
 	}
-	if err := migrate(db); err != nil {
-		db.Close()
+	if err := migrate(writer); err != nil {
+		writer.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	reader, err := sql.Open("sqlite", path)
+	if err != nil {
+		writer.Close()
+		return nil, err
+	}
+	if err := configureDB(reader); err != nil {
+		writer.Close()
+		reader.Close()
+		return nil, err
+	}
+	writer.SetMaxOpenConns(1)
+	reader.SetMaxOpenConns(4)
+	return &Store{writer: writer, reader: reader}, nil
 }
 
 func (s *Store) Close() error {
-	return s.db.Close()
+	readerErr := s.reader.Close()
+	writerErr := s.writer.Close()
+	if writerErr != nil {
+		return writerErr
+	}
+	return readerErr
+}
+
+func (s *Store) Backup(dst string) error {
+	if dir := filepath.Dir(dst); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	quoted := strings.ReplaceAll(dst, "'", "''")
+	_, err := s.writer.Exec(`VACUUM INTO '` + quoted + `'`)
+	return err
+}
+
+func (s *Store) AllocateTicketAlias(ticketID model.TicketID) (uint64, error) {
+	result, err := s.writer.Exec(`INSERT INTO ticket_aliases (ticket_id) VALUES (?)`, string(ticketID))
+	if err != nil {
+		return 0, err
+	}
+	id, err := result.LastInsertId()
+	return uint64(id), err
+}
+
+func (s *Store) LookupTicketAlias(ticketID model.TicketID) (uint64, error) {
+	var number uint64
+	err := s.reader.QueryRow(`SELECT number FROM ticket_aliases WHERE ticket_id = ?`, string(ticketID)).Scan(&number)
+	return number, err
+}
+
+func (s *Store) LookupIdempotency(key string, result any) (bool, error) {
+	var resultJSON string
+	err := s.reader.QueryRow(`SELECT result_json FROM idempotency WHERE key = ?`, key).Scan(&resultJSON)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if result != nil && resultJSON != "" {
+		if err := json.Unmarshal([]byte(resultJSON), result); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func migrate(db *sql.DB) error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS streams (
-			stream_kind TEXT NOT NULL,
-			stream_entity TEXT NOT NULL,
-			next_sequence INTEGER NOT NULL DEFAULT 1,
-			PRIMARY KEY (stream_kind, stream_entity)
-		)`,
-		`CREATE TABLE IF NOT EXISTS events (
-			alias_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-			id TEXT NOT NULL UNIQUE,
-			stream_kind TEXT NOT NULL,
-			stream_entity TEXT NOT NULL,
-			sequence INTEGER NOT NULL,
-			event_json TEXT NOT NULL,
-			UNIQUE (stream_kind, stream_entity, sequence)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_stream ON events(stream_kind, stream_entity)`,
-		`CREATE TABLE IF NOT EXISTS idempotency (
-			key TEXT PRIMARY KEY,
-			event_ids_json TEXT NOT NULL,
-			result_json TEXT NOT NULL,
-			created_at TEXT NOT NULL
-		)`,
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return err
 	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		version := entry.Name()
+		var applied int
+		err := db.QueryRow(`SELECT 1 FROM schema_migrations WHERE version = ?`, version).Scan(&applied)
+		if err == nil {
+			continue
+		}
+		if err != sql.ErrNoRows {
+			return err
+		}
+		data, err := migrationsFS.ReadFile("migrations/" + version)
+		if err != nil {
+			return err
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(string(data)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func configureDB(db *sql.DB) error {
+	for _, pragma := range []string{
+		`PRAGMA foreign_keys = ON`,
+		`PRAGMA busy_timeout = 5000`,
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			return err
+		}
+	}
+	var journalMode string
+	if err := db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&journalMode); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`PRAGMA synchronous = NORMAL`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func newULID(prefix string) string {
+	return prefix + ":" + ulid.Make().String()
 }
 
 func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, preconditions []Precondition, result any) (AppendOutcome, error) {
@@ -107,7 +212,7 @@ func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, precond
 		return AppendOutcome{}, fmt.Errorf("event batch is empty")
 	}
 
-	tx, err := s.db.Begin()
+	tx, err := s.writer.Begin()
 	if err != nil {
 		return AppendOutcome{}, err
 	}
@@ -166,7 +271,7 @@ func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, precond
 	for i := range events {
 		event := events[i]
 		if event.ID == "" {
-			event.ID = model.EventID("event:" + uuid.NewString())
+			event.ID = model.EventID(newULID("event"))
 		}
 		if event.Sequence == 0 {
 			event.Sequence = nextSequence + uint64(i)
@@ -237,11 +342,11 @@ func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, precond
 }
 
 func (s *Store) LoadEvents() ([]model.Event, error) {
-	return loadEventsTx(s.db)
+	return loadEventsTx(s.reader)
 }
 
 func (s *Store) LoadTicketEvents(ticketID model.TicketID) ([]model.Event, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader.Query(
 		`SELECT event_json, alias_seq FROM events WHERE stream_kind = ? AND stream_entity = ? ORDER BY sequence ASC`,
 		string(model.KindTicket), string(ticketID),
 	)
@@ -291,7 +396,7 @@ func (s *Store) GetEventByAlias(alias string) (model.Event, error) {
 		return model.Event{}, fmt.Errorf("invalid event alias: %s", alias)
 	}
 	var raw string
-	err = s.db.QueryRow(`SELECT event_json FROM events WHERE alias_seq = ?`, number).Scan(&raw)
+	err = s.reader.QueryRow(`SELECT event_json FROM events WHERE alias_seq = ?`, number).Scan(&raw)
 	if err != nil {
 		return model.Event{}, err
 	}
@@ -322,7 +427,13 @@ func (s *Store) ListTickets(effectiveAt time.Time) ([]TicketSummary, error) {
 		if err != nil {
 			return nil, err
 		}
-		summary := TicketSummary{ID: ticketID, Ref: "#" + shortID(ticketID)}
+		number, _ := s.LookupTicketAlias(ticketID)
+		summary := TicketSummary{ID: ticketID, Number: number}
+		if number > 0 {
+			summary.Ref = "#" + strconv.FormatUint(number, 10)
+		} else {
+			summary.Ref = "#" + shortID(ticketID)
+		}
 		if partID, ok := proj.Paths["title"]; ok {
 			if part := proj.Parts[partID]; part != nil && part.Value != nil {
 				summary.Title = part.Value.Text

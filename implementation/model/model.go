@@ -94,6 +94,7 @@ type Value struct {
 	Kind      ValueKind
 	Text      string
 	Data      any
+	List      []string
 	Ref       *Ref
 	Retracted bool
 }

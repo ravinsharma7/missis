@@ -140,13 +140,26 @@ func applyEvent(proj *Projection, event Event) error {
 				part.ValueKind = event.Value.Kind
 			}
 
-		case OpSetValue, OpAddValue, OpSupersedeEvent:
+		case OpSetValue, OpSupersedeEvent:
 			if part == nil {
 				part = ensurePart(proj, event.Target, event)
 			}
 			value := cloneValue(event.Value)
 			part.Value = &value
 			part.ValueKind = event.Value.Kind
+			part.CurrentFrom = event.ID
+			part.RetractedBy = nil
+
+		case OpAddValue:
+			if part == nil {
+				part = ensurePart(proj, event.Target, event)
+			}
+			if part.Value == nil || part.Value.Kind != ValueKindList {
+				value := Value{Kind: ValueKindList, List: []string{}}
+				part.Value = &value
+			}
+			part.Value.List = append(part.Value.List, event.Value.Text)
+			part.ValueKind = ValueKindList
 			part.CurrentFrom = event.ID
 			part.RetractedBy = nil
 
@@ -332,7 +345,7 @@ func lastSegment(path []string) string {
 }
 
 func hasValue(value Value) bool {
-	return value.Kind != "" || value.Text != "" || value.Data != nil || value.Ref != nil
+	return value.Kind != "" || value.Text != "" || value.Data != nil || len(value.List) > 0 || value.Ref != nil
 }
 
 func cloneValue(value Value) Value {

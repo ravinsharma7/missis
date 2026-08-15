@@ -104,6 +104,7 @@ func mustJSON(t *testing.T, result cmdResult) map[string]any {
 }
 
 func TestNewShowSetLifecycle(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Lifecycle")
 	ref := created["ref"].(string)
@@ -125,6 +126,7 @@ func TestNewShowSetLifecycle(t *testing.T) {
 }
 
 func TestNestedPartRenameMoveRetractHistory(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Nested")
 	ref := created["ref"].(string)
@@ -149,6 +151,7 @@ func TestNestedPartRenameMoveRetractHistory(t *testing.T) {
 }
 
 func TestSupersession(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Supersede")
 	ref := created["ref"].(string)
@@ -169,6 +172,7 @@ func TestSupersession(t *testing.T) {
 }
 
 func TestOptimisticConflict(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Conflict")
 	ref := created["ref"].(string)
@@ -186,6 +190,7 @@ func TestOptimisticConflict(t *testing.T) {
 }
 
 func TestIdempotency(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Idempotency")
 	ref := created["ref"].(string)
@@ -201,6 +206,7 @@ func TestIdempotency(t *testing.T) {
 }
 
 func TestBlockedRequiresReason(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Blocked")
 	ref := created["ref"].(string)
@@ -216,6 +222,7 @@ func TestBlockedRequiresReason(t *testing.T) {
 }
 
 func TestCycleRejected(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Cycle")
 	ref := created["ref"].(string)
@@ -230,6 +237,7 @@ func TestCycleRejected(t *testing.T) {
 }
 
 func TestBitemporalProjection(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Bitemporal")
 	ref := created["ref"].(string)
@@ -252,6 +260,7 @@ func TestBitemporalProjection(t *testing.T) {
 }
 
 func TestStoreFlagWinsOverMarker(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	projectDir := filepath.Join(tmp, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -275,6 +284,7 @@ func TestStoreFlagWinsOverMarker(t *testing.T) {
 }
 
 func TestMissisFileRelativeMarker(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	projectDir := filepath.Join(tmp, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -293,6 +303,7 @@ func TestMissisFileRelativeMarker(t *testing.T) {
 }
 
 func TestMissisFileAbsoluteMarker(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	projectDir := filepath.Join(tmp, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -312,6 +323,7 @@ func TestMissisFileAbsoluteMarker(t *testing.T) {
 }
 
 func TestMissisDirectoryMarker(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	projectDir := filepath.Join(tmp, "project")
 	if err := os.MkdirAll(filepath.Join(projectDir, ".missis"), 0o755); err != nil {
@@ -327,6 +339,7 @@ func TestMissisDirectoryMarker(t *testing.T) {
 }
 
 func TestXDGFallback(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "home")
 	work := filepath.Join(tmp, "work")
@@ -346,6 +359,7 @@ func TestXDGFallback(t *testing.T) {
 }
 
 func TestParentValueRetractionPreservesChild(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Parent retraction")
 	ref := created["ref"].(string)
@@ -368,6 +382,7 @@ func TestParentValueRetractionPreservesChild(t *testing.T) {
 }
 
 func TestRecursiveRetractionRemovesSubtree(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Recursive retraction")
 	ref := created["ref"].(string)
@@ -384,6 +399,7 @@ func TestRecursiveRetractionRemovesSubtree(t *testing.T) {
 }
 
 func TestStalePathDoesNotRetarget(t *testing.T) {
+	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Stale path")
 	ref := created["ref"].(string)
@@ -396,5 +412,48 @@ func TestStalePathDoesNotRetarget(t *testing.T) {
 	}
 	if result := runMissis(t, store, "show", "--json", ref+"/old"); result.code != 3 {
 		t.Fatalf("expected stale path to fail, got %d %s", result.code, result.stdout)
+	}
+}
+
+func TestAddListAppend(t *testing.T) {
+	t.Parallel()
+	// covers PH1-PART-013 PH1-CON-003 N015 N110
+	store := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, store, "List append")
+	ref := created["ref"].(string)
+
+	for _, value := range []string{"one", "two", "one", "has space", "line\nbreak"} {
+		result := runMissis(t, store, "set", "--json", ref+"/notes", "--add", value)
+		if result.code != 0 {
+			t.Fatalf("add %q: %d %s", value, result.code, result.stderr)
+		}
+	}
+	shown := mustJSON(t, runMissis(t, store, "show", "--json", ref+"/notes"))
+	parts := shown["parts"].(map[string]any)
+	notes := parts["notes"].(map[string]any)
+	values, ok := notes["value"].([]any)
+	if !ok {
+		t.Fatalf("value is not an array: %T %v", notes["value"], notes["value"])
+	}
+	if len(values) != 5 {
+		t.Fatalf("expected 5 values, got %d: %v", len(values), values)
+	}
+}
+
+func TestTicketNumbering(t *testing.T) {
+	t.Parallel()
+	// covers PH1-REF-002 PH1-DM-002 N022 N024
+	store := filepath.Join(t.TempDir(), "missis.db")
+	first := newTicket(t, store, "First")
+	second := newTicket(t, store, "Second")
+	if first["ref"] != "#1" {
+		t.Fatalf("first ref = %v", first["ref"])
+	}
+	if second["ref"] != "#2" {
+		t.Fatalf("second ref = %v", second["ref"])
+	}
+	shown := mustJSON(t, runMissis(t, store, "show", "--json", first["ref"].(string)))
+	if shown["id"] != first["id"] {
+		t.Fatalf("canonical id mismatch: %v vs %v", shown["id"], first["id"])
 	}
 }

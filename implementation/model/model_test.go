@@ -7,6 +7,7 @@ import (
 )
 
 func TestProjectionRenameMoveRetract(t *testing.T) {
+	t.Parallel()
 	ticket := TicketID("ticket:t")
 	stream := Ref{Kind: KindTicket, Entity: string(ticket)}
 	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}
@@ -55,6 +56,7 @@ func TestProjectionRenameMoveRetract(t *testing.T) {
 }
 
 func TestValidateAppendRejectsCycleAndCollision(t *testing.T) {
+	t.Parallel()
 	ticket := TicketID("ticket:t")
 	stream := Ref{Kind: KindTicket, Entity: string(ticket)}
 	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}
@@ -81,6 +83,7 @@ func TestValidateAppendRejectsCycleAndCollision(t *testing.T) {
 }
 
 func TestResolvePartPath(t *testing.T) {
+	t.Parallel()
 	ticket := TicketID("ticket:t")
 	stream := Ref{Kind: KindTicket, Entity: string(ticket)}
 	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}
@@ -103,6 +106,7 @@ func TestResolvePartPath(t *testing.T) {
 }
 
 func TestValidatePathSegmentsRejectsInvalid(t *testing.T) {
+	t.Parallel()
 	valid := []string{"evidence", "race-test", "run-417"}
 	if err := ValidatePathSegments(valid); err != nil {
 		t.Fatalf("valid path rejected: %v", err)
@@ -120,6 +124,7 @@ func TestValidatePathSegmentsRejectsInvalid(t *testing.T) {
 }
 
 func TestReproducibleProjection(t *testing.T) {
+	t.Parallel()
 	ticket := TicketID("ticket:t")
 	stream := Ref{Kind: KindTicket, Entity: string(ticket)}
 	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}

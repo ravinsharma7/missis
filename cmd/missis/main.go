@@ -8,10 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/ravinsharma7/missis/implementation/model"
 	"github.com/ravinsharma7/missis/implementation/store"
@@ -208,6 +209,35 @@ func runNew(args []string) int {
 	}
 
 	result := newResult{}
+	if idemKey != "" {
+		replayed, lookupErr := db.LookupIdempotency(idemKey, &result)
+		if lookupErr != nil {
+			printError(lookupErr, mapStoreError(lookupErr), jsonMode, nil)
+			return mapStoreError(lookupErr)
+		}
+		if replayed {
+			if jsonMode {
+				writeJSON(result)
+			} else {
+				fmt.Printf("%s  %s\n", result.Ref, result.Title)
+				fmt.Printf("status: %s\n", result.Status)
+			}
+			return exitSuccess
+		}
+	}
+	alias, err := db.AllocateTicketAlias(ticketID)
+	if err != nil {
+		printError(err, mapStoreError(err), jsonMode, nil)
+		return mapStoreError(err)
+	}
+	result = newResult{
+		Ref:        "#" + strconv.FormatUint(alias, 10),
+		ID:         string(ticketID),
+		Title:      title,
+		Status:     "open",
+		Project:    stringPtrOrNil(project),
+		RecordedAt: recordedAt.Format(time.RFC3339),
+	}
 	outcome, err := db.AppendBatch(events, idemKey, nil, &result)
 	if err != nil {
 		printError(err, mapStoreError(err), jsonMode, nil)
@@ -216,7 +246,7 @@ func runNew(args []string) int {
 	_ = outcome
 	if result.Ref == "" {
 		result = newResult{
-			Ref:        "#" + shortID(ticketID),
+			Ref:        "#" + strconv.FormatUint(alias, 10),
 			ID:         string(ticketID),
 			Title:      title,
 			Status:     "open",
@@ -232,7 +262,7 @@ func runNew(args []string) int {
 		if project != "" {
 			projectText = project
 		}
-		fmt.Printf("#%s  %s\n", shortID(ticketID), title)
+		fmt.Printf("%s  %s\n", result.Ref, title)
 		fmt.Printf("status: open\n")
 		if projectText != "" {
 			fmt.Printf("project: %s\n", projectText)
@@ -354,7 +384,8 @@ func runShow(args []string) int {
 		}
 	}
 	recordedAtText := ticketRecordedAt(db, ticketID)
-	outputProjection(ticketID, proj, partPath, jsonMode, recordedAtText)
+	ticketRef := ticketRefFor(db, ticketID)
+	outputProjection(ticketID, proj, partPath, jsonMode, recordedAtText, ticketRef)
 	return exitSuccess
 }
 
@@ -500,7 +531,11 @@ func runSet(args []string) int {
 			if add {
 				event.Operation = model.OpAddValue
 			}
-			event.Value = model.Value{Kind: valueKind, Text: value}
+			if add {
+				event.Value = model.Value{Kind: model.ValueKindList, Text: value}
+			} else {
+				event.Value = model.Value{Kind: valueKind, Text: value}
+			}
 			if valueKind == model.ValueKindList || valueKind == model.ValueKindJSON {
 				event.Value.Data = value
 			}
@@ -608,7 +643,11 @@ func partEvent(stream model.Ref, path string, value any, kind model.ValueKind, a
 	case string:
 		valueModel = model.Value{Kind: kind, Text: typed}
 	case []string:
-		valueModel = model.Value{Kind: kind, Data: typed}
+		if kind == model.ValueKindList {
+			valueModel = model.Value{Kind: kind, List: typed}
+		} else {
+			valueModel = model.Value{Kind: kind, Data: typed}
+		}
 	default:
 		valueModel = model.Value{Kind: kind, Data: value}
 	}
@@ -691,7 +730,7 @@ func parseActor(value string) model.ActorRef {
 }
 
 func newID(prefix string) string {
-	return prefix + ":" + uuid.NewString()
+	return prefix + ":" + ulid.Make().String()
 }
 
 func shortID(id model.TicketID) string {
@@ -700,6 +739,14 @@ func shortID(id model.TicketID) string {
 		return raw[:8]
 	}
 	return raw
+}
+
+func ticketRefFor(db *store.Store, ticketID model.TicketID) string {
+	number, err := db.LookupTicketAlias(ticketID)
+	if err == nil && number > 0 {
+		return "#" + strconv.FormatUint(number, 10)
+	}
+	return "#" + shortID(ticketID)
 }
 
 func stringPtrOrNil(value string) *string {
@@ -719,7 +766,7 @@ func resolveTicketRef(db *store.Store, ref string, effectiveAt time.Time) (model
 	}
 	var ticketID model.TicketID
 	for _, summary := range summaries {
-		if shortID(summary.ID) == short || string(summary.ID) == short {
+		if summary.Ref == "#"+short || strconv.FormatUint(summary.Number, 10) == short || string(summary.ID) == short {
 			ticketID = summary.ID
 			break
 		}
@@ -930,10 +977,10 @@ func outputTicketList(summaries []store.TicketSummary, jsonMode bool) {
 	}
 }
 
-func outputProjection(ticketID model.TicketID, proj *model.Projection, pathFilter []string, jsonMode bool, recordedAt string) {
+func outputProjection(ticketID model.TicketID, proj *model.Projection, pathFilter []string, jsonMode bool, recordedAt, ticketRef string) {
 	title, status := projectionTitleStatus(proj)
 	if !jsonMode {
-		fmt.Printf("#%s  %s\n", shortID(ticketID), title)
+		fmt.Printf("%s  %s\n", ticketRef, title)
 		fmt.Printf("status: %s\n", status)
 		for path := range proj.Paths {
 			if !pathMatches(path, pathFilter) {
@@ -965,7 +1012,7 @@ func outputProjection(ticketID model.TicketID, proj *model.Projection, pathFilte
 		}
 	}
 	writeJSON(showTicket{
-		Ref:        "#" + shortID(ticketID),
+		Ref:        ticketRef,
 		ID:         string(ticketID),
 		Title:      title,
 		Status:     status,
@@ -1037,6 +1084,9 @@ func valueOrNilFromPart(part *model.Part) any {
 func valueText(value model.Value) any {
 	if value.Text != "" {
 		return value.Text
+	}
+	if len(value.List) > 0 {
+		return value.List
 	}
 	if value.Data != nil {
 		return value.Data
