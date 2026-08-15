@@ -39,7 +39,13 @@ region = auto
 bucket = $RCLONE_CONFIG_MISSIS_BUCKET
 EOF
 
-rclone --config "$tmpconfig" copy "${remote%/}/$store_id/$head_hash.db" "$tmpdir"
+remote_path="${remote%/}"
+if [[ "$remote_path" == *: ]]; then
+  remote_source="$remote_path$store_id/$head_hash.db"
+else
+  remote_source="$remote_path/$store_id/$head_hash.db"
+fi
+rclone --config "$tmpconfig" copy "$remote_source" "$tmpdir"
 
 restored="$(MISSIS_STORE="$dest" go run ./tools/store-manifest)"
 restored_id="$(printf '%s' "$restored" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"

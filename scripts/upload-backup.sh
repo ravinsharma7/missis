@@ -54,7 +54,13 @@ endpoint = $RCLONE_CONFIG_MISSIS_ENDPOINT
 region = auto
 bucket = $RCLONE_CONFIG_MISSIS_BUCKET
 EOF
-  rclone --config "$tmpconfig" copy "$backup" "${remote_dest%/}/$store_id/$head_hash.db"
+  remote_path="${remote_dest%/}"
+  if [[ "$remote_path" == *: ]]; then
+    remote_target="$remote_path$store_id/$head_hash.db"
+  else
+    remote_target="$remote_path/$store_id/$head_hash.db"
+  fi
+  rclone --config "$tmpconfig" copy "$backup" "$remote_target"
   echo "uploaded with rclone"
   exit 0
 fi
