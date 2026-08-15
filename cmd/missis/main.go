@@ -287,6 +287,46 @@ func runInit(args []string) int {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
+	contextPath := filepath.Join(cwd, ".missis.d", "context.md")
+	if _, statErr := os.Stat(contextPath); os.IsNotExist(statErr) {
+		defaultContext := `# Current Context
+
+This is a short-lived scratchpad for agents and collaborators. The authoritative
+live work items are in the repo-local missis store.
+
+Read this before starting implementation. Then run:
+
+` + "```bash\nmissis show\n```\n" + `
+For the current active project/group/ticket focus, read
+` + "`active.local.md`" + ` when present, otherwise ` + "`active.example.md`" + `.
+
+## Current local setup
+
+` + "```text\n.missis -> ./.missis-store/missis.db\n.missis.d/ -> committed project metadata\n.missis-store/ -> ignored SQLite database\n```\n"
+		if err := os.WriteFile(contextPath, []byte(defaultContext), 0o644); err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+	}
+	activePath := filepath.Join(cwd, ".missis.d", "active.example.md")
+	if _, statErr := os.Stat(activePath); os.IsNotExist(statErr) {
+		defaultActive := `# Active Session
+
+This is a short-lived agent pointer. It is not authoritative domain data.
+
+` + "```text\nstore: .missis-store/missis.db\nproject: none\ngroup: none\nfocus: \nticket: \n```\n" + `
+Rules:
+
+- Prefer missis refs over free-text descriptions.
+- Do not duplicate authoritative ticket content here.
+- Update this file only when the active project, group, or ticket focus changes.
+- ` + "`project:`" + ` and ` + "`group:`" + ` values are canonical IDs, not display titles.
+`
+		if err := os.WriteFile(activePath, []byte(defaultActive), 0o644); err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+	}
 	client, err := missis.OpenPath(absTarget)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
