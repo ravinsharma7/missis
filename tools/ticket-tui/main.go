@@ -259,6 +259,7 @@ func (m tuiModel) viewList() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("missis tickets"))
 	b.WriteString("\n\n")
+	b.WriteString(fmt.Sprintf("%-8s %-10s %s\n", "REF", "STATUS", "TITLE"))
 	visible := m.height - 3
 	if visible < 1 {
 		visible = 1
@@ -270,7 +271,7 @@ func (m tuiModel) viewList() string {
 	}
 	for i := start; i < end; i++ {
 		summary := m.summaries[i]
-		line := fmt.Sprintf("%s  %s  %s", summary.Ref, summary.Status, summary.Title)
+		line := fmt.Sprintf("%-8s %-10s %s", summary.Ref, summary.Status, summary.Title)
 		if i == m.selected {
 			line = "> " + line
 		} else {
@@ -344,11 +345,20 @@ func (m tuiModel) viewCompare() string {
 	b.WriteString("\n")
 	a := ticketSummaryParts(m.client, *m.compareA)
 	bb := ticketSummaryParts(m.client, *m.compareB)
-	for path, av := range a {
-		bv := bb[path]
-		if av != bv {
-			b.WriteString(fmt.Sprintf("%s\n  A: %s\n  B: %s\n", path, renderMarkdownValue(av), renderMarkdownValue(bv)))
-		}
+	paths := make(map[string]bool)
+	for path := range a {
+		paths[path] = true
+	}
+	for path := range bb {
+		paths[path] = true
+	}
+	sortedPaths := make([]string, 0, len(paths))
+	for path := range paths {
+		sortedPaths = append(sortedPaths, path)
+	}
+	sort.Strings(sortedPaths)
+	for _, path := range sortedPaths {
+		b.WriteString(fmt.Sprintf("%s\n  A: %s\n  B: %s\n", path, renderMarkdownValue(a[path]), renderMarkdownValue(bb[path])))
 	}
 	return b.String()
 }
