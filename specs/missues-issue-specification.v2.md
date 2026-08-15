@@ -32,12 +32,22 @@
 
 This system presents itself as a very small issue tracker, but internally acts as a provenance-aware workflow and knowledge kernel.
 
-The public command vocabulary is deliberately limited to three verbs:
+The public command vocabulary is deliberately limited to three domain verbs,
+plus a small allowlist of global operational flags:
 
 ```text
 issue new
 issue show
 issue set
+```
+
+Global operational flags:
+
+```text
+issue --version
+issue --help
+issue --self-update-check
+issue --self-update
 ```
 
 The internal design is based on three lower-level primitives:
@@ -101,7 +111,8 @@ This design supports:
 ### 2.1 Primary goals
 
 1. **Keep the command surface tiny.**
-   The stable external protocol contains only `new`, `show`, and `set`.
+   Domain operations are only `new`, `show`, and `set`. Global operational
+   flags are separately allowlisted and do not create new domain verbs.
 
 2. **Be equally usable by humans and agents.**
    Humans may paste or import large Markdown documents. Agents may manipulate exact references and consume stable JSON.
@@ -256,6 +267,21 @@ list get find search next queue inbox close reopen assign comment block prioriti
 ```
 
 Those behaviors are forms of `show` or `set`.
+
+### 5.1.1 Global operational flags
+
+The binary MAY accept a small allowlist of global flags before a domain verb:
+
+```text
+issue --version
+issue --help
+issue --self-update-check
+issue --self-update
+```
+
+Global flags are process-level maintenance or inspection operations. They do
+not create new domain subcommands, and they MUST NOT become a mechanism for
+general ticket operations.
 
 ## 5.2 General command grammar
 
@@ -4178,7 +4204,8 @@ Swappability should exist at component boundaries, not through user-visible comm
 
 ### 29.1 Interface
 
-- [ ] Only `issue new`, `issue show`, and `issue set` are required top-level subcommands.
+- [ ] `issue new`, `issue show`, and `issue set` are the only required domain subcommands.
+- [ ] A small allowlist of global operational flags may appear before a domain verb.
 - [ ] Every agent operation can use explicit references and stable JSON.
 - [ ] No operation depends on an implicit current ticket.
 - [ ] `show` covers current views, lists, search, navigation, history, provenance, and lineage.

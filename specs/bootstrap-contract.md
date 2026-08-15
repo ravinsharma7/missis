@@ -21,6 +21,18 @@ missis show
 missis set
 ```
 
+Global operational flags may appear before a domain command:
+
+```text
+missis --version
+missis --help
+missis --self-update-check
+missis --self-update
+```
+
+Global flags are process-level maintenance or inspection operations, not new
+domain subcommands.
+
 The durable store is a single SQLite database file:
 
 - `MISSIS_STORE` overrides the path;

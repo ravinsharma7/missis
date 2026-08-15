@@ -21,7 +21,7 @@ Public command spelling:
 
 | ID | Source | Requirement |
 | --- | --- | --- |
-| PH1-CLI-001 | 5.1, 5.2 | `missis` exposes only `new`, `show`, and `set` as top-level subcommands. |
+| PH1-CLI-001 | 5.1, 5.2 | `missis` exposes only `new`, `show`, and `set` as top-level domain subcommands; a small allowlist of global operational flags is allowed. |
 | PH1-CLI-002 | 5.2 | Commands support `--json`, `--format text\|json\|markdown`, `--actor`, and `--effective-at`. |
 | PH1-CLI-003 | 5.2 | `recorded_at` is system-assigned; callers cannot forge transaction time. |
 | PH1-CLI-004 | 5.3 | No operation depends on an implicit current ticket. |
@@ -114,7 +114,7 @@ Status values:
 
 | Norm ID | Strength | Source | Clause | Status | Register mapping |
 | --- | --- | --- | --- | --- | --- |
-| N001 | MUST NOT | 5.1 | Only `new`, `show`, `set` top-level subcommands. | phase-1 | PH1-CLI-001 |
+| N001 | MUST NOT | 5.1 | Only `new`, `show`, and `set` are top-level domain subcommands; global operational flags are allowed separately. | phase-1 | PH1-CLI-001 |
 | N002 | SHOULD | 5.2 | Commands support common JSON, format, actor, and time options. | phase-1-should | PH1-CLI-002 |
 | N003 | MUST | 5.2 | System assigns `recorded_at`; caller cannot forge transaction time. | phase-1 | PH1-CLI-003 |
 | N004 | SHOULD | 5.7 | Keep coordination status small. | phase-1-should | PH1-CLI-007 |
