@@ -737,3 +737,34 @@ func TestMarkdownExport(t *testing.T) {
 		t.Fatalf("unexpected markdown output:\n%s", result.stdout)
 	}
 }
+
+func TestMarkdownReimportIdentity(t *testing.T) {
+	t.Parallel()
+	// covers PH3-REIMPORT-001 PH3-REIMPORT-002
+	store := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, store, "reimport")
+	file := filepath.Join(t.TempDir(), "issue.md")
+	if err := os.WriteFile(file, []byte("# Top\n\n## Problem\n\nFirst body.\n\n## Evidence\n\nEvidence body.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if result := runMissis(t, store, "set", "--json", created["ref"].(string), "--from", file); result.code != 0 {
+		t.Fatalf("first import: %d %s", result.code, result.stderr)
+	}
+	before := mustJSON(t, runMissis(t, store, "show", "--json", created["ref"].(string)))
+	beforeParts := before["parts"].(map[string]any)
+
+	if result := runMissis(t, store, "set", "--json", created["ref"].(string), "--from", file); result.code != 0 {
+		t.Fatalf("unchanged reimport: %d %s", result.code, result.stderr)
+	}
+	afterUnchanged := mustJSON(t, runMissis(t, store, "show", "--json", created["ref"].(string)))
+	if len(afterUnchanged["parts"].(map[string]any)) != len(beforeParts) {
+		t.Fatalf("unchanged reimport changed part count")
+	}
+
+	if err := os.WriteFile(file, []byte("# Top\n\n## Problem\n\nUpdated body.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if result := runMissis(t, store, "set", "--json", created["ref"].(string), "--from", file); result.code != 4 {
+		t.Fatalf("missing part reimport should fail with validation, got %d %s", result.code, result.stdout)
+	}
+}
