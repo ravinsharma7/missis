@@ -10,7 +10,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ravinsharma7/missis/implementation/model"
 	"github.com/ravinsharma7/missis/implementation/store"
@@ -21,6 +23,11 @@ var (
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+)
+
+const (
+	defaultWidth  = 80
+	defaultHeight = 24
 )
 
 type detailState struct {
@@ -157,7 +164,7 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		summary := m.summaries[m.selected]
-		lines, err := ticketLines(m.client, summary)
+		lines, err := ticketLines(m.client, summary, m.renderWidth())
 		if err != nil {
 			m.err = err
 			return m, nil
@@ -252,7 +259,7 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.detail.showRefs {
 			m.detail.lines, err = referenceLines(m.client, m.detail.summary)
 		} else {
-			m.detail.lines, err = ticketLines(m.client, m.detail.summary)
+			m.detail.lines, err = ticketLines(m.client, m.detail.summary, m.renderWidth())
 		}
 		if err != nil {
 			m.err = err
@@ -288,7 +295,7 @@ func (m tuiModel) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.detail.summary.Title = title
-		lines, err := ticketLines(m.client, m.detail.summary)
+		lines, err := ticketLines(m.client, m.detail.summary, m.renderWidth())
 		if err != nil {
 			m.err = err
 		} else {
@@ -367,30 +374,36 @@ func (m tuiModel) helpForView() string {
 }
 
 func (m tuiModel) viewList() string {
+	width, _ := m.effectiveSize()
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(fmt.Sprintf("missis tickets | project: %s | group: %s", m.projectCtx, m.groupCtx)))
 	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("  %-6s %-10s %s\n", "REF", "STATUS", "TITLE"))
-	visible := m.height - 3
-	if visible < 1 {
-		visible = 1
-	}
+	visible := m.listVisibleRows()
 	start := m.listOffset
 	end := start + visible
 	if end > len(m.summaries) {
 		end = len(m.summaries)
 	}
+	// cursor (2) + ref (6) + gap (1) + status (10) + gap (1)
+	titleWidth := width - 20
+	if titleWidth < 1 {
+		titleWidth = 1
+	}
 	for i := start; i < end; i++ {
 		summary := m.summaries[i]
+		ref := truncateCell(summary.Ref, 6)
+		status := truncateCell(summary.Status, 10)
 		title := summary.Title
 		if title == "" {
 			title = "<no title>"
 		}
+		title = truncateCell(title, titleWidth)
 		cursor := "  "
 		if i == m.selected {
 			cursor = "> "
 		}
-		line := fmt.Sprintf("%s%-6s %-10s %s", cursor, summary.Ref, summary.Status, title)
+		line := fmt.Sprintf("%s%-6s %-10s %s", cursor, ref, status, title)
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
@@ -401,13 +414,7 @@ func (m *tuiModel) clampListOffset() {
 	if m.listOffset < 0 {
 		m.listOffset = 0
 	}
-	if m.height <= 0 {
-		return
-	}
-	visible := m.height - 3
-	if visible < 1 {
-		visible = 1
-	}
+	visible := m.listVisibleRows()
 	maxOffset := len(m.summaries) - visible
 	if maxOffset < 0 {
 		maxOffset = 0
@@ -421,6 +428,42 @@ func (m *tuiModel) clampListOffset() {
 	if m.selected >= m.listOffset+visible {
 		m.listOffset = m.selected - visible + 1
 	}
+}
+
+func (m tuiModel) effectiveSize() (width, height int) {
+	width, height = m.width, m.height
+	if width <= 0 {
+		width = defaultWidth
+	}
+	if height <= 0 {
+		height = defaultHeight
+	}
+	return width, height
+}
+
+// listVisibleRows leaves room for the title line, blank line, column header,
+// and the help bar rendered by View().
+func (m tuiModel) listVisibleRows() int {
+	_, height := m.effectiveSize()
+	visible := height - 4
+	if visible < 1 {
+		visible = 1
+	}
+	return visible
+}
+
+func truncateCell(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text
+	}
+	if width <= 3 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-3]) + "..."
 }
 
 func (m tuiModel) viewDetail() string {
@@ -461,11 +504,16 @@ func (m tuiModel) renderedDetailLines() []string {
 	if m.detail == nil {
 		return nil
 	}
-	width := m.width - 2
+	return wrapIndentedLines(m.detail.lines, m.renderWidth())
+}
+
+func (m tuiModel) renderWidth() int {
+	width, _ := m.effectiveSize()
+	width -= 2
 	if width < 20 {
 		width = 20
 	}
-	return wrapIndentedLines(m.detail.lines, width)
+	return width
 }
 
 func (m tuiModel) viewCompare() string {
@@ -509,7 +557,7 @@ func (m tuiModel) viewCompare() string {
 	return b.String()
 }
 
-func ticketLines(client *missis.Client, summary store.TicketSummary) ([]string, error) {
+func ticketLines(client *missis.Client, summary store.TicketSummary, width int) ([]string, error) {
 	now := time.Now().UTC()
 	proj, err := client.BitemporalProjection(context.Background(), summary.ID, now, now)
 	if err != nil {
@@ -536,7 +584,7 @@ func ticketLines(client *missis.Client, summary store.TicketSummary) ([]string, 
 		return pathByID[roots[i]] < pathByID[roots[j]]
 	})
 	for _, id := range roots {
-		lines = append(lines, partSubtree(proj, id, 0, pathByID)...)
+		lines = append(lines, partSubtree(proj, id, 0, pathByID, width)...)
 	}
 	return lines, nil
 }
@@ -562,7 +610,7 @@ func referenceLines(client *missis.Client, summary store.TicketSummary) ([]strin
 	return lines, nil
 }
 
-func partSubtree(proj *model.Projection, id model.PartID, depth int, pathByID map[model.PartID]string) []string {
+func partSubtree(proj *model.Projection, id model.PartID, depth int, pathByID map[model.PartID]string, width int) []string {
 	part := proj.Parts[id]
 	if part == nil {
 		return nil
@@ -575,10 +623,25 @@ func partSubtree(proj *model.Projection, id model.PartID, depth int, pathByID ma
 	if name == "" {
 		name = part.Name
 	}
+	if part.Value != nil && part.Value.Kind == model.ValueKindMarkdown {
+		name = part.Name
+		if name == "" {
+			name = part.DisplayName
+		}
+	}
 	indent := strings.Repeat("  ", depth)
 	lines := []string{indent + "▸ " + name}
 	if part.Value != nil {
-		value := renderMarkdownValue(valueText(*part.Value))
+		value := valueText(*part.Value)
+		if part.Value.Kind == model.ValueKindMarkdown {
+			available := width - depth*2 - 3
+			if available < 20 {
+				available = 20
+			}
+			value = renderMarkdownBody(value, available)
+		} else {
+			value = renderMarkdownValue(value)
+		}
 		for _, valueLine := range strings.Split(value, "\n") {
 			lines = append(lines, indent+"   "+valueLine)
 		}
@@ -593,9 +656,27 @@ func partSubtree(proj *model.Projection, id model.PartID, depth int, pathByID ma
 		return pathByID[children[i]] < pathByID[children[j]]
 	})
 	for _, childID := range children {
-		lines = append(lines, partSubtree(proj, childID, depth+1, pathByID)...)
+		lines = append(lines, partSubtree(proj, childID, depth+1, pathByID, width)...)
 	}
 	return lines
+}
+
+func renderMarkdownBody(markdown string, width int) string {
+	if width < 20 {
+		width = 20
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("notty"),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return markdown
+	}
+	rendered, err := renderer.Render(markdown)
+	if err != nil {
+		return markdown
+	}
+	return ansi.Strip(strings.TrimRight(rendered, "\n"))
 }
 
 func renderMarkdownValue(value string) string {
@@ -621,7 +702,72 @@ func renderMarkdownValue(value string) string {
 			lines[i] = trimmed
 		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(alignTableRows(lines), "\n")
+}
+
+func alignTableRows(lines []string) []string {
+	type tableRow []string
+	var (
+		rows   []tableRow
+		widths []int
+		out    []string
+	)
+	flush := func() {
+		for _, row := range rows {
+			separator := true
+			for _, cell := range row {
+				trimmed := strings.Trim(cell, "-")
+				if trimmed != "" {
+					separator = false
+					break
+				}
+			}
+			var b strings.Builder
+			b.WriteString("|")
+			for ci, cell := range row {
+				b.WriteString(" ")
+				if separator {
+					cell = strings.Repeat("-", maxInt(widths[ci], 3))
+				}
+				b.WriteString(cell)
+				for k := len(cell); k < widths[ci]; k++ {
+					b.WriteString(" ")
+				}
+				b.WriteString(" |")
+			}
+			out = append(out, b.String())
+		}
+		rows = nil
+		widths = nil
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|") && strings.Count(trimmed, "|") >= 3 {
+			cells := strings.Split(trimmed, "|")
+			row := make(tableRow, 0, len(cells)-2)
+			for _, cell := range cells[1 : len(cells)-1] {
+				row = append(row, strings.TrimSpace(cell))
+			}
+			rows = append(rows, row)
+			for ci, cell := range row {
+				if ci >= len(widths) {
+					widths = append(widths, 0)
+				}
+				if len(cell) > widths[ci] {
+					widths[ci] = len(cell)
+				}
+			}
+			continue
+		}
+		if len(rows) > 0 {
+			flush()
+		}
+		out = append(out, line)
+	}
+	if len(rows) > 0 {
+		flush()
+	}
+	return out
 }
 
 func ticketSummaryParts(client *missis.Client, summary store.TicketSummary) map[string]string {
@@ -721,52 +867,223 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func wrapText(text string, width int) []string {
-	if width <= 0 {
-		return strings.Split(text, "\n")
-	}
+func wrapIndentedLines(lines []string, width int) []string {
 	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		if len([]rune(line)) <= width {
-			out = append(out, line)
+	var tablePrefix string
+	var tableRows []string
+	flushTable := func() {
+		if len(tableRows) == 0 {
+			return
+		}
+		indent := len(tablePrefix) - len(strings.TrimLeft(tablePrefix, " "))
+		prefix := tablePrefix[:indent]
+		out = append(out, renderTable(tableRows, width-indent, prefix)...)
+		tableRows = nil
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isTableLine(trimmed) {
+			if len(tableRows) == 0 {
+				tablePrefix = line
+			}
+			tableRows = append(tableRows, trimmed)
 			continue
 		}
-		runes := []rune(line)
-		for len(runes) > width {
-			out = append(out, string(runes[:width]))
-			runes = runes[width:]
+		flushTable()
+		out = append(out, wrapLine(line, width)...)
+	}
+	flushTable()
+	return out
+}
+
+func wrapLine(line string, width int) []string {
+	indent := len(line) - len(strings.TrimLeft(line, " "))
+	prefix := line[:indent]
+	content := line[indent:]
+	available := width - indent
+	if available < 1 {
+		available = 1
+	}
+	runes := []rune(content)
+	if len(runes) <= available {
+		return []string{line}
+	}
+	var out []string
+	for len(runes) > available {
+		out = append(out, prefix+string(runes[:available]))
+		runes = runes[available:]
+	}
+	if len(runes) > 0 {
+		out = append(out, prefix+string(runes))
+	}
+	return out
+}
+
+func isTableLine(line string) bool {
+	return strings.HasPrefix(line, "|") && strings.HasSuffix(line, "|") && strings.Count(line, "|") >= 3
+}
+
+func renderTable(rows []string, available int, prefix string) []string {
+	if available < 1 {
+		available = 1
+	}
+	var (
+		cells   [][]string
+		columns int
+	)
+	for _, row := range rows {
+		parts := strings.Split(row, "|")
+		rowCells := make([]string, 0, len(parts)-2)
+		for _, cell := range parts[1 : len(parts)-1] {
+			rowCells = append(rowCells, strings.TrimSpace(cell))
 		}
-		if len(runes) > 0 {
-			out = append(out, string(runes))
+		if len(rowCells) > columns {
+			columns = len(rowCells)
+		}
+		cells = append(cells, rowCells)
+	}
+	if columns == 0 {
+		return nil
+	}
+	widths := make([]int, columns)
+	for _, row := range cells {
+		for ci := 0; ci < columns; ci++ {
+			cell := ""
+			if ci < len(row) {
+				cell = row[ci]
+			}
+			if l := len([]rune(cell)); l > widths[ci] {
+				widths[ci] = l
+			}
+		}
+	}
+	// "| " + " | " between columns + " |"
+	padding := 2 + 3*(columns-1) + 2
+	budget := available - padding
+	if budget < columns {
+		budget = columns
+	}
+	for sumInts(widths) > budget {
+		idx := maxIndex(widths)
+		if widths[idx] <= 1 {
+			break
+		}
+		widths[idx]--
+	}
+	for ci := range widths {
+		if widths[ci] < 1 {
+			widths[ci] = 1
+		}
+	}
+	var out []string
+	for _, row := range cells {
+		if isSeparatorRow(row) {
+			var b strings.Builder
+			b.WriteString("|")
+			for ci := 0; ci < columns; ci++ {
+				b.WriteString(" ")
+				b.WriteString(strings.Repeat("-", widths[ci]))
+				b.WriteString(" |")
+			}
+			out = append(out, prefix+b.String())
+			continue
+		}
+		wrapped := make([][]string, columns)
+		maxLines := 0
+		for ci := 0; ci < columns; ci++ {
+			cell := ""
+			if ci < len(row) {
+				cell = row[ci]
+			}
+			lines := wrapCell(cell, widths[ci])
+			wrapped[ci] = lines
+			if len(lines) > maxLines {
+				maxLines = len(lines)
+			}
+		}
+		for li := 0; li < maxLines; li++ {
+			var b strings.Builder
+			b.WriteString("|")
+			for ci := 0; ci < columns; ci++ {
+				text := ""
+				if li < len(wrapped[ci]) {
+					text = wrapped[ci][li]
+				}
+				b.WriteString(" ")
+				b.WriteString(text)
+				for k := len([]rune(text)); k < widths[ci]; k++ {
+					b.WriteString(" ")
+				}
+				b.WriteString(" |")
+			}
+			out = append(out, prefix+b.String())
 		}
 	}
 	return out
 }
 
-func wrapIndentedLines(lines []string, width int) []string {
+func wrapCell(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
 	var out []string
-	for _, line := range lines {
-		indent := len(line) - len(strings.TrimLeft(line, " "))
-		prefix := line[:indent]
-		content := line[indent:]
-		available := width - indent
-		if available < 1 {
-			available = 1
-		}
-		runes := []rune(content)
-		if len(runes) <= available {
-			out = append(out, line)
+	for _, paragraph := range strings.Split(text, "\n") {
+		words := strings.Fields(paragraph)
+		if len(words) == 0 {
+			out = append(out, "")
 			continue
 		}
-		for len(runes) > available {
-			out = append(out, prefix+string(runes[:available]))
-			runes = runes[available:]
+		current := ""
+		flush := func() {
+			if current != "" {
+				out = append(out, current)
+				current = ""
+			}
 		}
-		if len(runes) > 0 {
-			out = append(out, prefix+string(runes))
+		for _, word := range words {
+			if current == "" {
+				current = word
+			} else if candidate := current + " " + word; len([]rune(candidate)) <= width {
+				current = candidate
+			} else {
+				flush()
+				current = word
+			}
+			for len([]rune(current)) > width {
+				out = append(out, string([]rune(current)[:width]))
+				current = string([]rune(current)[width:])
+			}
 		}
+		flush()
 	}
 	return out
+}
+
+func sumInts(values []int) int {
+	total := 0
+	for _, v := range values {
+		total += v
+	}
+	return total
+}
+
+func maxIndex(values []int) int {
+	idx := 0
+	for i := 1; i < len(values); i++ {
+		if values[i] > values[idx] {
+			idx = i
+		}
+	}
+	return idx
+}
+
+func isSeparatorRow(row []string) bool {
+	for _, cell := range row {
+		if strings.Trim(cell, "-") != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func main() {
