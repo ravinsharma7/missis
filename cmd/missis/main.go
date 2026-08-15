@@ -676,14 +676,14 @@ func runShow(args []string) int {
 		lineage     bool
 		direction   string
 		depth       int
-		relations   string
+		relations   stringList
 		format      string
 		project     string
 		group       string
 		search      string
 		status      string
-		typeFilter  string
-		tagFilter   string
+		typeFilter  stringList
+		tagFilter   stringList
 		version     bool
 		context     bool
 	)
@@ -700,14 +700,14 @@ func runShow(args []string) int {
 	fs.BoolVar(&lineage, "lineage", false, "traverse typed links")
 	fs.StringVar(&direction, "direction", "both", "lineage direction: both, outgoing, or incoming")
 	fs.IntVar(&depth, "depth", 3, "maximum lineage depth")
-	fs.StringVar(&relations, "relations", "", "comma-separated relation allow-list")
+	fs.Var(&relations, "relations", "comma-separated relation allow-list")
 	fs.StringVar(&format, "format", "", "output format: text, json, or markdown")
 	fs.StringVar(&project, "project", "", "show project scope")
 	fs.StringVar(&group, "group", "", "show group scope")
 	fs.StringVar(&search, "search", "", "search query")
 	fs.StringVar(&status, "status", "", "filter by status")
-	fs.StringVar(&typeFilter, "type", "", "filter by type")
-	fs.StringVar(&tagFilter, "tag", "", "filter by tag")
+	fs.Var(&typeFilter, "type", "filter by type")
+	fs.Var(&tagFilter, "tag", "filter by tag")
 	fs.BoolVar(&version, "version", false, "show version")
 	fs.BoolVar(&context, "context", false, "show active project/group context")
 	if err := fs.Parse(args); err != nil {
@@ -792,13 +792,13 @@ func runShow(args []string) int {
 		}
 	}
 
-	if project != "" || group != "" || search != "" || status != "" || typeFilter != "" || tagFilter != "" {
+	if project != "" || group != "" || search != "" || status != "" || len(typeFilter) > 0 || len(tagFilter) > 0 {
 		summaries, err := db.ListTickets(effectiveTime)
 		if err != nil {
 			printError(err, exitStorage, jsonMode, nil)
 			return exitStorage
 		}
-		filtered, err := filterTicketSummaries(db, summaries, search, status, project, group, typeFilter, tagFilter, effectiveTime, knownTime)
+		filtered, err := filterTicketSummaries(db, summaries, search, status, project, group, strings.Join(typeFilter, ","), strings.Join(tagFilter, ","), effectiveTime, knownTime)
 		if err != nil {
 			printError(err, exitStorage, jsonMode, nil)
 			return exitStorage
@@ -861,8 +861,8 @@ func runShow(args []string) int {
 			return exitStorage
 		}
 		relationSet := make(map[string]bool)
-		if relations != "" {
-			for _, relation := range strings.Split(relations, ",") {
+		if len(relations) > 0 {
+			for _, relation := range strings.Split(strings.Join(relations, ","), ",") {
 				relation = strings.TrimSpace(relation)
 				if relation == "" {
 					continue
@@ -2048,6 +2048,9 @@ func projectionText(proj *model.Projection) string {
 }
 
 func partHasValue(proj *model.Projection, path, want string) bool {
+	if want == "" {
+		return true
+	}
 	partID, ok := proj.Paths[path]
 	if !ok {
 		return false
@@ -2058,12 +2061,19 @@ func partHasValue(proj *model.Projection, path, want string) bool {
 	}
 	if len(part.Value.List) > 0 {
 		for _, value := range part.Value.List {
-			if value == want {
-				return true
+			for _, candidate := range strings.Split(want, ",") {
+				if strings.EqualFold(value, strings.TrimSpace(candidate)) {
+					return true
+				}
 			}
 		}
 	}
-	return strings.EqualFold(part.Value.Text, want)
+	for _, candidate := range strings.Split(want, ",") {
+		if strings.EqualFold(part.Value.Text, strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesAllTokens(text, query string) bool {
