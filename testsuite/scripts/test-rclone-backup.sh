@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir -p "$tmp/scripts" "$tmp/issues/missis-store" "$tmp/backups" "$tmp/bin"
+mkdir -p "$tmp/scripts" "$tmp/.missis.d" "$tmp/backups" "$tmp/bin"
 cp "$repo_root/scripts/upload-backup.sh" "$tmp/scripts/upload-backup.sh"
 cp "$repo_root/scripts/download-backup.sh" "$tmp/scripts/download-backup.sh"
 
@@ -13,7 +13,7 @@ store_id="store:TESTSTOREID"
 head_hash="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 backup_basename="${store_id//:/_}-${head_hash}.db"
 backup_path="$tmp/backups/$backup_basename"
-manifest_path="$tmp/issues/missis-store/manifest.json"
+manifest_path="$tmp/.missis.d/manifest.json"
 
 printf 'dummy backup\n' > "$backup_path"
 cat > "$manifest_path" <<EOF

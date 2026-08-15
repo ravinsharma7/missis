@@ -4,7 +4,7 @@ This file is a temporary bootstrap artifact. It is not a long-term document
 store for the project.
 
 Once missis can track its own work, this register will be deleted and the same
-requirements will be represented as missis parts and links inside `issues/`.
+requirements will be represented as missis parts and links inside `.missis.d/`.
 Until then, this file is the traceability spine for the Phase 1 check.
 
 Canonical specification:

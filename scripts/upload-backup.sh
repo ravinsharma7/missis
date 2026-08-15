@@ -13,7 +13,7 @@ if [ -f ".env.local" ]; then
   done < .env.local
 fi
 
-manifest_path="${MISSIS_MANIFEST_PATH:-issues/missis-store/manifest.json}"
+manifest_path="${MISSIS_MANIFEST_PATH:-.missis.d/manifest.json}"
 manifest="$(cat "$manifest_path")"
 store_id="$(printf '%s' "$manifest" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"
 head_hash="$(printf '%s' "$manifest" | sed -n 's/.*"head_hash": "\([^"]*\)".*/\1/p')"

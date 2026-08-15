@@ -11,7 +11,7 @@ has an explicit reference in a test file.
 The checker extracts required IDs from two places:
 
 - every `PH1-*` row in `specs/phase1-requirements.md`;
-- every `N*` row in `issues/phase1-should-backlog.md` whose decision is
+- every `N*` row in `.missis.d/phase1-should-backlog.md` whose decision is
   `adopt`.
 
 Deferred and rejected SHOULD items are not required.
