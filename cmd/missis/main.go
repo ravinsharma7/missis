@@ -1796,6 +1796,7 @@ func outputTicketList(summaries []store.TicketSummary, jsonMode bool) {
 		writeJSON(map[string]any{"tickets": items})
 		return
 	}
+	fmt.Printf("REF\tSTATUS\tTITLE\tRECORDED_AT\n")
 	for _, summary := range summaries {
 		fmt.Printf("%s\t%s\t%s\t%s\n", summary.Ref, summary.Status, summary.Title, summary.RecordedAt.UTC().Format(time.RFC3339))
 	}
