@@ -42,9 +42,9 @@ if command -v rclone >/dev/null 2>&1; then
     echo "MISSIS_RCLONE_REMOTE is not set" >&2
     exit 1
   fi
-  bucket="${MISSIS_RCLONE_BUCKET:-${RCLONE_CONFIG_MISSIS_BUCKET:-}}"
+  bucket="${MISSIS_RCLONE_BUCKET:-}"
   if [ -z "$bucket" ]; then
-    echo "MISSIS_RCLONE_BUCKET or RCLONE_CONFIG_MISSIS_BUCKET is not set" >&2
+    echo "MISSIS_RCLONE_BUCKET is not set" >&2
     exit 1
   fi
   tmpconfig="$(mktemp)"

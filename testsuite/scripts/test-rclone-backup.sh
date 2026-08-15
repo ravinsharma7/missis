@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -116,12 +116,17 @@ run_download_case() {
 }
 
 export MISSIS_RCLONE_BUCKET="test-bucket"
-run_upload_case "new_bucket_variable" "$tmp/upload-new.log"
-run_download_case "new_bucket_variable" "$tmp/download-new.log"
+run_upload_case "required_bucket_variable" "$tmp/upload.log"
+run_download_case "required_bucket_variable" "$tmp/download.log"
 
 unset MISSIS_RCLONE_BUCKET
-export RCLONE_CONFIG_MISSIS_BUCKET="test-bucket"
-run_upload_case "legacy_bucket_variable" "$tmp/upload-legacy.log"
-run_download_case "legacy_bucket_variable" "$tmp/download-legacy.log"
+if (cd "$tmp" && bash scripts/upload-backup.sh >/dev/null 2>&1); then
+  echo "expected upload to fail without MISSIS_RCLONE_BUCKET" >&2
+  exit 1
+fi
+if (cd "$tmp" && bash scripts/download-backup.sh >/dev/null 2>&1); then
+  echo "expected download to fail without MISSIS_RCLONE_BUCKET" >&2
+  exit 1
+fi
 
 echo "rclone backup script tests passed"
