@@ -144,7 +144,7 @@ func runNew(args []string) int {
 	args = reorderArgs(args, map[string]bool{
 		"actor": true, "effective-at": true, "project": true, "priority": true,
 		"type": true, "tag": true, "idempotency-key": true, "store": true,
-		"from": true,
+		"from": true, "kind": true, "id": true,
 	})
 	fs := flag.NewFlagSet("new", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -160,6 +160,8 @@ func runNew(args []string) int {
 		storeFlag   string
 		fromFile    string
 		stdin       bool
+		kind        string
+		id          string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&actor, "actor", "human/local", "actor reference")
@@ -172,6 +174,8 @@ func runNew(args []string) int {
 	fs.StringVar(&storeFlag, "store", "", "store path")
 	fs.StringVar(&fromFile, "from", "", "import Markdown from file")
 	fs.BoolVar(&stdin, "stdin", false, "import Markdown from stdin")
+	fs.StringVar(&kind, "kind", "", "entity kind: project or group")
+	fs.StringVar(&id, "id", "", "entity ID")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -193,6 +197,54 @@ func runNew(args []string) int {
 			printError(err, exitInvalid, jsonMode, nil)
 			return exitInvalid
 		}
+	}
+
+	if kind != "" {
+		if kind != "project" && kind != "group" {
+			printError(fmt.Errorf("invalid kind: %s", kind), exitInvalid, jsonMode, nil)
+			return exitInvalid
+		}
+		if id == "" {
+			printError(fmt.Errorf("--id is required for project or group"), exitInvalid, jsonMode, nil)
+			return exitInvalid
+		}
+		if err := model.ValidatePathSegments([]string{id}); err != nil {
+			printError(err, exitInvalid, jsonMode, nil)
+			return exitInvalid
+		}
+		existing, err := db.LoadEvents()
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+		for _, event := range existing {
+			if event.Target.Kind == model.Kind(kind) && event.Target.Entity == id {
+				printError(fmt.Errorf("%s already exists: %s", kind, id), exitValidation, jsonMode, nil)
+				return exitValidation
+			}
+		}
+		stream := model.Ref{Kind: model.Kind(kind), Entity: id}
+		event := model.Event{
+			ID:          model.EventID(newID("event")),
+			Stream:      stream,
+			Operation:   model.OpCreateEntity,
+			Target:      model.Ref{Kind: model.Kind(kind), Entity: id},
+			Value:       model.Value{Kind: model.ValueKindText, Text: fs.Arg(0)},
+			RecordedAt:  recordedAt,
+			EffectiveAt: effectiveTime,
+			Actor:       parseActor(actor),
+		}
+		result := newResult{Ref: kind + ":" + id, ID: kind + ":" + id, Title: fs.Arg(0), Status: "open", RecordedAt: recordedAt.Format(time.RFC3339)}
+		if _, err := db.AppendBatch([]model.Event{event}, idemKey, nil, &result); err != nil {
+			printError(err, mapStoreError(err), jsonMode, nil)
+			return mapStoreError(err)
+		}
+		if jsonMode {
+			writeJSON(result)
+		} else {
+			fmt.Printf("%s:%s  %s\n", kind, id, fs.Arg(0))
+		}
+		return exitSuccess
 	}
 
 	if fromFile != "" || stdin {
@@ -331,6 +383,7 @@ func runShow(args []string) int {
 		"at": true, "effective-at": true, "known-at": true,
 		"since": true, "between": true, "store": true,
 		"direction": true, "depth": true, "relations": true, "format": true,
+		"project": true, "group": true,
 	})
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -350,6 +403,8 @@ func runShow(args []string) int {
 		depth       int
 		relations   string
 		format      string
+		project     string
+		group       string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -366,6 +421,8 @@ func runShow(args []string) int {
 	fs.IntVar(&depth, "depth", 3, "maximum lineage depth")
 	fs.StringVar(&relations, "relations", "", "comma-separated relation allow-list")
 	fs.StringVar(&format, "format", "", "output format: text, json, or markdown")
+	fs.StringVar(&project, "project", "", "show project scope")
+	fs.StringVar(&group, "group", "", "show group scope")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -430,6 +487,50 @@ func runShow(args []string) int {
 			printError(err, exitInvalid, jsonMode, nil)
 			return exitInvalid
 		}
+	}
+
+	if project != "" || group != "" {
+		scopeKind := model.KindProject
+		scopeID := project
+		if group != "" {
+			scopeKind = model.KindGroup
+			scopeID = group
+		}
+		targetRef := model.Ref{Kind: scopeKind, Entity: scopeID}
+		linkEvents, err := db.LoadLinkEvents()
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+		links, err := model.LinksForRef(linkEvents, targetRef, effectiveTime, knownTime)
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+		items := make([]map[string]any, 0, len(links))
+		for _, link := range links {
+			if link.Direction != "asserted" {
+				continue
+			}
+			if scopeKind == model.KindProject && link.Relation != "contains" {
+				continue
+			}
+			if scopeKind == model.KindGroup && link.Relation != "contains" && link.Relation != "governs" {
+				continue
+			}
+			items = append(items, map[string]any{
+				"relation": link.Relation,
+				"to":       targetText(link.To),
+			})
+		}
+		if jsonMode {
+			writeJSON(map[string]any{"scope": string(scopeKind) + ":" + scopeID, "members": items})
+		} else {
+			for _, item := range items {
+				fmt.Printf("%s %s\n", item["relation"], item["to"])
+			}
+		}
+		return exitSuccess
 	}
 
 	if ref == "" {
@@ -729,6 +830,10 @@ func runSet(args []string) int {
 		return exitSuccess
 	}
 
+	if (add || retract) && strings.HasSuffix(ref, "/links") && (strings.HasPrefix(ref, "project:") || strings.HasPrefix(ref, "group:")) {
+		return runSetScopeLink(db, ref, value, actor, reason, effectiveTime, recordedAt, add, retract, idemKey, jsonMode)
+	}
+
 	baseTicketID, basePath, err := resolveTicketRef(db, ref, effectiveTime)
 	if err == nil && len(basePath) > 0 && basePath[len(basePath)-1] == "links" && (add || retract) {
 		return runSetLink(db, ref, baseTicketID, basePath, value, actor, reason, effectiveTime, recordedAt, add, retract, idemKey, jsonMode)
@@ -950,6 +1055,66 @@ func runSetLink(db *store.Store, ref string, ticketID model.TicketID, path []str
 		Operation: string(operation),
 		Value:     relation + ":" + targetStr,
 	}
+	outcome, err := db.AppendBatch([]model.Event{event}, idemKey, nil, &result)
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			printError(err, exitConflict, jsonMode, &ref)
+			return exitConflict
+		}
+		printError(err, mapStoreError(err), jsonMode, &ref)
+		return mapStoreError(err)
+	}
+	if len(outcome.Events) > 0 {
+		result.Event = "@e" + fmt.Sprintf("%d", outcome.Events[len(outcome.Events)-1].AliasSeq)
+	}
+	if jsonMode {
+		writeJSON(result)
+	} else {
+		fmt.Printf("%s %s %s\n", ref, operation, result.Value)
+	}
+	return exitSuccess
+}
+
+func runSetScopeLink(db *store.Store, ref, value, actor, reason string, effectiveTime, recordedAt time.Time, add, retract bool, idemKey string, jsonMode bool) int {
+	if !add && !retract {
+		printError(fmt.Errorf("link mutation requires --add or --retract"), exitInvalid, jsonMode, &ref)
+		return exitInvalid
+	}
+	relation, targetStr, ok := strings.Cut(value, ":")
+	if !ok || relation == "" || targetStr == "" {
+		printError(fmt.Errorf("link value must be relation:ref"), exitInvalid, jsonMode, &ref)
+		return exitInvalid
+	}
+	if !model.ValidRelation(relation) {
+		printError(fmt.Errorf("unsupported relation: %s", relation), exitValidation, jsonMode, &ref)
+		return exitValidation
+	}
+	fromRef, err := resolveAnyRef(db, strings.TrimSuffix(ref, "/links"), "", effectiveTime)
+	if err != nil {
+		printError(err, exitNotFound, jsonMode, &ref)
+		return exitNotFound
+	}
+	toRef, err := resolveAnyRef(db, targetStr, "", effectiveTime)
+	if err != nil {
+		printError(err, exitNotFound, jsonMode, &targetStr)
+		return exitNotFound
+	}
+	operation := model.OpAssertLink
+	if retract {
+		operation = model.OpRetractLink
+	}
+	stream := model.Ref{Kind: fromRef.Kind, Entity: fromRef.Entity}
+	event := model.Event{
+		Stream:      stream,
+		Operation:   operation,
+		Target:      fromRef,
+		Value:       model.Value{Text: relation, Ref: &toRef},
+		RecordedAt:  recordedAt,
+		EffectiveAt: effectiveTime,
+		Actor:       parseActor(actor),
+		Reason:      reason,
+	}
+	result := setResult{Ref: ref, Operation: string(operation), Value: relation + ":" + targetStr}
 	outcome, err := db.AppendBatch([]model.Event{event}, idemKey, nil, &result)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -1519,6 +1684,12 @@ func resolveAnyRef(db *store.Store, ref string, ticketID model.TicketID, effecti
 	}
 	if strings.HasPrefix(ref, "ticket:") {
 		return model.Ref{Kind: model.KindTicket, Entity: strings.TrimPrefix(ref, "ticket:")}, nil
+	}
+	if strings.HasPrefix(ref, "project:") {
+		return model.Ref{Kind: model.KindProject, Entity: strings.TrimPrefix(ref, "project:")}, nil
+	}
+	if strings.HasPrefix(ref, "group:") {
+		return model.Ref{Kind: model.KindGroup, Entity: strings.TrimPrefix(ref, "group:")}, nil
 	}
 	if strings.HasPrefix(ref, "@") {
 		event, err := db.GetEventByAlias(ref)

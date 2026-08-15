@@ -10,8 +10,8 @@ func ValidateAppend(existing []Event, proposed Event) error {
 	if proposed.ID == "" {
 		return fmt.Errorf("event ID is required")
 	}
-	if proposed.Stream.Kind != KindTicket || proposed.Stream.Entity == "" {
-		return fmt.Errorf("event stream must be a ticket reference")
+	if proposed.Stream.Kind == "" || proposed.Stream.Entity == "" {
+		return fmt.Errorf("event stream is required")
 	}
 	if proposed.Actor.ID == "" && proposed.Actor.Name == "" {
 		return fmt.Errorf("actor is required")
