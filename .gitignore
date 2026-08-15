@@ -3,3 +3,4 @@
 backups/
 .env.local
 .missis.d/exports/
+.missis.d/active.local.md

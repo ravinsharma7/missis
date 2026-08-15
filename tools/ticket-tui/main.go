@@ -59,7 +59,11 @@ func newModel() (*tuiModel, error) {
 		return nil, err
 	}
 	projectCtx, groupCtx := "none", "none"
-	if data, readErr := os.ReadFile(filepath.Join(".missis.d", "active.md")); readErr == nil {
+	activePath := filepath.Join(".missis.d", "active.local.md")
+	if _, statErr := os.Stat(activePath); statErr != nil {
+		activePath = filepath.Join(".missis.d", "active.example.md")
+	}
+	if data, readErr := os.ReadFile(activePath); readErr == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "project:") {

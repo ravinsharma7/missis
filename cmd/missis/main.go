@@ -198,7 +198,11 @@ func printVersion(jsonMode bool) {
 
 func outputContext(storePath string, jsonMode bool) {
 	project, group, focus := "none", "none", ""
-	if data, err := os.ReadFile(filepath.Join(".missis.d", "active.md")); err == nil {
+	activePath := filepath.Join(".missis.d", "active.local.md")
+	if _, err := os.Stat(activePath); err != nil {
+		activePath = filepath.Join(".missis.d", "active.example.md")
+	}
+	if data, err := os.ReadFile(activePath); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "project:") {
