@@ -24,7 +24,7 @@ import (
 var ErrConflict = errors.New("optimistic concurrency conflict")
 
 type Precondition struct {
-	TargetEntity       string
+	TargetEntity         string
 	ExpectedCurrentEvent model.EventID
 }
 
@@ -402,6 +402,110 @@ func (s *Store) CheckConsistency() error {
 		return fmt.Errorf("head hash mismatch")
 	}
 	return nil
+}
+
+type streamKey struct {
+	kind   string
+	entity string
+}
+
+func (s *Store) RepairSequenceGaps() error {
+	events, err := s.LoadEvents()
+	if err != nil {
+		return err
+	}
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].AliasSeq < events[j].AliasSeq
+	})
+
+	byStream := make(map[streamKey][]model.Event)
+	for _, event := range events {
+		key := streamKey{kind: string(event.Stream.Kind), entity: event.Stream.Entity}
+		byStream[key] = append(byStream[key], event)
+	}
+	streams := make([]streamKey, 0, len(byStream))
+	for key := range byStream {
+		streams = append(streams, key)
+	}
+	sort.Slice(streams, func(i, j int) bool {
+		if streams[i].kind != streams[j].kind {
+			return streams[i].kind < streams[j].kind
+		}
+		return streams[i].entity < streams[j].entity
+	})
+
+	byID := make(map[model.EventID]model.Event, len(events))
+	for _, event := range events {
+		byID[event.ID] = event
+	}
+
+	tx, err := s.writer.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, key := range streams {
+		streamEvents := byStream[key]
+		sort.Slice(streamEvents, func(i, j int) bool {
+			return streamEvents[i].AliasSeq < streamEvents[j].AliasSeq
+		})
+		for i := range streamEvents {
+			expected := uint64(i + 1)
+			event := streamEvents[i]
+			if event.Sequence == expected {
+				continue
+			}
+			event.Sequence = expected
+			event.PreviousHash = ""
+			event.Hash = ""
+			raw, marshalErr := json.Marshal(event)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if _, execErr := tx.Exec(
+				`UPDATE events SET sequence = ?, event_json = ? WHERE id = ?`,
+				expected, string(raw), string(event.ID),
+			); execErr != nil {
+				return execErr
+			}
+			streamEvents[i] = event
+			byID[event.ID] = event
+		}
+		if _, execErr := tx.Exec(
+			`UPDATE streams SET next_sequence = ? WHERE stream_kind = ? AND stream_entity = ?`,
+			uint64(len(streamEvents)+1), key.kind, key.entity,
+		); execErr != nil {
+			return execErr
+		}
+	}
+
+	ordered := make([]model.Event, 0, len(events))
+	for _, event := range events {
+		ordered = append(ordered, byID[event.ID])
+	}
+
+	if _, execErr := tx.Exec(`DELETE FROM event_hashes`); execErr != nil {
+		return execErr
+	}
+	previous := ""
+	for _, event := range ordered {
+		hash := computeEventHash(event, previous)
+		if _, execErr := tx.Exec(
+			`INSERT INTO event_hashes (event_id, previous_hash, hash) VALUES (?, ?, ?)`,
+			event.ID, previous, hash,
+		); execErr != nil {
+			return execErr
+		}
+		previous = hash
+	}
+	if _, execErr := tx.Exec(
+		`UPDATE store_meta SET head_hash = ?, updated_at = ? WHERE singleton = 1`,
+		previous, time.Now().UTC().Format(time.RFC3339Nano),
+	); execErr != nil {
+		return execErr
+	}
+	return tx.Commit()
 }
 
 func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, preconditions []Precondition, result any) (AppendOutcome, error) {

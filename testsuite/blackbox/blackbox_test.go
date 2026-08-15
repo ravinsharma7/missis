@@ -325,6 +325,38 @@ func TestMissisFileRelativeMarker(t *testing.T) {
 	}
 }
 
+func TestMissisFileInvalidMultipleLines(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".missis"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := runMissisWithEnv(t, "", projectDir, nil, "show", "--json")
+	if result.code != 2 {
+		t.Fatalf("expected invalid marker exit 2, got %d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+}
+
+func TestMissisFileInvalidEmptyMarker(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".missis"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := runMissisWithEnv(t, "", projectDir, nil, "show", "--json")
+	if result.code != 2 {
+		t.Fatalf("expected invalid empty marker exit 2, got %d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+}
+
 func TestMissisFileAbsoluteMarker(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()

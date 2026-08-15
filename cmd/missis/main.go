@@ -217,7 +217,11 @@ func runNew(args []string) int {
 	}
 
 	title := fs.Arg(0)
-	storePath := resolveStorePath(storeFlag)
+	storePath, err := resolveStorePath(storeFlag)
+	if err != nil {
+		printError(err, exitInvalid, jsonMode, nil)
+		return exitInvalid
+	}
 	db, err := store.Open(storePath)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
@@ -482,7 +486,11 @@ func runShow(args []string) int {
 	}
 
 	ref := fs.Arg(0)
-	storePath := resolveStorePath(storeFlag)
+	storePath, err := resolveStorePath(storeFlag)
+	if err != nil {
+		printError(err, exitInvalid, jsonMode, nil)
+		return exitInvalid
+	}
 	db, err := store.Open(storePath)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
@@ -775,7 +783,11 @@ func runSet(args []string) int {
 	ref := fs.Arg(0)
 	value := fs.Arg(1)
 
-	storePath := resolveStorePath(storeFlag)
+	storePath, err := resolveStorePath(storeFlag)
+	if err != nil {
+		printError(err, exitInvalid, jsonMode, nil)
+		return exitInvalid
+	}
 	db, err := store.Open(storePath)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
@@ -1204,50 +1216,61 @@ func partEvent(stream model.Ref, path string, value any, kind model.ValueKind, a
 	}
 }
 
-func resolveStorePath(storeFlag string) string {
+func resolveStorePath(storeFlag string) (string, error) {
 	if storeFlag != "" {
-		return storeFlag
+		return storeFlag, nil
 	}
-	if marker, ok := findMissisMarker(); ok {
-		return marker
+	marker, err := findMissisMarker()
+	if err != nil {
+		return "", err
+	}
+	if marker != "" {
+		return marker, nil
 	}
 	if env := os.Getenv("MISSIS_STORE"); env != "" {
-		return env
+		return env, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".", ".missis", "missis.db")
+		return filepath.Join(".", ".missis", "missis.db"), nil
 	}
-	return filepath.Join(home, ".local", "share", "missis", "missis.db")
+	return filepath.Join(home, ".local", "share", "missis", "missis.db"), nil
 }
 
-func findMissisMarker() (string, bool) {
+func findMissisMarker() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
-		return "", false
+		return "", nil
 	}
 	for {
 		marker := filepath.Join(dir, ".missis")
 		info, statErr := os.Stat(marker)
 		if statErr == nil {
 			if info.IsDir() {
-				return filepath.Join(marker, "missis.db"), true
+				return filepath.Join(marker, "missis.db"), nil
 			}
 			data, readErr := os.ReadFile(marker)
-			if readErr == nil {
-				line := strings.TrimSpace(string(data))
-				if line == "" {
-					return filepath.Join(dir, ".missis", "missis.db"), true
-				}
-				if filepath.IsAbs(line) {
-					return line, true
-				}
-				return filepath.Join(dir, line), true
+			if readErr != nil {
+				return "", readErr
 			}
+			line := strings.TrimSpace(string(data))
+			if line == "" {
+				return "", fmt.Errorf(".missis marker is empty; expected one store path line")
+			}
+			if strings.ContainsRune(line, '\n') {
+				return "", fmt.Errorf(".missis marker must contain exactly one line")
+			}
+			if strings.ContainsRune(line, 0) {
+				return "", fmt.Errorf(".missis marker contains a NUL byte")
+			}
+			if filepath.IsAbs(line) {
+				return line, nil
+			}
+			return filepath.Join(dir, line), nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", false
+			return "", nil
 		}
 		dir = parent
 	}
