@@ -106,6 +106,7 @@ Initialize a local missis project:
 
 ```bash
 missis --init
+missis --start
 missis --init --store ./.missis-store/missis.db
 ```
 

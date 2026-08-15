@@ -346,7 +346,7 @@ func main() {
 		usage()
 		os.Exit(exitInvalid)
 	}
-	if os.Args[1] == "--init" {
+	if os.Args[1] == "--init" || os.Args[1] == "--start" {
 		os.Exit(runInit(os.Args[2:]))
 	}
 	if os.Args[1] == "--self-update-check" || os.Args[1] == "--self-update" {
@@ -378,7 +378,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  missis [--init] [--self-update-check|--self-update]")
+	fmt.Fprintln(os.Stderr, "  missis [--init|--start] [--self-update-check|--self-update]")
 	fmt.Fprintln(os.Stderr, "  missis new|show|set ...")
 }
 
