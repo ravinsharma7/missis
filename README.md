@@ -1,14 +1,30 @@
-# Three core parts to "missis"
-- the core specs
-- the core test suite
-- the core reference implementation
+# What is missis?
+
+The repository is organized around three core artifacts:
+
+- canonical specifications
+- a portable black-box test suite
+- a reference implementation
 
 # Introduction
-- missis has three domain commands and a small allowlist of global operational flags. it is purposely simple in the interface, but the implementation is aggressively complicated. This allows any system integration without complicated interfaces.
-- The global flag allowlist may grow only for process-level maintenance or inspection flags. It must not introduce new command paths, ticket mutations, or domain workflows; those stay under `new`, `show`, or `set`.
-- You can hack and build your own "missis" implementation by reusing and mixing any parts of these. it is organized in this way to make it easy to cleanroom port into another language, or extend or change parts of it for different purposes. These three are always stable and constantly will be made more rigorous so anything project extending from this will always have a strong baseline.
-- All three implementation will expose some flaws in each other and can be used as basis to continuously improve each other.
-- This project uses AI heavily to experiment with matters.
+
+`missis` exposes three domain commands:
+
+```text
+missis new
+missis show
+missis set
+```
+
+It also permits a small allowlist of global operational flags for process-level
+maintenance or inspection. Those flags must not create new domain workflows.
+
+The event ledger is authoritative. Tickets, parts, links, and views are derived
+projections over immutable events.
+
+The repository is intended to be cleanroom-portable: the specs and black-box
+suite define the contract, while the reference implementation demonstrates one
+concrete implementation.
 
 # Install
 
