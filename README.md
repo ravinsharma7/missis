@@ -45,6 +45,31 @@ missis show --version
 missis show --health
 ```
 
+## Deletion and retraction
+
+`missis` does not support destructive delete. The event ledger is append-only.
+
+To remove a part value from current views:
+
+```bash
+missis set '#12/notes' --retract --reason "remove current value"
+```
+
+To remove a part and its children from current views:
+
+```bash
+missis set '#12/analysis' --retract --recursive --reason "remove subtree"
+```
+
+To remove a link:
+
+```bash
+missis set '#12/links' --retract "blocked-by:#15"
+```
+
+Whole-ticket retraction is not implemented yet. Ticket identity remains in the
+event ledger, so do not treat part retraction as a hard delete.
+
 Check for a newer published module:
 
 ```bash
