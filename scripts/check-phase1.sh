@@ -7,6 +7,9 @@ cd "$root"
 echo "== model and store tests =="
 go test ./...
 
+echo "== rclone backup script tests =="
+bash scripts/test-rclone-backup.sh
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 bin="$tmpdir/missis"
