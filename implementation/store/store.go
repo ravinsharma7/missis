@@ -575,8 +575,17 @@ func (s *Store) appendBatchWithRetry(events []model.Event, idempotencyKey string
 		alias   uint64
 		err     error
 	)
+	originalSequences := make([]uint64, len(events))
+	for i := range events {
+		originalSequences[i] = events[i].Sequence
+	}
 	for attempt := 0; attempt < 6; attempt++ {
-		outcome, alias, err = s.appendBatchOnce(events, idempotencyKey, preconditions, result, allocateAlias)
+		attemptEvents := make([]model.Event, len(events))
+		copy(attemptEvents, events)
+		for i := range attemptEvents {
+			attemptEvents[i].Sequence = originalSequences[i]
+		}
+		outcome, alias, err = s.appendBatchOnce(attemptEvents, idempotencyKey, preconditions, result, allocateAlias)
 		if err == nil || !isRetryableAppendError(err) {
 			return outcome, alias, err
 		}
