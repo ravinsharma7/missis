@@ -28,7 +28,7 @@ For the current active project/group/ticket focus, read `.missis.d/active.md`.
 
 Default active project and group are both `none`. Projects and groups are
 supported by missis, but this repository is not currently using them as active
-scopes.
+scopes. They can be created later and linked to existing tickets at any time.
 
 Run these to verify the current setup:
 
