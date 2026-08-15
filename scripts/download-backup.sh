@@ -49,6 +49,8 @@ if [[ "$remote_path" == *: ]]; then
 else
   remote_root="${remote_path}"
 fi
+# Keep the object key content-addressed by store_id and head_hash.
+# Do not introduce a human-readable fixed key such as latest.db.
 remote_source="${remote_root}/${store_id}/${head_hash}.db"
 rclone --config "$tmpconfig" --s3-no-check-bucket copyto "$remote_source" "$dest"
 

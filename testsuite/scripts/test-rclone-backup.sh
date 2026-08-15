@@ -91,6 +91,10 @@ run_upload_case() {
   echo "upload_case=$name" >> "$log"
   grep -q 'no_check=1' "$log"
   grep -q "dest=missis:test-bucket/${store_id}/${head_hash}.db" "$log"
+  if grep -Eq '/(latest|production)\.db$' "$log"; then
+    echo "unexpected human-readable fixed key in $name" >&2
+    return 1
+  fi
   if grep -q '^bucket =' "$log"; then
     echo "unexpected rclone bucket config in $name" >&2
     return 1
@@ -108,6 +112,10 @@ run_download_case() {
   echo "download_case=$name" >> "$log"
   grep -q 'no_check=1' "$log"
   grep -q "source=missis:test-bucket/${store_id}/${head_hash}.db" "$log"
+  if grep -Eq '/(latest|production)\.db$' "$log"; then
+    echo "unexpected human-readable fixed key in $name" >&2
+    return 1
+  fi
   if grep -q '^bucket =' "$log"; then
     echo "unexpected rclone bucket config in $name" >&2
     return 1
