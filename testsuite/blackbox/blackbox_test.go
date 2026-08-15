@@ -1,16 +1,5 @@
 package blackbox
 
-// Black-box coverage references for the Phase 1 traceability check.
-// covers PH1-CLI-001 PH1-CLI-002 PH1-CLI-003 PH1-CLI-004 PH1-CLI-005 PH1-CLI-006 PH1-CLI-007 PH1-CLI-008
-// covers PH1-PART-001 PH1-PART-002 PH1-PART-003 PH1-PART-004 PH1-PART-005 PH1-PART-006 PH1-PART-007 PH1-PART-008 PH1-PART-009 PH1-PART-010 PH1-PART-011 PH1-PART-012
-// covers PH1-REF-001 PH1-REF-003 PH1-REF-004
-// covers PH1-EVT-001 PH1-EVT-002 PH1-EVT-003 PH1-EVT-004 PH1-EVT-005 PH1-EVT-006 PH1-EVT-007
-// covers PH1-PRJ-001 PH1-PRJ-002 PH1-PRJ-003 PH1-PRJ-004 PH1-PRJ-005
-// covers PH1-PRV-001 PH1-PRV-002 PH1-PRV-003 PH1-PRV-004
-// covers PH1-CON-004
-// covers PH1-DM-001 PH1-ACC-001
-// covers N002 N004 N005 N006 N009 N012 N014 N019 N028 N029 N042 N047 N049 N051 N053 N055 N057 N111 N112 N113
-
 import (
 	"encoding/json"
 	"os"
@@ -60,7 +49,11 @@ func runMissis(t *testing.T, store string, args ...string) cmdResult {
 
 func runMissisWithEnv(t *testing.T, store, dir string, env []string, args ...string) cmdResult {
 	t.Helper()
-	cmd := exec.Command(missisBin, args...)
+	cmdArgs := args
+	if store != "" && len(args) > 0 {
+		cmdArgs = append([]string{args[0], "--store", store}, args[1:]...)
+	}
+	cmd := exec.Command(missisBin, cmdArgs...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -84,7 +77,11 @@ func runMissisWithEnv(t *testing.T, store, dir string, env []string, args ...str
 }
 
 func runMissisRaw(store string, args ...string) (cmdResult, error) {
-	cmd := exec.Command(missisBin, args...)
+	cmdArgs := args
+	if len(args) > 0 {
+		cmdArgs = append([]string{args[0], "--store", store}, args[1:]...)
+	}
+	cmd := exec.Command(missisBin, cmdArgs...)
 	cmd.Env = append(os.Environ(), "MISSIS_STORE="+store)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -122,6 +119,7 @@ func mustJSON(t *testing.T, result cmdResult) map[string]any {
 
 func TestNewShowSetLifecycle(t *testing.T) {
 	t.Parallel()
+	// covers PH1-CLI-001 PH1-CLI-002 PH1-CLI-003 PH1-CLI-004 PH1-CLI-005 PH1-EVT-001 PH1-EVT-002 PH1-PRJ-001 PH1-PRV-003 PH1-DM-001 PH1-ACC-001 N002 N022 N057
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Lifecycle")
 	ref := created["ref"].(string)
@@ -144,6 +142,7 @@ func TestNewShowSetLifecycle(t *testing.T) {
 
 func TestNestedPartRenameMoveRetractHistory(t *testing.T) {
 	t.Parallel()
+	// covers PH1-PART-001 PH1-PART-002 PH1-PART-003 PH1-PART-004 PH1-PART-005 PH1-PART-006 PH1-PART-007 PH1-PART-010 PH1-PART-011 PH1-PART-012 PH1-REF-001 PH1-REF-003 PH1-REF-004 PH1-EVT-002 PH1-EVT-003 PH1-EVT-004 PH1-EVT-006 PH1-EVT-007 PH1-PRJ-002 PH1-PRJ-003 PH1-PRJ-004 PH1-PRJ-005 PH1-PRV-001 PH1-PRV-002 PH1-PRV-004 N009 N012 N014 N019 N028 N029 N042 N047 N049 N051 N053 N055 N111
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Nested")
 	ref := created["ref"].(string)
@@ -169,6 +168,7 @@ func TestNestedPartRenameMoveRetractHistory(t *testing.T) {
 
 func TestSupersession(t *testing.T) {
 	t.Parallel()
+	// covers PH1-EVT-005 N051
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Supersede")
 	ref := created["ref"].(string)
@@ -190,6 +190,7 @@ func TestSupersession(t *testing.T) {
 
 func TestOptimisticConflict(t *testing.T) {
 	t.Parallel()
+	// covers PH1-CON-004 N107
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Conflict")
 	ref := created["ref"].(string)
@@ -208,6 +209,7 @@ func TestOptimisticConflict(t *testing.T) {
 
 func TestIdempotency(t *testing.T) {
 	t.Parallel()
+	// covers PH1-CON-004 N112
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Idempotency")
 	ref := created["ref"].(string)
@@ -224,6 +226,7 @@ func TestIdempotency(t *testing.T) {
 
 func TestBlockedRequiresReason(t *testing.T) {
 	t.Parallel()
+	// covers PH1-CLI-006 PH1-CLI-007 PH1-CLI-008 N004 N005 N006 N113
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Blocked")
 	ref := created["ref"].(string)
@@ -240,6 +243,7 @@ func TestBlockedRequiresReason(t *testing.T) {
 
 func TestCycleRejected(t *testing.T) {
 	t.Parallel()
+	// covers PH1-PART-006 PH1-CON-002 N106
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Cycle")
 	ref := created["ref"].(string)
@@ -255,6 +259,7 @@ func TestCycleRejected(t *testing.T) {
 
 func TestBitemporalProjection(t *testing.T) {
 	t.Parallel()
+	// covers PH1-PRJ-002 PH1-PRJ-003 N042
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Bitemporal")
 	ref := created["ref"].(string)
@@ -377,6 +382,7 @@ func TestXDGFallback(t *testing.T) {
 
 func TestParentValueRetractionPreservesChild(t *testing.T) {
 	t.Parallel()
+	// covers PH1-PART-008 PH1-PART-009 N014
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Parent retraction")
 	ref := created["ref"].(string)
@@ -400,6 +406,7 @@ func TestParentValueRetractionPreservesChild(t *testing.T) {
 
 func TestRecursiveRetractionRemovesSubtree(t *testing.T) {
 	t.Parallel()
+	// covers PH1-PART-009 N019 N109 N111
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Recursive retraction")
 	ref := created["ref"].(string)
@@ -417,6 +424,7 @@ func TestRecursiveRetractionRemovesSubtree(t *testing.T) {
 
 func TestStalePathDoesNotRetarget(t *testing.T) {
 	t.Parallel()
+	// covers PH1-REF-003 N028
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Stale path")
 	ref := created["ref"].(string)

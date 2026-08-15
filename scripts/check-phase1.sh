@@ -25,12 +25,14 @@ awk -F'|' '/^\| N[0-9]+ / {
   if (decision == "adopt") print id;
 }' issues/phase1-should-backlog.md >> "$required_file"
 
-test_files=$(find testsuite/blackbox implementation/model -name '*_test.go' -type f)
+coverage_manifest="$tmpdir/coverage.txt"
+go run ./tools/coverage > "$coverage_manifest"
+
 missing=0
 while IFS= read -r id; do
   id="$(printf '%s' "$id" | tr -d '[:space:]')"
   [ -z "$id" ] && continue
-  if ! grep -qF -- "$id" $test_files; then
+  if ! grep -qF -- "$id" "$coverage_manifest"; then
     echo "missing coverage: $id"
     missing=1
   fi
