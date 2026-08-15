@@ -674,3 +674,45 @@ func TestPartLevelLinks(t *testing.T) {
 		t.Fatalf("expected part-level references: %v", refs["links"])
 	}
 }
+
+func TestMarkdownImportNew(t *testing.T) {
+	t.Parallel()
+	// covers PH3-MD-001 PH3-MD-002
+	store := filepath.Join(t.TempDir(), "missis.db")
+	file := filepath.Join(t.TempDir(), "issue.md")
+	content := "# Imported issue\n\n## Problem\n\nThe problem body.\n\n## Evidence\n\nEvidence body.\n"
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := runMissis(t, store, "new", "--json", "--from", file)
+	if result.code != 0 {
+		t.Fatalf("new --from failed: %d %s", result.code, result.stderr)
+	}
+	created := mustJSON(t, result)
+	ref := created["ref"].(string)
+	shown := mustJSON(t, runMissis(t, store, "show", "--json", ref))
+	parts := shown["parts"].(map[string]any)
+	if _, ok := parts["imported-issue/problem"]; !ok {
+		t.Fatalf("imported problem part missing: %v", parts)
+	}
+}
+
+func TestMarkdownImportSet(t *testing.T) {
+	t.Parallel()
+	// covers PH3-MD-003 PH3-MD-004
+	store := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, store, "import target")
+	file := filepath.Join(t.TempDir(), "issue.md")
+	if err := os.WriteFile(file, []byte("# Extra\n\n## Detail\n\nBody.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := runMissis(t, store, "set", "--json", created["ref"].(string), "--from", file)
+	if result.code != 0 {
+		t.Fatalf("set --from failed: %d %s", result.code, result.stderr)
+	}
+	shown := mustJSON(t, runMissis(t, store, "show", "--json", created["ref"].(string)))
+	parts := shown["parts"].(map[string]any)
+	if _, ok := parts["extra/detail"]; !ok {
+		t.Fatalf("imported set part missing: %v", parts)
+	}
+}

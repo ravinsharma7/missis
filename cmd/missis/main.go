@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -143,6 +144,7 @@ func runNew(args []string) int {
 	args = reorderArgs(args, map[string]bool{
 		"actor": true, "effective-at": true, "project": true, "priority": true,
 		"type": true, "tag": true, "idempotency-key": true, "store": true,
+		"from": true,
 	})
 	fs := flag.NewFlagSet("new", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -156,6 +158,8 @@ func runNew(args []string) int {
 		tags        stringList
 		idemKey     string
 		storeFlag   string
+		fromFile    string
+		stdin       bool
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&actor, "actor", "human/local", "actor reference")
@@ -166,6 +170,8 @@ func runNew(args []string) int {
 	fs.Var(&tags, "tag", "ticket tag")
 	fs.StringVar(&idemKey, "idempotency-key", "", "idempotency key")
 	fs.StringVar(&storeFlag, "store", "", "store path")
+	fs.StringVar(&fromFile, "from", "", "import Markdown from file")
+	fs.BoolVar(&stdin, "stdin", false, "import Markdown from stdin")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -187,6 +193,53 @@ func runNew(args []string) int {
 			printError(err, exitInvalid, jsonMode, nil)
 			return exitInvalid
 		}
+	}
+
+	if fromFile != "" || stdin {
+		content, artifact, err := readImportSource(fromFile, stdin)
+		if err != nil {
+			printError(err, exitInvalid, jsonMode, nil)
+			return exitInvalid
+		}
+		parts, err := model.ParseMarkdownParts(content)
+		if err != nil {
+			printError(err, exitValidation, jsonMode, nil)
+			return exitValidation
+		}
+		title := fs.Arg(0)
+		if title == "" {
+			if fromFile != "" {
+				title = filepath.Base(fromFile)
+			} else {
+				title = "stdin"
+			}
+		}
+		ticketID := model.TicketID(newID("ticket"))
+		batchID := model.BatchID(newID("batch"))
+		stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+		actorRef := parseActor(actor)
+		events := []model.Event{
+			newEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actorRef, recordedAt, effectiveTime, batchID, ""),
+			partEvent(stream, "title", title, model.ValueKindText, actorRef, recordedAt, effectiveTime, batchID),
+			partEvent(stream, "status", "open", model.ValueKindStatus, actorRef, recordedAt, effectiveTime, batchID),
+		}
+		events = append(events, buildImportEvents(stream, parts, actorRef, recordedAt, effectiveTime, batchID, artifact)...)
+		result := newResult{}
+		outcome, alias, err := db.AppendTicketBatch(events, idemKey, &result)
+		if err != nil {
+			printError(err, mapStoreError(err), jsonMode, nil)
+			return mapStoreError(err)
+		}
+		if outcome.Replayed {
+			writeNewResult(jsonMode, result)
+			return exitSuccess
+		}
+		result = newResult{Ref: "#" + strconv.FormatUint(alias, 10), ID: string(ticketID), Title: title, Status: "open", Project: stringPtrOrNil(project), RecordedAt: recordedAt.Format(time.RFC3339)}
+		if idemKey != "" {
+			_ = db.UpdateIdempotencyResult(idemKey, result)
+		}
+		writeNewResult(jsonMode, result)
+		return exitSuccess
 	}
 
 	ticketID := model.TicketID(newID("ticket"))
@@ -511,6 +564,7 @@ func runSet(args []string) int {
 		"actor": true, "effective-at": true, "reason": true, "name": true,
 		"parent": true, "supersedes": true, "because": true,
 		"if-current": true, "idempotency-key": true, "store": true,
+		"from": true,
 	})
 	fs := flag.NewFlagSet("set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -529,6 +583,8 @@ func runSet(args []string) int {
 		ifCurrent   string
 		idemKey     string
 		storeFlag   string
+		fromFile    string
+		stdin       bool
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&actor, "actor", "human/local", "actor reference")
@@ -544,6 +600,8 @@ func runSet(args []string) int {
 	fs.StringVar(&ifCurrent, "if-current", "", "expected current event alias")
 	fs.StringVar(&idemKey, "idempotency-key", "", "idempotency key")
 	fs.StringVar(&storeFlag, "store", "", "store path")
+	fs.StringVar(&fromFile, "from", "", "import Markdown from file")
+	fs.BoolVar(&stdin, "stdin", false, "import Markdown from stdin")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -570,6 +628,50 @@ func runSet(args []string) int {
 			printError(err, exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
+	}
+
+	if fromFile != "" || stdin {
+		content, artifact, err := readImportSource(fromFile, stdin)
+		if err != nil {
+			printError(err, exitInvalid, jsonMode, &ref)
+			return exitInvalid
+		}
+		parts, err := model.ParseMarkdownParts(content)
+		if err != nil {
+			printError(err, exitValidation, jsonMode, &ref)
+			return exitValidation
+		}
+		ticketID, partPath, err := resolveTicketRef(db, ref, effectiveTime)
+		if err != nil {
+			printError(err, exitNotFound, jsonMode, &ref)
+			return exitNotFound
+		}
+		if len(partPath) != 0 {
+			printError(fmt.Errorf("import target must be a ticket reference"), exitInvalid, jsonMode, &ref)
+			return exitInvalid
+		}
+		stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+		batchID := model.BatchID(newID("batch"))
+		events := buildImportEvents(stream, parts, parseActor(actor), recordedAt, effectiveTime, batchID, artifact)
+		result := setResult{Ref: ref, Operation: "import", Value: len(events)}
+		outcome, err := db.AppendBatch(events, idemKey, nil, &result)
+		if err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				printError(err, exitConflict, jsonMode, &ref)
+				return exitConflict
+			}
+			printError(err, mapStoreError(err), jsonMode, &ref)
+			return mapStoreError(err)
+		}
+		if len(outcome.Events) > 0 {
+			result.Event = "@e" + fmt.Sprintf("%d", outcome.Events[len(outcome.Events)-1].AliasSeq)
+		}
+		if jsonMode {
+			writeJSON(result)
+		} else {
+			fmt.Printf("%s import %d parts\n", ref, len(events))
+		}
+		return exitSuccess
 	}
 
 	baseTicketID, basePath, err := resolveTicketRef(db, ref, effectiveTime)
@@ -947,6 +1049,87 @@ func stringPtrOrNil(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func readImportSource(from string, stdin bool) (string, string, error) {
+	if from != "" && stdin {
+		return "", "", fmt.Errorf("--from and --stdin cannot be used together")
+	}
+	if from != "" {
+		data, err := os.ReadFile(from)
+		if err != nil {
+			return "", "", err
+		}
+		return string(data), "artifact:" + from, nil
+	}
+	if stdin {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", "", err
+		}
+		return string(data), "artifact:stdin", nil
+	}
+	return "", "", fmt.Errorf("no Markdown import source")
+}
+
+func buildImportEvents(stream model.Ref, parts []model.MarkdownPart, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, artifact string) []model.Event {
+	events := make([]model.Event, 0, len(parts))
+	partIDs := make(map[string]model.PartID)
+	sort.Slice(parts, func(i, j int) bool {
+		if len(parts[i].Path) != len(parts[j].Path) {
+			return len(parts[i].Path) < len(parts[j].Path)
+		}
+		return strings.Join(parts[i].Path, "/") < strings.Join(parts[j].Path, "/")
+	})
+	for _, part := range parts {
+		partIDs[strings.Join(part.Path, "/")] = model.PartID(newID("part"))
+	}
+	for _, part := range parts {
+		start, end := part.StartLine, part.EndLine
+		source := model.SourceRef{
+			Ref:       model.Ref{Kind: model.KindArtifact, Entity: artifact},
+			MediaType: "text/markdown",
+			Span:      &model.Span{StartLine: &start, EndLine: &end},
+		}
+		value := model.Value{}
+		var parentRef *model.Ref
+		if len(part.Path) > 1 {
+			parentKey := strings.Join(part.Path[:len(part.Path)-1], "/")
+			if parentID, ok := partIDs[parentKey]; ok {
+				parentRef = &model.Ref{Kind: model.KindPart, Entity: string(parentID)}
+			}
+		}
+		if part.Body != "" {
+			value = model.Value{Kind: model.ValueKindMarkdown, Text: part.Body}
+		}
+		value.Ref = parentRef
+		partID := partIDs[strings.Join(part.Path, "/")]
+		events = append(events, model.Event{
+			ID:          model.EventID(newID("event")),
+			Stream:      stream,
+			Operation:   model.OpCreatePart,
+			Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: part.Path},
+			Value:       value,
+			RecordedAt:  recordedAt,
+			EffectiveAt: effectiveAt,
+			Actor:       actor,
+			BatchID:     &batchID,
+			Sources:     []model.SourceRef{source},
+		})
+	}
+	return events
+}
+
+func writeNewResult(jsonMode bool, result newResult) {
+	if jsonMode {
+		writeJSON(result)
+		return
+	}
+	fmt.Printf("%s  %s\n", result.Ref, result.Title)
+	fmt.Printf("status: %s\n", result.Status)
+	if result.Project != nil {
+		fmt.Printf("project: %s\n", *result.Project)
+	}
 }
 
 func resolveTicketRef(db *store.Store, ref string, effectiveAt time.Time) (model.TicketID, []string, error) {

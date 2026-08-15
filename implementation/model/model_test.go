@@ -248,6 +248,41 @@ func TestLineageWalk(t *testing.T) {
 	}
 }
 
+func TestParseMarkdownParts(t *testing.T) {
+	t.Parallel()
+	content := `# Retry after shutdown
+
+## Problem
+
+The worker retries after shutdown.
+
+## Evidence
+
+### Race test
+
+Failed on iteration 417.
+`
+	parts, err := ParseMarkdownParts(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"retry-after-shutdown":                    "",
+		"retry-after-shutdown/problem":            "The worker retries after shutdown.",
+		"retry-after-shutdown/evidence":           "",
+		"retry-after-shutdown/evidence/race-test": "Failed on iteration 417.",
+	}
+	if len(parts) != len(want) {
+		t.Fatalf("got %d parts, want %d", len(parts), len(want))
+	}
+	for _, part := range parts {
+		key := strings.Join(part.Path, "/")
+		if want[key] != part.Body {
+			t.Fatalf("part %s body = %q, want %q", key, part.Body, want[key])
+		}
+	}
+}
+
 func linkEvent(from, to TicketID, relation string, actor ActorRef, effectiveAt time.Time, sequence uint64) Event {
 	toRef := Ref{Kind: KindTicket, Entity: string(to)}
 	return Event{
