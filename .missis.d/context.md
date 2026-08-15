@@ -40,6 +40,10 @@ text because they are different entity kinds.
 must not overwrite it. If context switching becomes a command feature, it must
 require an explicit action.
 
+Do not point multiple worktrees or branches at the same SQLite store path.
+Each worktree should use its own local `.missis-store/` unless a shared remote
+store is explicitly intended.
+
 Run these to verify the current setup:
 
 ```bash

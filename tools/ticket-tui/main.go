@@ -200,13 +200,14 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	rendered := m.renderedDetailLines()
 	switch key.String() {
 	case "up", "k":
 		if m.detail.offset > 0 {
 			m.detail.offset--
 		}
 	case "down", "j":
-		if m.detail.offset < len(m.detail.lines)-1 {
+		if m.detail.offset < len(rendered)-1 {
 			m.detail.offset++
 		}
 	case "pgup":
@@ -220,14 +221,14 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.height > 0 {
 			m.detail.offset += maxInt(1, m.height-4)
 		}
-		if m.detail.offset > len(m.detail.lines)-1 {
-			m.detail.offset = len(m.detail.lines) - 1
+		if m.detail.offset > len(rendered)-1 {
+			m.detail.offset = len(rendered) - 1
 		}
 	case "g", "home":
 		m.detail.offset = 0
 	case "G", "end":
-		if len(m.detail.lines) > 0 {
-			m.detail.offset = len(m.detail.lines) - 1
+		if len(rendered) > 0 {
+			m.detail.offset = len(rendered) - 1
 		}
 	case "b", "esc":
 		m.view = "list"
@@ -439,24 +440,31 @@ func (m tuiModel) viewDetail() string {
 	if len(m.detail.lines) <= 1 {
 		b.WriteString("<no parts>\n")
 	}
+	rendered := m.renderedDetailLines()
 	start := m.detail.offset
 	end := start + m.height - 6
 	if end < start {
 		end = start
 	}
-	if end > len(m.detail.lines) {
-		end = len(m.detail.lines)
+	if end > len(rendered) {
+		end = len(rendered)
+	}
+	for _, line := range rendered[start:end] {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func (m tuiModel) renderedDetailLines() []string {
+	if m.detail == nil {
+		return nil
 	}
 	width := m.width - 2
 	if width < 20 {
 		width = 20
 	}
-	visibleLines := wrapIndentedLines(m.detail.lines[start:end], width)
-	for _, line := range visibleLines {
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	return b.String()
+	return wrapIndentedLines(m.detail.lines, width)
 }
 
 func (m tuiModel) viewCompare() string {
