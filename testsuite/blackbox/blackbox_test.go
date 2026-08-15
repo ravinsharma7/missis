@@ -581,6 +581,10 @@ func TestMultiProcessConcurrency(t *testing.T) {
 			t.Fatalf("missing part %s: %v", key, parts)
 		}
 	}
+	health := runMissis(t, store, "show", "--health", "--json")
+	if health.code != 0 {
+		t.Fatalf("health after concurrent sets failed: %d stdout=%s stderr=%s", health.code, health.stdout, health.stderr)
+	}
 }
 
 func TestShowHealth(t *testing.T) {
