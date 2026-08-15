@@ -229,7 +229,9 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: missis new|show|set ...")
+	fmt.Fprintln(os.Stderr, "usage:")
+	fmt.Fprintln(os.Stderr, "  missis [--self-update-check|--self-update]")
+	fmt.Fprintln(os.Stderr, "  missis new|show|set ...")
 }
 
 func reorderArgs(args []string, valueFlags map[string]bool) []string {
