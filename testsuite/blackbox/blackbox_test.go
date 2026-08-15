@@ -587,6 +587,47 @@ func TestMultiProcessConcurrency(t *testing.T) {
 	}
 }
 
+func TestConcurrentSetHealthStress(t *testing.T) {
+	t.Parallel()
+	store := filepath.Join(t.TempDir(), "missis.db")
+	base := newTicket(t, store, "stress")
+	if base["ref"] != "#1" {
+		t.Fatalf("base ref = %v", base["ref"])
+	}
+
+	const iterations = 5
+	const workers = 4
+	for iter := 0; iter < iterations; iter++ {
+		var wg sync.WaitGroup
+		errs := make(chan error, workers)
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				ref := "#1/" + strconv.Itoa(iter) + "-" + strconv.Itoa(i)
+				result, err := runMissisRaw(store, "set", "--json", ref, "value")
+				if err != nil {
+					errs <- err
+					return
+				}
+				if result.code != 0 {
+					errs <- fmt.Errorf("worker %d failed: code=%d stdout=%s stderr=%s", i, result.code, result.stdout, result.stderr)
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatal(err)
+		}
+
+		health := runMissis(t, store, "show", "--health", "--json")
+		if health.code != 0 {
+			t.Fatalf("health after stress iteration %d failed: %d stdout=%s stderr=%s", iter, health.code, health.stdout, health.stderr)
+		}
+	}
+}
+
 func TestShowHealth(t *testing.T) {
 	t.Parallel()
 	// covers PH1-EVT-008
