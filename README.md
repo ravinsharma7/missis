@@ -76,3 +76,12 @@ bash tools/ticket-explorer.sh
 That tool is not a fourth top-level `missis` command. It wraps `show` and can
 list tickets, inspect a ticket or part, emit JSON, follow references, walk
 lineage, search, and write Markdown to a file when requested.
+
+For a visual terminal UI, use:
+
+```bash
+go run ./tools/ticket-tui
+```
+
+The TUI is also a development tool, not a public `missis` command. It can list
+tickets, open a ticket, export Markdown, and compare two tickets.
