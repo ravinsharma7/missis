@@ -148,6 +148,7 @@ type Effect struct {
 // Event is the authoritative append-only record.
 type Event struct {
 	ID       EventID
+	AliasSeq uint64
 	Stream   Ref
 	Sequence uint64
 	BatchID  *BatchID
@@ -166,6 +167,7 @@ type Event struct {
 	Causes     []Ref
 	Effects    []Effect
 	Supersedes []EventID
+	Reason     string
 
 	Ontologies []OntologyRef
 	Invocation *InvocationRef
@@ -290,6 +292,7 @@ type Projection struct {
 
 	Parts map[PartID]*Part
 	Links map[LinkID]*Link
+	Paths map[string]PartID
 
 	EffectiveAt time.Time
 	KnownAt     time.Time
@@ -302,24 +305,4 @@ type ResolvedPartPath struct {
 	Segments   []string
 	EffectiveAt time.Time
 	KnownAt     time.Time
-}
-
-// CurrentProjection folds events up to effectiveAt into the current view.
-func CurrentProjection(events []Event, effectiveAt time.Time) (*Projection, error) {
-	panic("not implemented: CurrentProjection")
-}
-
-// BitemporalProjection folds events using both effective and known time.
-func BitemporalProjection(events []Event, effectiveAt, knownAt time.Time) (*Projection, error) {
-	panic("not implemented: BitemporalProjection")
-}
-
-// ResolvePartPath resolves a logical part path under a selected projection.
-func ResolvePartPath(proj *Projection, ticketID TicketID, path []string) (ResolvedPartPath, error) {
-	panic("not implemented: ResolvePartPath")
-}
-
-// ValidateAppend checks event append preconditions against existing events.
-func ValidateAppend(existing []Event, proposed Event) error {
-	panic("not implemented: ValidateAppend")
 }
