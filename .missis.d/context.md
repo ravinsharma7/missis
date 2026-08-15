@@ -36,6 +36,10 @@ Project IDs and group IDs are canonical identifiers. Duplicate IDs for the
 same entity kind are rejected. A project ID and a group ID may share the same
 text because they are different entity kinds.
 
+`active.local.md` is read-only from the command surface. Normal missis commands
+must not overwrite it. If context switching becomes a command feature, it must
+require an explicit action.
+
 Run these to verify the current setup:
 
 ```bash

@@ -81,3 +81,39 @@ func TestTitleEditPreservesHistory(t *testing.T) {
 		t.Fatalf("expected at least 2 title events, got %v", history)
 	}
 }
+
+func TestCommandsDoNotOverwriteActiveContext(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	project := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(filepath.Join(project, ".missis.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".missis"), []byte("./.missis-store/missis.db\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	activePath := filepath.Join(project, ".missis.d", "active.local.md")
+	original := []byte("project: local-project\ngroup: local-group\nfocus: local-focus\n")
+	if err := os.WriteFile(activePath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	actions := [][]string{
+		{"new", "--json", "Context ticket"},
+		{"show", "--json"},
+		{"show", "--context", "--json"},
+	}
+	for _, args := range actions {
+		result := runMissisWithEnv(t, "", project, nil, args...)
+		if result.code != 0 {
+			t.Fatalf("action %v failed: %d %s", args, result.code, result.stderr)
+		}
+	}
+	after, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("active context changed unexpectedly:\nwant %q\ngot  %q", original, after)
+	}
+}
