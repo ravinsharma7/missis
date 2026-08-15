@@ -716,3 +716,24 @@ func TestMarkdownImportSet(t *testing.T) {
 		t.Fatalf("imported set part missing: %v", parts)
 	}
 }
+
+func TestMarkdownExport(t *testing.T) {
+	t.Parallel()
+	// covers PH3-EXPORT-001
+	store := filepath.Join(t.TempDir(), "missis.db")
+	first := newTicket(t, store, "Export")
+	second := newTicket(t, store, "Target")
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "problem body"); result.code != 0 {
+		t.Fatalf("set problem: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/links", "--add", "blocked-by:"+second["ref"].(string)); result.code != 0 {
+		t.Fatalf("link: %d %s", result.code, result.stderr)
+	}
+	result := runMissis(t, store, "show", first["ref"].(string), "--format", "markdown")
+	if result.code != 0 {
+		t.Fatalf("markdown export failed: %d %s", result.code, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "# Export") || !strings.Contains(result.stdout, "## problem") || !strings.Contains(result.stdout, "## Links") {
+		t.Fatalf("unexpected markdown output:\n%s", result.stdout)
+	}
+}

@@ -117,6 +117,13 @@ func (s *Store) EventCount() (int64, error) {
 	return count, err
 }
 
+func (s *Store) SchemaVersion() (string, error) {
+	var version string
+	err := s.reader.QueryRow(`SELECT COALESCE(MAX(version), '') FROM schema_migrations`).Scan(&version)
+	version = strings.TrimSuffix(version, ".sql")
+	return version, err
+}
+
 func (s *Store) Backup(dst string) error {
 	if dir := filepath.Dir(dst); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

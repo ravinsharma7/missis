@@ -321,7 +321,7 @@ func runShow(args []string) int {
 	args = reorderArgs(args, map[string]bool{
 		"at": true, "effective-at": true, "known-at": true,
 		"since": true, "between": true, "store": true,
-		"direction": true, "depth": true, "relations": true,
+		"direction": true, "depth": true, "relations": true, "format": true,
 	})
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -340,6 +340,7 @@ func runShow(args []string) int {
 		direction   string
 		depth       int
 		relations   string
+		format      string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -355,8 +356,12 @@ func runShow(args []string) int {
 	fs.StringVar(&direction, "direction", "both", "lineage direction: both, outgoing, or incoming")
 	fs.IntVar(&depth, "depth", 3, "maximum lineage depth")
 	fs.StringVar(&relations, "relations", "", "comma-separated relation allow-list")
+	fs.StringVar(&format, "format", "", "output format: text, json, or markdown")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
+	}
+	if format == "json" {
+		jsonMode = true
 	}
 
 	ref := fs.Arg(0)
@@ -563,6 +568,21 @@ func runShow(args []string) int {
 	}
 	recordedAtText := ticketRecordedAt(db, ticketID)
 	ticketRef := ticketRefFor(db, ticketID)
+	if format == "markdown" {
+		targetRef, err := resolveAnyRef(db, ref, ticketID, effectiveTime)
+		if err != nil {
+			printError(err, exitNotFound, jsonMode, &ref)
+			return exitNotFound
+		}
+		linkEvents, err := db.LoadLinkEvents()
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+		links, _ := model.LinksForRef(linkEvents, targetRef, effectiveTime, knownTime)
+		outputMarkdownProjection(ticketID, proj, partPath, ticketRef, links)
+		return exitSuccess
+	}
 	outputProjection(ticketID, proj, partPath, jsonMode, recordedAtText, ticketRef)
 	return exitSuccess
 }
@@ -1434,6 +1454,47 @@ func outputProjection(ticketID model.TicketID, proj *model.Projection, pathFilte
 		RecordedAt: recordedAt,
 		Parts:      parts,
 	})
+}
+
+func outputMarkdownProjection(ticketID model.TicketID, proj *model.Projection, pathFilter []string, ticketRef string, links []model.LinkView) {
+	title, _ := projectionTitleStatus(proj)
+	if title == "" {
+		title = ticketRef
+	}
+	fmt.Printf("# %s\n\n", title)
+	paths := make([]string, 0, len(proj.Paths))
+	for path := range proj.Paths {
+		if pathMatches(path, pathFilter) {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		part := proj.Parts[proj.Paths[path]]
+		if part == nil {
+			continue
+		}
+		depth := len(strings.Split(path, "/")) + 1
+		if depth > 6 {
+			depth = 6
+		}
+		heading := strings.Repeat("#", depth)
+		last := path
+		if idx := strings.LastIndex(path, "/"); idx >= 0 {
+			last = path[idx+1:]
+		}
+		fmt.Printf("%s %s\n\n", heading, last)
+		if part.Value != nil {
+			fmt.Printf("%s\n\n", valueText(*part.Value))
+		}
+	}
+	if len(links) > 0 {
+		fmt.Printf("## Links\n\n")
+		for _, link := range links {
+			fmt.Printf("- %s %s %s\n", link.Relation, targetText(link.From), targetText(link.To))
+		}
+		fmt.Println()
+	}
 }
 
 func projectionTitleStatus(proj *model.Projection) (string, string) {
