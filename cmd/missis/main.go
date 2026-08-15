@@ -950,13 +950,22 @@ func ticketRecordedAt(db *store.Store, ticketID model.TicketID) string {
 	if err != nil || len(events) == 0 {
 		return ""
 	}
-	earliest := events[0].RecordedAt
-	for _, event := range events[1:] {
-		if event.RecordedAt.Before(earliest) {
-			earliest = event.RecordedAt
+	var createdAt time.Time
+	for _, event := range events {
+		if event.Operation == model.OpCreateEntity {
+			createdAt = event.RecordedAt
+			break
 		}
 	}
-	return earliest.UTC().Format(time.RFC3339)
+	if createdAt.IsZero() {
+		createdAt = events[0].RecordedAt
+		for _, event := range events[1:] {
+			if event.RecordedAt.Before(createdAt) {
+				createdAt = event.RecordedAt
+			}
+		}
+	}
+	return createdAt.UTC().Format(time.RFC3339)
 }
 
 func pathMatches(path string, filter []string) bool {

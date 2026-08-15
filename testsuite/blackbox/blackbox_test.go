@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var missisBin string
@@ -202,5 +203,27 @@ func TestCycleRejected(t *testing.T) {
 	cycle := runMissis(t, store, "set", "--json", ref+"/a", "--parent", ref+"/a/b")
 	if cycle.code == 0 {
 		t.Fatalf("expected cycle rejection")
+	}
+}
+
+func TestBitemporalProjection(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, store, "Bitemporal")
+	ref := created["ref"].(string)
+
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	set := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--effective-at", future)
+	if set.code != 0 {
+		t.Fatalf("set future: %d %s", set.code, set.stderr)
+	}
+
+	nowView := mustJSON(t, runMissis(t, store, "show", "--json", ref))
+	if nowView["status"] != "open" {
+		t.Fatalf("current status = %v, want open", nowView["status"])
+	}
+
+	futureView := mustJSON(t, runMissis(t, store, "show", "--json", ref, "--at", future))
+	if futureView["status"] != "doing" {
+		t.Fatalf("future status = %v, want doing", futureView["status"])
 	}
 }
