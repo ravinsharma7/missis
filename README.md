@@ -159,6 +159,22 @@ go run ./tools/store-manifest
 
 Backup and remote scripts live in `scripts/`.
 
+Install reusable tools globally:
+
+```bash
+bash scripts/install-tools.sh
+```
+
+Or install one tool directly:
+
+```bash
+go install github.com/ravinsharma7/missis/tools/ticket-tui@latest
+go install github.com/ravinsharma7/missis/tools/repair-store@latest
+go install github.com/ravinsharma7/missis/tools/store-gaps@latest
+go install github.com/ravinsharma7/missis/tools/store-manifest@latest
+go install github.com/ravinsharma7/missis/tools/store-backup@latest
+```
+
 # Viewing tickets
 
 `show` reads the event ledger and derives the current projection on demand. It
