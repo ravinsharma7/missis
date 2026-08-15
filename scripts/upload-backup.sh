@@ -42,6 +42,11 @@ if command -v rclone >/dev/null 2>&1; then
     echo "MISSIS_RCLONE_REMOTE is not set" >&2
     exit 1
   fi
+  bucket="${MISSIS_RCLONE_BUCKET:-${RCLONE_CONFIG_MISSIS_BUCKET:-}}"
+  if [ -z "$bucket" ]; then
+    echo "MISSIS_RCLONE_BUCKET or RCLONE_CONFIG_MISSIS_BUCKET is not set" >&2
+    exit 1
+  fi
   tmpconfig="$(mktemp)"
   trap 'rm -f "$tmpconfig"' EXIT
   cat > "$tmpconfig" <<EOF
@@ -52,15 +57,15 @@ access_key_id = $RCLONE_CONFIG_MISSIS_ACCESS_KEY_ID
 secret_access_key = $RCLONE_CONFIG_MISSIS_SECRET_ACCESS_KEY
 endpoint = $RCLONE_CONFIG_MISSIS_ENDPOINT
 region = auto
-bucket = $RCLONE_CONFIG_MISSIS_BUCKET
 EOF
   remote_path="${remote_dest%/}"
   if [[ "$remote_path" == *: ]]; then
-    remote_target="$remote_path$store_id/$head_hash.db"
+    remote_root="${remote_path}${bucket}"
   else
-    remote_target="$remote_path/$store_id/$head_hash.db"
+    remote_root="${remote_path}"
   fi
-  rclone --config "$tmpconfig" copyto "$backup" "$remote_target"
+  remote_target="${remote_root}/${store_id}/${head_hash}.db"
+  rclone --config "$tmpconfig" --s3-no-check-bucket copyto "$backup" "$remote_target"
   echo "uploaded with rclone"
   exit 0
 fi
