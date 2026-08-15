@@ -141,7 +141,7 @@ func reorderArgs(args []string, valueFlags map[string]bool) []string {
 func runNew(args []string) int {
 	args = reorderArgs(args, map[string]bool{
 		"actor": true, "effective-at": true, "project": true, "priority": true,
-		"type": true, "tag": true, "idempotency-key": true,
+		"type": true, "tag": true, "idempotency-key": true, "store": true,
 	})
 	fs := flag.NewFlagSet("new", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -154,6 +154,7 @@ func runNew(args []string) int {
 		types       stringList
 		tags        stringList
 		idemKey     string
+		storeFlag   string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&actor, "actor", "human/local", "actor reference")
@@ -163,12 +164,13 @@ func runNew(args []string) int {
 	fs.Var(&types, "type", "ticket type")
 	fs.Var(&tags, "tag", "ticket tag")
 	fs.StringVar(&idemKey, "idempotency-key", "", "idempotency key")
+	fs.StringVar(&storeFlag, "store", "", "store path")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
 
 	title := fs.Arg(0)
-	storePath := resolveStorePath()
+	storePath := resolveStorePath(storeFlag)
 	db, err := store.Open(storePath)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
@@ -242,7 +244,7 @@ func runNew(args []string) int {
 func runShow(args []string) int {
 	args = reorderArgs(args, map[string]bool{
 		"at": true, "effective-at": true, "known-at": true,
-		"since": true, "between": true,
+		"since": true, "between": true, "store": true,
 	})
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -254,6 +256,7 @@ func runShow(args []string) int {
 		history     bool
 		since       string
 		between     string
+		storeFlag   string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -262,12 +265,13 @@ func runShow(args []string) int {
 	fs.BoolVar(&history, "history", false, "show event history")
 	fs.StringVar(&since, "since", "", "history lower bound")
 	fs.StringVar(&between, "between", "", "history interval")
+	fs.StringVar(&storeFlag, "store", "", "store path")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
 
 	ref := fs.Arg(0)
-	storePath := resolveStorePath()
+	storePath := resolveStorePath(storeFlag)
 	db, err := store.Open(storePath)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
@@ -358,7 +362,7 @@ func runSet(args []string) int {
 	args = reorderArgs(args, map[string]bool{
 		"actor": true, "effective-at": true, "reason": true, "name": true,
 		"parent": true, "supersedes": true, "because": true,
-		"if-current": true, "idempotency-key": true,
+		"if-current": true, "idempotency-key": true, "store": true,
 	})
 	fs := flag.NewFlagSet("set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -376,6 +380,7 @@ func runSet(args []string) int {
 		because     string
 		ifCurrent   string
 		idemKey     string
+		storeFlag   string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&actor, "actor", "human/local", "actor reference")
@@ -390,6 +395,7 @@ func runSet(args []string) int {
 	fs.StringVar(&because, "because", "", "cause reference")
 	fs.StringVar(&ifCurrent, "if-current", "", "expected current event alias")
 	fs.StringVar(&idemKey, "idempotency-key", "", "idempotency key")
+	fs.StringVar(&storeFlag, "store", "", "store path")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -400,7 +406,7 @@ func runSet(args []string) int {
 	ref := fs.Arg(0)
 	value := fs.Arg(1)
 
-	storePath := resolveStorePath()
+	storePath := resolveStorePath(storeFlag)
 	db, err := store.Open(storePath)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
@@ -619,7 +625,13 @@ func partEvent(stream model.Ref, path string, value any, kind model.ValueKind, a
 	}
 }
 
-func resolveStorePath() string {
+func resolveStorePath(storeFlag string) string {
+	if storeFlag != "" {
+		return storeFlag
+	}
+	if marker, ok := findMissisMarker(); ok {
+		return marker
+	}
 	if env := os.Getenv("MISSIS_STORE"); env != "" {
 		return env
 	}
@@ -628,6 +640,38 @@ func resolveStorePath() string {
 		return filepath.Join(".", ".missis", "missis.db")
 	}
 	return filepath.Join(home, ".local", "share", "missis", "missis.db")
+}
+
+func findMissisMarker() (string, bool) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	for {
+		marker := filepath.Join(dir, ".missis")
+		info, statErr := os.Stat(marker)
+		if statErr == nil {
+			if info.IsDir() {
+				return filepath.Join(marker, "missis.db"), true
+			}
+			data, readErr := os.ReadFile(marker)
+			if readErr == nil {
+				line := strings.TrimSpace(string(data))
+				if line == "" {
+					return filepath.Join(dir, ".missis", "missis.db"), true
+				}
+				if filepath.IsAbs(line) {
+					return line, true
+				}
+				return filepath.Join(dir, line), true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
 }
 
 func parseTime(value string) (time.Time, error) {

@@ -102,6 +102,45 @@ func TestResolvePartPath(t *testing.T) {
 	}
 }
 
+func TestValidatePathSegmentsRejectsInvalid(t *testing.T) {
+	valid := []string{"evidence", "race-test", "run-417"}
+	if err := ValidatePathSegments(valid); err != nil {
+		t.Fatalf("valid path rejected: %v", err)
+	}
+	for _, invalid := range [][]string{
+		{""},
+		{"-bad"},
+		{"bad segment"},
+		{"bad", "has space"},
+	} {
+		if err := ValidatePathSegments(invalid); err == nil {
+			t.Fatalf("expected invalid path to fail: %v", invalid)
+		}
+	}
+}
+
+func TestReproducibleProjection(t *testing.T) {
+	ticket := TicketID("ticket:t")
+	stream := Ref{Kind: KindTicket, Entity: string(ticket)}
+	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}
+	base := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	partID := PartID("part:p")
+	events := []Event{
+		partCreateEvent(stream, partID, []string{"title"}, nil, Value{Kind: ValueKindText, Text: "same"}, actor, base, 1),
+	}
+	first, err := CurrentProjection(events, ticket, base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("first projection: %v", err)
+	}
+	second, err := CurrentProjection(events, ticket, base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("second projection: %v", err)
+	}
+	if first.Paths["title"] != second.Paths["title"] {
+		t.Fatalf("projection not reproducible")
+	}
+}
+
 func partCreateEvent(stream Ref, id PartID, path []string, parent *PartID, value Value, actor ActorRef, effectiveAt time.Time, sequence uint64) Event {
 	var parentRef *Ref
 	if parent != nil {

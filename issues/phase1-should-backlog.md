@@ -1,7 +1,7 @@
 # Phase 1 SHOULD backlog
 
 This file makes the Phase 1 `SHOULD` items actionable. Every row must have a
-decision before the implementation gate is run.
+decision before the Phase 1 traceability check is run.
 
 Decisions:
 

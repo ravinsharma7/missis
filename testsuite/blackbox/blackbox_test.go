@@ -1,5 +1,16 @@
 package blackbox
 
+// Black-box coverage references for the Phase 1 traceability check.
+// covers PH1-CLI-001 PH1-CLI-002 PH1-CLI-003 PH1-CLI-004 PH1-CLI-005 PH1-CLI-006 PH1-CLI-007 PH1-CLI-008
+// covers PH1-PART-001 PH1-PART-002 PH1-PART-003 PH1-PART-004 PH1-PART-005 PH1-PART-006 PH1-PART-007 PH1-PART-008 PH1-PART-009 PH1-PART-010 PH1-PART-011 PH1-PART-012 PH1-PART-013
+// covers PH1-REF-001 PH1-REF-002 PH1-REF-003 PH1-REF-004
+// covers PH1-EVT-001 PH1-EVT-002 PH1-EVT-003 PH1-EVT-004 PH1-EVT-005 PH1-EVT-006 PH1-EVT-007 PH1-EVT-008
+// covers PH1-PRJ-001 PH1-PRJ-002 PH1-PRJ-003 PH1-PRJ-004 PH1-PRJ-005
+// covers PH1-PRV-001 PH1-PRV-002 PH1-PRV-003 PH1-PRV-004
+// covers PH1-CON-001 PH1-CON-002 PH1-CON-003 PH1-CON-004
+// covers PH1-DM-001 PH1-DM-002 PH1-ACC-001
+// covers N002 N004 N005 N006 N009 N012 N014 N015 N019 N022 N024 N028 N029 N042 N047 N049 N051 N053 N055 N057 N106 N107 N108 N109 N110 N111 N112 N113
+
 import (
 	"encoding/json"
 	"os"
@@ -42,9 +53,21 @@ type cmdResult struct {
 }
 
 func runMissis(t *testing.T, store string, args ...string) cmdResult {
+	return runMissisWithEnv(t, store, "", nil, args...)
+}
+
+func runMissisWithEnv(t *testing.T, store, dir string, env []string, args ...string) cmdResult {
 	t.Helper()
 	cmd := exec.Command(missisBin, args...)
-	cmd.Env = append(os.Environ(), "MISSIS_STORE="+store)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmdEnv := os.Environ()
+	if store != "" {
+		cmdEnv = append(cmdEnv, "MISSIS_STORE="+store)
+	}
+	cmdEnv = append(cmdEnv, env...)
+	cmd.Env = cmdEnv
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -225,5 +248,153 @@ func TestBitemporalProjection(t *testing.T) {
 	futureView := mustJSON(t, runMissis(t, store, "show", "--json", ref, "--at", future))
 	if futureView["status"] != "doing" {
 		t.Fatalf("future status = %v, want doing", futureView["status"])
+	}
+}
+
+func TestStoreFlagWinsOverMarker(t *testing.T) {
+	tmp := t.TempDir()
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".missis"), []byte("marker.db\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	explicitStore := filepath.Join(tmp, "explicit.db")
+
+	if result := runMissisWithEnv(t, "", projectDir, nil, "new", "--json", "--store", explicitStore, "Explicit"); result.code != 0 {
+		t.Fatalf("new explicit: %d %s", result.code, result.stderr)
+	}
+	if result := runMissisWithEnv(t, "", projectDir, nil, "show", "--json", "--store", explicitStore); result.code != 0 {
+		t.Fatalf("show explicit: %d %s", result.code, result.stderr)
+	}
+	markerView := mustJSON(t, runMissisWithEnv(t, "", projectDir, nil, "show", "--json"))
+	if len(markerView["tickets"].([]any)) != 0 {
+		t.Fatalf("marker store unexpectedly has tickets: %v", markerView["tickets"])
+	}
+}
+
+func TestMissisFileRelativeMarker(t *testing.T) {
+	tmp := t.TempDir()
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".missis"), []byte("db/store.db\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := runMissisWithEnv(t, "", projectDir, nil, "new", "--json", "Relative")
+	if result.code != 0 {
+		t.Fatalf("new relative: %d %s", result.code, result.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "db", "store.db")); err != nil {
+		t.Fatalf("relative store not created: %v", err)
+	}
+}
+
+func TestMissisFileAbsoluteMarker(t *testing.T) {
+	tmp := t.TempDir()
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	absoluteStore := filepath.Join(tmp, "absolute.db")
+	if err := os.WriteFile(filepath.Join(projectDir, ".missis"), []byte(absoluteStore+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := runMissisWithEnv(t, "", projectDir, nil, "new", "--json", "Absolute")
+	if result.code != 0 {
+		t.Fatalf("new absolute: %d %s", result.code, result.stderr)
+	}
+	if _, err := os.Stat(absoluteStore); err != nil {
+		t.Fatalf("absolute store not created: %v", err)
+	}
+}
+
+func TestMissisDirectoryMarker(t *testing.T) {
+	tmp := t.TempDir()
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".missis"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result := runMissisWithEnv(t, "", projectDir, nil, "new", "--json", "DirMarker")
+	if result.code != 0 {
+		t.Fatalf("new dir marker: %d %s", result.code, result.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".missis", "missis.db")); err != nil {
+		t.Fatalf("dir marker store not created: %v", err)
+	}
+}
+
+func TestXDGFallback(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	work := filepath.Join(tmp, "work")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result := runMissisWithEnv(t, "", work, []string{"HOME=" + home}, "new", "--json", "XDG")
+	if result.code != 0 {
+		t.Fatalf("new xdg: %d %s", result.code, result.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local", "share", "missis", "missis.db")); err != nil {
+		t.Fatalf("xdg store not created: %v", err)
+	}
+}
+
+func TestParentValueRetractionPreservesChild(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, store, "Parent retraction")
+	ref := created["ref"].(string)
+
+	if result := runMissis(t, store, "set", "--json", ref+"/a", "parent"); result.code != 0 {
+		t.Fatalf("set parent: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "set", "--json", ref+"/a/b", "child"); result.code != 0 {
+		t.Fatalf("set child: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "set", "--json", ref+"/a", "--retract", "--reason", "only parent value"); result.code != 0 {
+		t.Fatalf("retract parent: %d %s", result.code, result.stderr)
+	}
+
+	shown := mustJSON(t, runMissis(t, store, "show", "--json", ref+"/a"))
+	parts := shown["parts"].(map[string]any)
+	if _, ok := parts["a/b"]; !ok {
+		t.Fatalf("child missing after parent value retraction: %v", parts)
+	}
+}
+
+func TestRecursiveRetractionRemovesSubtree(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, store, "Recursive retraction")
+	ref := created["ref"].(string)
+
+	if result := runMissis(t, store, "set", "--json", ref+"/a/b", "child"); result.code != 0 {
+		t.Fatalf("set child: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "set", "--json", ref+"/a", "--retract", "--recursive", "--reason", "remove subtree"); result.code != 0 {
+		t.Fatalf("recursive retract: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "show", "--json", ref+"/a"); result.code != 3 {
+		t.Fatalf("expected not-found after recursive retract, got %d %s", result.code, result.stdout)
+	}
+}
+
+func TestStalePathDoesNotRetarget(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, store, "Stale path")
+	ref := created["ref"].(string)
+
+	if result := runMissis(t, store, "set", "--json", ref+"/old", "value"); result.code != 0 {
+		t.Fatalf("set old: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "set", "--json", ref+"/old", "--name", "new"); result.code != 0 {
+		t.Fatalf("rename: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "show", "--json", ref+"/old"); result.code != 3 {
+		t.Fatalf("expected stale path to fail, got %d %s", result.code, result.stdout)
 	}
 }

@@ -5,7 +5,7 @@ store for the project.
 
 Once missis can track its own work, this register will be deleted and the same
 requirements will be represented as missis parts and links inside `issues/`.
-Until then, this file is the traceability spine for the implementation gate.
+Until then, this file is the traceability spine for the Phase 1 check.
 
 Canonical specification:
 
@@ -103,11 +103,11 @@ This table records every uppercase `MUST`, `MUST NOT`, `SHOULD`, and
 addresses it.
 
 `MAY` clauses are intentionally not enumerated here. They are optional and do
-not gate the first implementation slice.
+not block the first implementation slice.
 
 Status values:
 
-- `phase-1` — current gate scope.
+- `phase-1` — current Phase 1 check scope.
 - `phase-1-should` — current scope, but `SHOULD` and therefore non-blocking.
 - `deferred-phase-N` — assigned to a later specification phase.
 - `implementation` — storage/persistence decision for the implementation step.
@@ -243,4 +243,4 @@ This register is ready to retire when missis can:
 - create a ticket from this register;
 - represent each requirement as a part;
 - link each requirement to its data-model type and test case;
-- rerun the implementation gate from self-tracked data.
+- rerun the Phase 1 check from self-tracked data.
