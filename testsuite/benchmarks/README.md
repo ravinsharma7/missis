@@ -27,7 +27,7 @@ Codex UI metadata.
 Install from this checkout with the CLI:
 
 ```bash
-missis --install-skill --dest "${CODEX_HOME:-$HOME/.codex}/skills/missis"
+missis --ag-install-skill --dest "${CODEX_HOME:-$HOME/.codex}/skills/missis"
 ```
 
 Without `--dest` it defaults to `$CODEX_HOME/skills/missis`; `--force`
@@ -49,7 +49,7 @@ auto-generated `results.md` land in `./temp/run-<timestamp>/logs`; the
 The scratch projects do NOT inherit this project's full `AGENTS.md`. The
 baseline and skill configs get no AGENTS.md at all, and the pointer and brief
 configs get a self-contained pointer fixture that only tells the agent to run
-`missis --agent-brief`. That keeps the comparison from being biased by AG1-AG7.
+`missis --ag-brief`. That keeps the comparison from being biased by AG1-AG7.
 
 ## Recording results
 

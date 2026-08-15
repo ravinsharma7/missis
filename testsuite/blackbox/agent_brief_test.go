@@ -20,9 +20,9 @@ func TestAgentBrief(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := runMissisWithEnv(t, store, dir, nil, "--agent-brief")
+	result := runMissisWithEnv(t, store, dir, nil, "--ag-brief")
 	if result.code != 0 {
-		t.Fatalf("--agent-brief failed: %d %s", result.code, result.stderr)
+		t.Fatalf("--ag-brief failed: %d %s", result.code, result.stderr)
 	}
 	for _, want := range []string{
 		"store:",
@@ -34,12 +34,12 @@ func TestAgentBrief(t *testing.T) {
 		"missis show --context",
 	} {
 		if !strings.Contains(result.stdout, want) {
-			t.Errorf("--agent-brief output missing %q:\n%s", want, result.stdout)
+			t.Errorf("--ag-brief output missing %q:\n%s", want, result.stdout)
 		}
 	}
 	for _, forbidden := range []string{"project: p1", "group: g1", "focus: brief work", "ticket: #1"} {
 		if strings.Contains(result.stdout, forbidden) {
-			t.Errorf("--agent-brief output should not include session bias %q:\n%s", forbidden, result.stdout)
+			t.Errorf("--ag-brief output should not include session bias %q:\n%s", forbidden, result.stdout)
 		}
 	}
 }
@@ -56,9 +56,9 @@ func TestAgentBriefJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := runMissisWithEnv(t, store, dir, nil, "--agent-brief", "--json")
+	result := runMissisWithEnv(t, store, dir, nil, "--ag-brief", "--json")
 	if result.code != 0 {
-		t.Fatalf("--agent-brief --json failed: %d %s", result.code, result.stderr)
+		t.Fatalf("--ag-brief --json failed: %d %s", result.code, result.stderr)
 	}
 	var body map[string]any
 	if err := json.Unmarshal([]byte(result.stdout), &body); err != nil {
@@ -88,7 +88,7 @@ func TestInstallSkill(t *testing.T) {
 	}
 	dest := t.TempDir()
 
-	result := runMissis(t, "", "--install-skill", "--from", src, "--dest", dest)
+	result := runMissis(t, "", "--ag-install-skill", "--from", src, "--dest", dest)
 	if result.code != 0 {
 		t.Fatalf("install failed: %d %s", result.code, result.stderr)
 	}
@@ -96,12 +96,12 @@ func TestInstallSkill(t *testing.T) {
 		t.Fatalf("skill not installed: %v", err)
 	}
 
-	again := runMissis(t, "", "--install-skill", "--from", src, "--dest", dest)
+	again := runMissis(t, "", "--ag-install-skill", "--from", src, "--dest", dest)
 	if again.code == 0 {
 		t.Fatalf("expected already-installed error, got success")
 	}
 
-	forced := runMissis(t, "", "--install-skill", "--from", src, "--dest", dest, "--force")
+	forced := runMissis(t, "", "--ag-install-skill", "--from", src, "--dest", dest, "--force")
 	if forced.code != 0 {
 		t.Fatalf("forced install failed: %d %s", forced.code, forced.stderr)
 	}
@@ -109,13 +109,13 @@ func TestInstallSkill(t *testing.T) {
 
 func TestPointerSnippet(t *testing.T) {
 	t.Parallel()
-	result := runMissis(t, "", "--pointer")
+	result := runMissis(t, "", "--ag-pointer")
 	if result.code != 0 {
-		t.Fatalf("--pointer failed: %d %s", result.code, result.stderr)
+		t.Fatalf("--ag-pointer failed: %d %s", result.code, result.stderr)
 	}
-	for _, want := range []string{"## missis quick reference", "missis --agent-brief", "missis show --context"} {
+	for _, want := range []string{"## missis quick reference", "missis --ag-brief", "missis show --context"} {
 		if !strings.Contains(result.stdout, want) {
-			t.Errorf("--pointer missing %q:\n%s", want, result.stdout)
+			t.Errorf("--ag-pointer missing %q:\n%s", want, result.stdout)
 		}
 	}
 }

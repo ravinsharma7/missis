@@ -109,7 +109,7 @@ const agentBriefRules = `- No destructive delete; use --retract --reason instead
 
 const agentPointerSnippet = `## missis quick reference
 
-Run ` + "`missis --agent-brief`" + ` once before ticket work. It prints the exact
+Run ` + "`missis --ag-brief`" + ` once before ticket work. It prints the exact
 new/show/set syntax and the rules from the CLI itself; do not copy that syntax
 into this file. For the active session focus, run ` + "`missis show --context`" + `.
 
@@ -537,13 +537,13 @@ func main() {
 	if os.Args[1] == "--init" || os.Args[1] == "--start" {
 		os.Exit(runInit(os.Args[2:]))
 	}
-	if os.Args[1] == "--agent-brief" {
+	if os.Args[1] == "--ag-brief" {
 		os.Exit(runAgentBrief(os.Args[2:]))
 	}
-	if os.Args[1] == "--pointer" {
+	if os.Args[1] == "--ag-pointer" {
 		os.Exit(runPointer())
 	}
-	if os.Args[1] == "--install-skill" {
+	if os.Args[1] == "--ag-install-skill" {
 		os.Exit(runInstallSkill(os.Args[2:]))
 	}
 	if os.Args[1] == "--self-update-check" || os.Args[1] == "--self-update" {
@@ -580,7 +580,7 @@ func usage() {
 
 func usageText() string {
 	return "usage:\n" +
-		"  missis [--version|--help] [--init|--start] [--self-update-check|--self-update] [--agent-brief [--json]] [--pointer] [--install-skill [--from DIR] [--dest DIR] [--force]]\n" +
+		"  missis [--version|--help] [--init|--start] [--self-update-check|--self-update] [--ag-brief [--json]] [--ag-pointer] [--ag-install-skill [--from DIR] [--dest DIR] [--force]]\n" +
 		"  missis new|show|set ...\n"
 }
 

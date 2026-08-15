@@ -2,7 +2,7 @@
 # Four-way cold-start comparison for the prompt "create a missis ticket":
 #
 #   baseline  no AGENTS.md pointer, missis skill disabled (pre-change control)
-#   pointer   AGENTS.md --agent-brief pointer only
+#   pointer   AGENTS.md --ag-brief pointer only
 #   skill     missis skill only
 #   brief     pointer + skill (target state)
 #
@@ -150,7 +150,7 @@ MATRIX=(
 RESULT_ROWS=""
 POINTER_AGENTS_MD='## missis quick reference
 
-Run `missis --agent-brief` before ticket work. It prints the exact command
+Run `missis --ag-brief` before ticket work. It prints the exact command
 surface and rules from the CLI itself.'
 
 if [ "$PLAN_ONLY" = 1 ]; then
