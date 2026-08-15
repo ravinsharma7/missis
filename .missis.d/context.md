@@ -26,6 +26,10 @@ For the current active project/group/ticket focus, read `.missis.d/active.md`.
 .missis-store/ -> ignored SQLite database
 ```
 
+Default active project and group are both `none`. Projects and groups are
+supported by missis, but this repository is not currently using them as active
+scopes.
+
 Run these to verify the current setup:
 
 ```bash
