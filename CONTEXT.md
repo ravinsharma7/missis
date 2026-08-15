@@ -16,6 +16,21 @@ missis show
 - Reliable append/concurrency behavior
 - Backup, manifest, and R2 restore loop
 
+## Current local setup
+
+```text
+.missis -> ./.missis-store/missis.db
+.missis.d/ -> committed manifest and SHOULD backlog
+.missis-store/ -> ignored SQLite database
+```
+
+Run these to verify the current setup:
+
+```bash
+missis show --health
+go run ./tools/store-gaps .missis-store/missis.db
+```
+
 ## Recent decisions
 
 - Project metadata lives in `.missis.d/`.
@@ -30,3 +45,4 @@ missis show
 - Backup retention policy
 - Fork reconciliation/sync
 - Full high-level command orchestration in SDK
+- Runtime ontology loading and enforcement
