@@ -28,6 +28,8 @@ missis --version
 missis --help
 missis --self-update-check
 missis --self-update
+missis --init
+missis --start
 ```
 
 Global flags are process-level maintenance or inspection operations, not new

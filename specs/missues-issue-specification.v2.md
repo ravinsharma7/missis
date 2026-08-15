@@ -48,6 +48,8 @@ issue --version
 issue --help
 issue --self-update-check
 issue --self-update
+issue --init
+issue --start
 ```
 
 The internal design is based on three lower-level primitives:
