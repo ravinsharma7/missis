@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -92,6 +93,41 @@ type errorResult struct {
 	Message            string   `json:"message"`
 	Ontology           *string  `json:"ontology"`
 	MissingObligations []string `json:"missing_obligations"`
+}
+
+func buildVersion() (string, string) {
+	version := "dev"
+	commit := "unknown"
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version, commit
+	}
+	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version
+	}
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			commit = setting.Value
+		case "vcs.modified":
+			if setting.Value == "true" {
+				commit += "-dirty"
+			}
+		}
+	}
+	return version, commit
+}
+
+func printVersion(jsonMode bool) {
+	version, commit := buildVersion()
+	if jsonMode {
+		writeJSON(map[string]string{
+			"version": version,
+			"commit":  commit,
+		})
+		return
+	}
+	fmt.Printf("missis version=%s commit=%s\n", version, commit)
 }
 
 func main() {
@@ -410,6 +446,7 @@ func runShow(args []string) int {
 		status      string
 		typeFilter  string
 		tagFilter   string
+		version     bool
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -432,11 +469,16 @@ func runShow(args []string) int {
 	fs.StringVar(&status, "status", "", "filter by status")
 	fs.StringVar(&typeFilter, "type", "", "filter by type")
 	fs.StringVar(&tagFilter, "tag", "", "filter by tag")
+	fs.BoolVar(&version, "version", false, "show version")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
 	if format == "json" {
 		jsonMode = true
+	}
+	if version {
+		printVersion(jsonMode)
+		return exitSuccess
 	}
 
 	ref := fs.Arg(0)
@@ -460,15 +502,18 @@ func runShow(args []string) int {
 		storeID, _ := db.StoreID()
 		headHash, _ := db.HeadHash()
 		eventCount, _ := db.EventCount()
+		version, commit := buildVersion()
 		if jsonMode {
 			writeJSON(map[string]any{
 				"status":      "ok",
 				"store_id":    storeID,
 				"head_hash":   headHash,
 				"event_count": eventCount,
+				"version":     version,
+				"commit":      commit,
 			})
 		} else {
-			fmt.Printf("ok store=%s head=%s events=%d\n", storeID, headHash, eventCount)
+			fmt.Printf("ok store=%s head=%s events=%d version=%s commit=%s\n", storeID, headHash, eventCount, version, commit)
 		}
 		return exitSuccess
 	}

@@ -23,11 +23,25 @@ From the published module:
 go install github.com/ravinsharma7/missis/cmd/missis@latest
 ```
 
+For reproducible installs, pin a tag or commit instead of relying on `latest`:
+
+```bash
+go install github.com/ravinsharma7/missis/cmd/missis@v0.1.0
+go install github.com/ravinsharma7/missis/cmd/missis@<commit-sha>
+```
+
 Go places the binary in `$(go env GOPATH)/bin`. Make sure that directory is on
 your `PATH`:
 
 ```bash
 export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
+Verify which version is installed:
+
+```bash
+missis show --version
+missis show --health
 ```
 
 # Viewing tickets

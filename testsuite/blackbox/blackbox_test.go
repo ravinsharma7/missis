@@ -566,6 +566,19 @@ func TestShowHealth(t *testing.T) {
 	}
 }
 
+func TestShowVersion(t *testing.T) {
+	t.Parallel()
+	// covers PH1-CLI-002
+	result := runMissis(t, "", "show", "--version", "--json")
+	if result.code != 0 {
+		t.Fatalf("version failed: %d %s", result.code, result.stderr)
+	}
+	body := mustJSON(t, result)
+	if body["version"] == nil {
+		t.Fatalf("version missing from %s", result.stdout)
+	}
+}
+
 func TestTypedLinksLifecycle(t *testing.T) {
 	t.Parallel()
 	// covers PH2-LINK-001 PH2-LINK-002 PH2-LINK-003
