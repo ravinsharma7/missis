@@ -24,10 +24,22 @@ if [ -z "$remote" ]; then
 fi
 
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+trap 'rm -rf "$tmpdir" "$tmpconfig"' EXIT
 dest="$tmpdir/$head_hash.db"
 
-rclone copy "$remote/$store_id/$head_hash.db" "$tmpdir"
+tmpconfig="$(mktemp)"
+cat > "$tmpconfig" <<EOF
+[missis]
+type = s3
+provider = Cloudflare
+access_key_id = $RCLONE_CONFIG_MISSIS_ACCESS_KEY_ID
+secret_access_key = $RCLONE_CONFIG_MISSIS_SECRET_ACCESS_KEY
+endpoint = $RCLONE_CONFIG_MISSIS_ENDPOINT
+region = auto
+bucket = $RCLONE_CONFIG_MISSIS_BUCKET
+EOF
+
+rclone --config "$tmpconfig" copy "${remote%/}/$store_id/$head_hash.db" "$tmpdir"
 
 restored="$(MISSIS_STORE="$dest" go run ./tools/store-manifest)"
 restored_id="$(printf '%s' "$restored" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"

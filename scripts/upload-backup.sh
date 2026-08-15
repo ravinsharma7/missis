@@ -42,7 +42,19 @@ if command -v rclone >/dev/null 2>&1; then
     echo "MISSIS_RCLONE_REMOTE is not set" >&2
     exit 1
   fi
-  rclone copy "$backup" "$remote_dest/$store_id/$head_hash.db"
+  tmpconfig="$(mktemp)"
+  trap 'rm -f "$tmpconfig"' EXIT
+  cat > "$tmpconfig" <<EOF
+[missis]
+type = s3
+provider = Cloudflare
+access_key_id = $RCLONE_CONFIG_MISSIS_ACCESS_KEY_ID
+secret_access_key = $RCLONE_CONFIG_MISSIS_SECRET_ACCESS_KEY
+endpoint = $RCLONE_CONFIG_MISSIS_ENDPOINT
+region = auto
+bucket = $RCLONE_CONFIG_MISSIS_BUCKET
+EOF
+  rclone --config "$tmpconfig" copy "$backup" "${remote_dest%/}/$store_id/$head_hash.db"
   echo "uploaded with rclone"
   exit 0
 fi
