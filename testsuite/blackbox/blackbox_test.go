@@ -908,6 +908,25 @@ func TestSearchAndMetadataFilters(t *testing.T) {
 	_ = second
 }
 
+func TestSelfTrackingBootstrapIsolated(t *testing.T) {
+	t.Parallel()
+	// covers PH7-SEARCH-003 PH4-SCOPE-004
+	store := filepath.Join(t.TempDir(), "missis.db")
+	first := newTicket(t, store, "R2 restore verification")
+	second := newTicket(t, store, "Backup vs sync decision")
+	if result := runMissis(t, store, "set", "--json", second["ref"].(string)+"/links", "--add", "blocked-by:"+first["ref"].(string)); result.code != 0 {
+		t.Fatalf("link decision blocked by restore: %d %s", result.code, result.stderr)
+	}
+	search := mustJSON(t, runMissis(t, store, "show", "--json", "--search", "restore"))
+	if len(search["tickets"].([]any)) == 0 {
+		t.Fatalf("expected self-tracking search result")
+	}
+	refs := mustJSON(t, runMissis(t, store, "show", "--json", second["ref"].(string), "--references"))
+	if len(refs["links"].([]any)) == 0 {
+		t.Fatalf("expected self-tracking references")
+	}
+}
+
 func filterSystemParts(parts map[string]any) map[string]any {
 	filtered := make(map[string]any)
 	for path, part := range parts {
