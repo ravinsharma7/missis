@@ -38,6 +38,12 @@ type SetPartOptions struct {
 	Actor     string
 }
 
+type LineageOptions struct {
+	Direction string
+	Depth     int
+	Relations []string
+}
+
 func (c *Client) NewTicket(ctx context.Context, opts NewTicketOptions) (TicketSummary, error) {
 	now := time.Now().UTC()
 	if opts.EffectiveAt.IsZero() {
@@ -190,6 +196,177 @@ func (c *Client) SetPart(ctx context.Context, opts SetPartOptions) error {
 	}
 	_, err = c.AppendBatch(ctx, []model.Event{event}, "", nil, nil)
 	return err
+}
+
+func (c *Client) ShowHistory(ctx context.Context, ref string, opts ShowOptions) ([]EventView, error) {
+	summary, err := c.findTicketSummary(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	events, err := c.LoadTicketEvents(ctx, model.TicketID(summary.ID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EventView, 0, len(events))
+	for _, event := range events {
+		if opts.EffectiveAt.IsZero() {
+			opts.EffectiveAt = time.Now().UTC()
+		}
+		if opts.KnownAt.IsZero() {
+			opts.KnownAt = opts.EffectiveAt
+		}
+		if event.EffectiveAt.After(opts.EffectiveAt) || event.RecordedAt.After(opts.KnownAt) {
+			continue
+		}
+		out = append(out, EventView{
+			ID:          string(event.ID),
+			Alias:       "@e" + strconv.FormatUint(event.AliasSeq, 10),
+			Sequence:    event.Sequence,
+			Operation:   string(event.Operation),
+			Target:      targetText(event.Target),
+			Value:       valueText(event.Value),
+			RecordedAt:  event.RecordedAt,
+			EffectiveAt: event.EffectiveAt,
+			Actor:       event.Actor.ID,
+			Reason:      event.Reason,
+		})
+	}
+	return out, nil
+}
+
+func (c *Client) ShowReferences(ctx context.Context, ref string) ([]LinkView, error) {
+	target, err := c.resolveRef(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	events, err := c.LoadLinkEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	links, err := model.LinksForRef(events, target, now, now)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LinkView, 0, len(links))
+	for _, link := range links {
+		out = append(out, LinkView{
+			From:      targetText(link.From),
+			Relation:  link.Relation,
+			To:        targetText(link.To),
+			Direction: link.Direction,
+			Origin:    link.Origin,
+			CreatedBy: string(link.CreatedBy),
+		})
+	}
+	return out, nil
+}
+
+func (c *Client) ShowLineage(ctx context.Context, ref string, opts LineageOptions) ([]LineageEdge, error) {
+	target, err := c.resolveRef(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	events, err := c.LoadLinkEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	graph, err := model.BuildLineageGraph(events, now, now)
+	if err != nil {
+		return nil, err
+	}
+	relationSet := make(map[string]bool)
+	for _, relation := range opts.Relations {
+		relationSet[relation] = true
+	}
+	edges, err := graph.Walk(target, opts.Direction, opts.Depth, relationSet)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LineageEdge, 0, len(edges))
+	for _, edge := range edges {
+		out = append(out, LineageEdge{
+			From:      targetText(edge.From),
+			Relation:  edge.Relation,
+			To:        targetText(edge.To),
+			Direction: edge.Direction,
+			Depth:     edge.Depth,
+			Origin:    edge.Origin,
+			CreatedBy: string(edge.CreatedBy),
+		})
+	}
+	return out, nil
+}
+
+func (c *Client) RetractPart(ctx context.Context, opts SetPartOptions) error {
+	summary, err := c.findTicketSummary(ctx, opts.Ref)
+	if err != nil {
+		return err
+	}
+	path := strings.TrimPrefix(opts.Ref, summary.Ref)
+	path = strings.TrimPrefix(path, "/")
+	proj, err := c.CurrentProjection(ctx, model.TicketID(summary.ID), time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	partID, ok := proj.Paths[path]
+	if !ok {
+		return fmt.Errorf("part not found: %s", path)
+	}
+	now := time.Now().UTC()
+	stream := model.Ref{Kind: model.KindTicket, Entity: summary.ID}
+	operation := model.OpRetractValue
+	if opts.Recursive {
+		operation = model.OpRetractSubtree
+	}
+	event := model.Event{
+		ID:          model.EventID(NewID("event")),
+		Stream:      stream,
+		Operation:   operation,
+		Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: []string{path}},
+		RecordedAt:  now,
+		EffectiveAt: now,
+		Actor:       model.ActorRef{Kind: "human", ID: opts.Actor, Name: opts.Actor},
+		Reason:      opts.Reason,
+	}
+	_, err = c.AppendBatch(ctx, []model.Event{event}, "", nil, nil)
+	return err
+}
+
+func (c *Client) findTicketSummary(ctx context.Context, ref string) (TicketSummary, error) {
+	baseRef := strings.SplitN(ref, "/", 2)[0]
+	summaries, err := c.ListTicketSummaries(ctx, time.Now().UTC())
+	if err != nil {
+		return TicketSummary{}, err
+	}
+	for _, summary := range summaries {
+		if summary.Ref == baseRef {
+			return summary, nil
+		}
+	}
+	return TicketSummary{}, fmt.Errorf("ticket not found: %s", ref)
+}
+
+func (c *Client) resolveRef(ctx context.Context, ref string) (model.Ref, error) {
+	if strings.HasPrefix(ref, "project:") {
+		return model.Ref{Kind: model.KindProject, Entity: strings.TrimPrefix(ref, "project:")}, nil
+	}
+	if strings.HasPrefix(ref, "group:") {
+		return model.Ref{Kind: model.KindGroup, Entity: strings.TrimPrefix(ref, "group:")}, nil
+	}
+	summary, err := c.findTicketSummary(ctx, ref)
+	if err != nil {
+		return model.Ref{}, err
+	}
+	return model.Ref{Kind: model.KindTicket, Entity: summary.ID}, nil
+}
+
+func targetText(ref model.Ref) string {
+	if ref.Entity == "" {
+		return string(ref.Kind)
+	}
+	return string(ref.Kind) + ":" + ref.Entity
 }
 
 func valueText(value model.Value) any {
