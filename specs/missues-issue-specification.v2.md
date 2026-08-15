@@ -283,6 +283,11 @@ Global flags are process-level maintenance or inspection operations. They do
 not create new domain subcommands, and they MUST NOT become a mechanism for
 general ticket operations.
 
+The allowlist MAY grow only for additional process-level maintenance or
+inspection flags. It MUST NOT grow for flags that introduce a new command
+subpath, mutate ticket state, or start a domain workflow. Those behaviors MUST
+still be expressed through `issue new`, `issue show`, or `issue set`.
+
 ## 5.2 General command grammar
 
 ```text

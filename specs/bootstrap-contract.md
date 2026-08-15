@@ -33,6 +33,11 @@ missis --self-update
 Global flags are process-level maintenance or inspection operations, not new
 domain subcommands.
 
+The allowlist MAY grow only for process-level maintenance or inspection flags.
+It MUST NOT grow for flags that introduce a new command path, mutate ticket
+state, or start a domain workflow. Those behaviors remain under `new`, `show`,
+or `set`.
+
 The durable store is a single SQLite database file:
 
 - `MISSIS_STORE` overrides the path;
