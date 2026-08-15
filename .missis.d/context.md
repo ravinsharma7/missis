@@ -67,3 +67,4 @@ go run ./tools/store-gaps .missis-store/missis.db
 - Full high-level command orchestration in SDK
 - Runtime ontology loading and enforcement
 - Project/group navigation in TUI and CLI context
+- Multistore/worktree navigation and comparison
