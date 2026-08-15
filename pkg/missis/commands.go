@@ -54,6 +54,17 @@ type SearchOptions struct {
 	EffectiveAt time.Time
 }
 
+type ListFilter struct {
+	Project     string
+	Group       string
+	Status      string
+	Type        string
+	Tag         string
+	Query       string
+	EffectiveAt time.Time
+	KnownAt     time.Time
+}
+
 func (c *Client) NewTicket(ctx context.Context, opts NewTicketOptions) (TicketSummary, error) {
 	now := time.Now().UTC()
 	if opts.EffectiveAt.IsZero() {
@@ -337,6 +348,63 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]TicketSummar
 		out = append(out, summary)
 	}
 	return out, nil
+}
+
+func (c *Client) ListTicketsFiltered(ctx context.Context, filter ListFilter) ([]TicketSummary, error) {
+	summaries, err := c.ListTicketSummaries(ctx, filter.EffectiveAt)
+	if err != nil {
+		return nil, err
+	}
+	if filter.Project == "" && filter.Group == "" && filter.Status == "" && filter.Type == "" && filter.Tag == "" && filter.Query == "" {
+		return summaries, nil
+	}
+	out := make([]TicketSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		if filter.Status != "" && summary.Status != filter.Status {
+			continue
+		}
+		proj, err := c.ShowTicket(ctx, summary.Ref, ShowOptions{EffectiveAt: filter.EffectiveAt, KnownAt: filter.KnownAt})
+		if err != nil {
+			continue
+		}
+		if filter.Type != "" && !partHasValue(proj, "type", filter.Type) {
+			continue
+		}
+		if filter.Tag != "" && !partHasValue(proj, "tag", filter.Tag) {
+			continue
+		}
+		if filter.Query != "" {
+			text := summary.Title
+			for _, part := range proj.Parts {
+				if s, ok := part.Value.(string); ok {
+					text += " " + s
+				}
+			}
+			if !strings.Contains(strings.ToLower(text), strings.ToLower(filter.Query)) {
+				continue
+			}
+		}
+		out = append(out, summary)
+	}
+	return out, nil
+}
+
+func partHasValue(proj TicketProjection, path, want string) bool {
+	part, ok := proj.Parts[path]
+	if !ok {
+		return false
+	}
+	switch value := part.Value.(type) {
+	case string:
+		return value == want
+	case []string:
+		for _, item := range value {
+			if item == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *Client) RetractPart(ctx context.Context, opts SetPartOptions) error {

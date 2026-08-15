@@ -112,3 +112,52 @@ func LineageText(edges []missis.LineageEdge) string {
 func LineageJSON(edges []missis.LineageEdge) ([]byte, error) {
 	return json.Marshal(map[string]any{"edges": edges})
 }
+
+func ShowList(items []missis.TicketSummary, format string) (string, error) {
+	switch format {
+	case "json":
+		data, err := json.Marshal(map[string]any{"tickets": items})
+		return string(data), err
+	default:
+		var b strings.Builder
+		b.WriteString("REF\tSTATUS\tTITLE\tRECORDED_AT\n")
+		for _, item := range items {
+			b.WriteString(fmt.Sprintf("%s\t%s\t%s\t%s\n", item.Ref, item.Status, item.Title, item.RecordedAt.UTC().Format("2006-01-02T15:04:05Z")))
+		}
+		return b.String(), nil
+	}
+}
+
+func ShowTicket(projection missis.TicketProjection, format string) (string, error) {
+	switch format {
+	case "json":
+		data, err := json.Marshal(projection)
+		return string(data), err
+	default:
+		return TicketText(projection), nil
+	}
+}
+
+func ShowHistory(events []missis.EventView, format string) (string, error) {
+	if format == "json" {
+		data, err := json.Marshal(map[string]any{"events": events})
+		return string(data), err
+	}
+	return HistoryText(events), nil
+}
+
+func ShowReferences(links []missis.LinkView, format string) (string, error) {
+	if format == "json" {
+		data, err := json.Marshal(map[string]any{"links": links})
+		return string(data), err
+	}
+	return ReferencesText(links), nil
+}
+
+func ShowLineage(edges []missis.LineageEdge, format string) (string, error) {
+	if format == "json" {
+		data, err := json.Marshal(map[string]any{"edges": edges})
+		return string(data), err
+	}
+	return LineageText(edges), nil
+}
