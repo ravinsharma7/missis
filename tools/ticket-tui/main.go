@@ -346,7 +346,11 @@ func (m tuiModel) viewList() string {
 	}
 	for i := start; i < end; i++ {
 		summary := m.summaries[i]
-		line := fmt.Sprintf("%-8s %-10s %s", summary.Ref, summary.Status, summary.Title)
+		title := summary.Title
+		if title == "" {
+			title = "<no title>"
+		}
+		line := fmt.Sprintf("%-8s %-10s %s", summary.Ref, summary.Status, title)
 		if i == m.selected {
 			line = "> " + line
 		} else {
@@ -389,8 +393,15 @@ func (m tuiModel) viewDetail() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(m.detail.summary.Ref + "  " + m.detail.summary.Title))
+	detailTitle := m.detail.summary.Title
+	if detailTitle == "" {
+		detailTitle = "<no title>"
+	}
+	b.WriteString(titleStyle.Render(m.detail.summary.Ref + "  " + detailTitle))
 	b.WriteString("\n\n")
+	if len(m.detail.lines) <= 1 {
+		b.WriteString("<no parts>\n")
+	}
 	start := m.detail.offset
 	end := start + m.height - 6
 	if end < start {
@@ -418,8 +429,16 @@ func (m tuiModel) viewCompare() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("compare"))
 	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("A: %s  %s  %s\n", m.compareA.Ref, m.compareA.Status, m.compareA.Title))
-	b.WriteString(fmt.Sprintf("B: %s  %s  %s\n", m.compareB.Ref, m.compareB.Status, m.compareB.Title))
+	titleA := m.compareA.Title
+	if titleA == "" {
+		titleA = "<no title>"
+	}
+	titleB := m.compareB.Title
+	if titleB == "" {
+		titleB = "<no title>"
+	}
+	b.WriteString(fmt.Sprintf("A: %s  %s  %s\n", m.compareA.Ref, m.compareA.Status, titleA))
+	b.WriteString(fmt.Sprintf("B: %s  %s  %s\n", m.compareB.Ref, m.compareB.Status, titleB))
 	if m.compareA.ID == m.compareB.ID {
 		b.WriteString("\n(same ticket)\n")
 	}
