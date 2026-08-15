@@ -20,12 +20,12 @@ import (
 )
 
 const (
-	exitSuccess     = 0
-	exitInvalid     = 2
-	exitNotFound    = 3
-	exitValidation  = 4
-	exitConflict    = 5
-	exitStorage     = 8
+	exitSuccess    = 0
+	exitInvalid    = 2
+	exitNotFound   = 3
+	exitValidation = 4
+	exitConflict   = 5
+	exitStorage    = 8
 )
 
 type stringList []string
@@ -56,12 +56,12 @@ type setResult struct {
 }
 
 type showTicket struct {
-	Ref        string                 `json:"ref"`
-	ID         string                 `json:"id"`
-	Title      string                 `json:"title"`
-	Status     string                 `json:"status"`
-	RecordedAt string                 `json:"recorded_at"`
-	Parts      map[string]showPart    `json:"parts"`
+	Ref        string              `json:"ref"`
+	ID         string              `json:"id"`
+	Title      string              `json:"title"`
+	Status     string              `json:"status"`
+	RecordedAt string              `json:"recorded_at"`
+	Parts      map[string]showPart `json:"parts"`
 }
 
 type showPart struct {
@@ -87,10 +87,10 @@ type showEvent struct {
 }
 
 type errorResult struct {
-	Error               string   `json:"error"`
-	Target              *string  `json:"target"`
-	Message             string   `json:"message"`
-	Ontology            *string  `json:"ontology"`
+	Error              string   `json:"error"`
+	Target             *string  `json:"target"`
+	Message            string   `json:"message"`
+	Ontology           *string  `json:"ontology"`
 	MissingObligations []string `json:"missing_obligations"`
 }
 
@@ -824,12 +824,12 @@ func runSet(args []string) int {
 
 	requiresExisting := retract || name != "" || parent != ""
 	var (
-		ticketID        model.TicketID
-		partID          model.PartID
-		currentPath     []string
-		creationEvents  []model.Event
-		partExisted     bool
-		stream          model.Ref
+		ticketID       model.TicketID
+		partID         model.PartID
+		currentPath    []string
+		creationEvents []model.Event
+		partExisted    bool
+		stream         model.Ref
 	)
 	if requiresExisting {
 		ticketID, partID, currentPath, err = resolvePartRef(db, ref, effectiveTime)
@@ -947,7 +947,7 @@ func runSet(args []string) int {
 			return exitConflict
 		}
 		preconditions = append(preconditions, store.Precondition{
-			TargetEntity:        string(partID),
+			TargetEntity:         string(partID),
 			ExpectedCurrentEvent: currentEvent.ID,
 		})
 	}
@@ -1566,11 +1566,11 @@ func ensurePartPath(db *store.Store, ticketID model.TicketID, path []string, act
 		return nil, "", false, err
 	}
 	var (
-		parentID      *model.PartID
-		events        []model.Event
-		partID        model.PartID
-		existed       = true
-		currentPath   []string
+		parentID    *model.PartID
+		events      []model.Event
+		partID      model.PartID
+		existed     = true
+		currentPath []string
 	)
 	for _, segment := range path {
 		currentPath = append(currentPath, segment)
@@ -1877,14 +1877,27 @@ func outputProjection(ticketID model.TicketID, proj *model.Projection, pathFilte
 	if !jsonMode {
 		fmt.Printf("%s  %s\n", ticketRef, title)
 		fmt.Printf("status: %s\n", status)
+		paths := make([]string, 0, len(proj.Paths))
 		for path := range proj.Paths {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		for _, path := range paths {
+			if path == "title" || path == "status" {
+				continue
+			}
 			if !pathMatches(path, pathFilter) {
 				continue
 			}
 			part := proj.Parts[proj.Paths[path]]
-			if part != nil && part.Value != nil {
-				fmt.Printf("%s: %s\n", path, valueText(*part.Value))
+			if part == nil {
+				continue
 			}
+			value := valueOrNilFromPart(part)
+			if value == nil {
+				continue
+			}
+			fmt.Printf("%s: %v\n", path, value)
 		}
 		return
 	}
@@ -2138,10 +2151,10 @@ func targetText(ref model.Ref) string {
 func printError(err error, code int, jsonMode bool, target *string) {
 	if jsonMode {
 		writeJSON(errorResult{
-			Error:   errorCode(code),
-			Target:  target,
-			Message: err.Error(),
-			Ontology: nil,
+			Error:              errorCode(code),
+			Target:             target,
+			Message:            err.Error(),
+			Ontology:           nil,
 			MissingObligations: []string{},
 		})
 		return
