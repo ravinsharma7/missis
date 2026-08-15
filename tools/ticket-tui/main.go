@@ -350,7 +350,7 @@ func (m tuiModel) viewList() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(fmt.Sprintf("missis tickets | project: %s | group: %s", m.projectCtx, m.groupCtx)))
 	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("%-8s %-10s %s\n", "REF", "STATUS", "TITLE"))
+	b.WriteString(fmt.Sprintf("  %-6s %-10s %s\n", "REF", "STATUS", "TITLE"))
 	visible := m.height - 3
 	if visible < 1 {
 		visible = 1
@@ -366,12 +366,11 @@ func (m tuiModel) viewList() string {
 		if title == "" {
 			title = "<no title>"
 		}
-		line := fmt.Sprintf("%-8s %-10s %s", summary.Ref, summary.Status, title)
+		cursor := "  "
 		if i == m.selected {
-			line = "> " + line
-		} else {
-			line = "  " + line
+			cursor = "> "
 		}
+		line := fmt.Sprintf("%s%-6s %-10s %s", cursor, summary.Ref, summary.Status, title)
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
