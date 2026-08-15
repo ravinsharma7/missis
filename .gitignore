@@ -1,3 +1,4 @@
 /missis
 .missis-store/
 backups/
+.env.local
