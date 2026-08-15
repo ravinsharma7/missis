@@ -297,6 +297,10 @@ func runNew(args []string) int {
 	}
 
 	title := fs.Arg(0)
+	if kind == "" && fromFile == "" && !stdin && strings.TrimSpace(title) == "" {
+		printError(fmt.Errorf("title is required for missis new"), exitInvalid, jsonMode, nil)
+		return exitInvalid
+	}
 	storePath, err := missis.ResolveStorePath(storeFlag)
 	if err != nil {
 		printError(err, exitInvalid, jsonMode, nil)
@@ -860,6 +864,7 @@ func runSet(args []string) int {
 	}
 
 	if fs.NArg() < 1 {
+		printError(fmt.Errorf("set requires a reference"), exitInvalid, jsonMode, nil)
 		return exitInvalid
 	}
 	ref := fs.Arg(0)
