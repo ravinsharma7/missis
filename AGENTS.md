@@ -1,5 +1,5 @@
 - keep things relevant.
 - don't leave things open ended.
-- mention when something is no confirmed, unknown, or not sure.
+- mention when something is confirmed, not confirmed, unknown, or not sure.
 - uses missis to track its own issues in issues/.
 - propose "hill climbing" solutions when it assist long term health of the project.

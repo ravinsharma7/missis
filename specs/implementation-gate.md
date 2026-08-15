@@ -11,7 +11,7 @@ must be run again and the other two brought back into alignment.
 
 ## Canonical basis
 
-`specs/missues-issue-specificationv2.md` is the canonical specification. The
+`specs/missues-issue-specification.v2.md` is the canonical specification. The
 v1 file is historical and must not be used as a basis for new work.
 
 Normative strength is taken from the specification's own language:
