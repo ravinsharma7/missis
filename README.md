@@ -82,6 +82,55 @@ Update the installed binary:
 missis --self-update
 ```
 
+## Project layout and store discovery
+
+```text
+.missis                       marker pointing to the local SQLite store
+.missis.d/                    committed project metadata and manifests
+.missis-store/                ignored local SQLite database
+implementation/               lower-level model and store packages
+pkg/missis/                   reusable Go SDK facade
+cmd/missis/                   command-line binary
+tools/                        development and maintenance tools
+```
+
+Store discovery order:
+
+1. `--store <path>`
+2. nearest `.missis` marker
+3. `MISSIS_STORE`
+4. XDG fallback
+
+Committed metadata paths are configurable:
+
+```bash
+MISSIS_MANIFEST_PATH
+MISSIS_SHOULD_BACKLOG_PATH
+MISSIS_PHASE1_REQUIREMENTS_PATH
+```
+
+## Go SDK
+
+The public facade is:
+
+```go
+import "github.com/ravinsharma7/missis/pkg/missis"
+```
+
+It provides store discovery, a `Client` wrapper, event helpers, health,
+backup, and repair methods. `cmd/missis` is intended to stay a thin CLI layer.
+
+## Maintenance tools
+
+```bash
+go run ./tools/store-gaps <store.db>
+go run ./tools/repair-store --dry-run <store.db>
+go run ./tools/repair-store <store.db>
+go run ./tools/store-manifest
+```
+
+Backup and remote scripts live in `scripts/`.
+
 # Viewing tickets
 
 `show` reads the event ledger and derives the current projection on demand. It
