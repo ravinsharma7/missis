@@ -1,8 +1,10 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,6 +71,10 @@ func Open(path string) (*Store, error) {
 		writer.Close()
 		return nil, err
 	}
+	if err := ensureStoreIdentityAndHashes(writer); err != nil {
+		writer.Close()
+		return nil, err
+	}
 	reader, err := sql.Open("sqlite", path)
 	if err != nil {
 		writer.Close()
@@ -91,6 +97,24 @@ func (s *Store) Close() error {
 		return writerErr
 	}
 	return readerErr
+}
+
+func (s *Store) StoreID() (string, error) {
+	var storeID string
+	err := s.reader.QueryRow(`SELECT store_id FROM store_meta WHERE singleton = 1`).Scan(&storeID)
+	return storeID, err
+}
+
+func (s *Store) HeadHash() (string, error) {
+	var headHash string
+	err := s.reader.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&headHash)
+	return headHash, err
+}
+
+func (s *Store) EventCount() (int64, error) {
+	var count int64
+	err := s.reader.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count)
+	return count, err
 }
 
 func (s *Store) Backup(dst string) error {
@@ -219,6 +243,67 @@ func newULID(prefix string) string {
 	return prefix + ":" + ulid.Make().String()
 }
 
+func computeEventHash(event model.Event, previousHash string) string {
+	canonical := event
+	canonical.AliasSeq = 0
+	canonical.PreviousHash = ""
+	canonical.Hash = ""
+	data, _ := json.Marshal(canonical)
+	sum := sha256.Sum256([]byte(previousHash + "\n" + string(data)))
+	return hex.EncodeToString(sum[:])
+}
+
+func ensureStoreIdentityAndHashes(db *sql.DB) error {
+	var storeID string
+	err := db.QueryRow(`SELECT store_id FROM store_meta WHERE singleton = 1`).Scan(&storeID)
+	if err == sql.ErrNoRows {
+		storeID = newULID("store")
+		if _, err := db.Exec(
+			`INSERT INTO store_meta (singleton, store_id, head_hash, updated_at) VALUES (1, ?, '', ?)`,
+			storeID, time.Now().UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
+	events, err := loadEventsTx(db)
+	if err != nil {
+		return err
+	}
+	return rebuildHashes(db, events)
+}
+
+func rebuildHashes(db *sql.DB, events []model.Event) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM event_hashes`); err != nil {
+		return err
+	}
+	previous := ""
+	for _, event := range events {
+		hash := computeEventHash(event, previous)
+		if _, err := tx.Exec(
+			`INSERT INTO event_hashes (event_id, previous_hash, hash) VALUES (?, ?, ?)`,
+			event.ID, previous, hash,
+		); err != nil {
+			return err
+		}
+		previous = hash
+	}
+	if _, err := tx.Exec(
+		`UPDATE store_meta SET head_hash = ?, updated_at = ? WHERE singleton = 1`,
+		previous, time.Now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func isBusyError(err error) bool {
 	if err == nil {
 		return false
@@ -288,7 +373,28 @@ func (s *Store) CheckConsistency() error {
 			return fmt.Errorf("idempotency %s has invalid event ids: %w", key, err)
 		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	var hashCount int64
+	if err := s.reader.QueryRow(`SELECT COUNT(*) FROM event_hashes`).Scan(&hashCount); err != nil {
+		return err
+	}
+	if hashCount != int64(len(events)) {
+		return fmt.Errorf("event hash count mismatch: got %d, want %d", hashCount, len(events))
+	}
+	previous := ""
+	for _, event := range events {
+		previous = computeEventHash(event, previous)
+	}
+	var storedHead string
+	if err := s.reader.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&storedHead); err != nil {
+		return err
+	}
+	if previous != storedHead {
+		return fmt.Errorf("head hash mismatch")
+	}
+	return nil
 }
 
 func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, preconditions []Precondition, result any) (AppendOutcome, error) {
@@ -426,6 +532,27 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		event.AliasSeq = aliasSeq
 		running = append(running, event)
 		appended = append(appended, event)
+	}
+
+	var previousHash string
+	if err := tx.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&previousHash); err != nil {
+		return AppendOutcome{}, 0, err
+	}
+	for _, event := range appended {
+		hash := computeEventHash(event, previousHash)
+		if _, err := tx.Exec(
+			`INSERT INTO event_hashes (event_id, previous_hash, hash) VALUES (?, ?, ?)`,
+			event.ID, previousHash, hash,
+		); err != nil {
+			return AppendOutcome{}, 0, err
+		}
+		previousHash = hash
+	}
+	if _, err := tx.Exec(
+		`UPDATE store_meta SET head_hash = ?, updated_at = ? WHERE singleton = 1`,
+		previousHash, now.Format(time.RFC3339Nano),
+	); err != nil {
+		return AppendOutcome{}, 0, err
 	}
 
 	newNext := nextSequence + uint64(len(events))

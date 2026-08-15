@@ -50,6 +50,10 @@ func TestBackupRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	originalID, err := s.StoreID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	ticketID := model.TicketID("ticket:test")
 	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
 	now := time.Now().UTC()
@@ -72,6 +76,10 @@ func TestBackupRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restored.Close()
+	restoredID, _ := restored.StoreID()
+	if restoredID != originalID {
+		t.Fatalf("store id changed after restore: %s != %s", restoredID, originalID)
+	}
 	loaded, err := restored.LoadTicketEvents(ticketID)
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +89,107 @@ func TestBackupRestore(t *testing.T) {
 	}
 	if err := restored.CheckConsistency(); err != nil {
 		t.Fatalf("consistency after restore: %v", err)
+	}
+}
+
+func TestStoreIdentityAndHeadHash(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	s, err := Open(filepath.Join(tmp, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	storeID, err := s.StoreID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storeID == "" {
+		t.Fatal("store id is empty")
+	}
+	head, err := s.HeadHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head != "" {
+		t.Fatalf("empty store should have empty head, got %s", head)
+	}
+
+	ticketID := model.TicketID("ticket:test")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	now := time.Now().UTC()
+	events := []model.Event{
+		{ID: model.EventID("event:1"), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, err := s.AppendBatch(events, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	head, err = s.HeadHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head == "" {
+		t.Fatal("head hash is empty after append")
+	}
+}
+
+func TestDivergingHeads(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "missis.db")
+	backup := filepath.Join(tmp, "backup.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketID := model.TicketID("ticket:test")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	now := time.Now().UTC()
+	if _, err := s.AppendBatch([]model.Event{
+		{ID: model.EventID("event:1"), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Backup(backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	original, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer original.Close()
+	if _, err := original.AppendBatch([]model.Event{
+		{ID: model.EventID("event:2"), Stream: stream, Sequence: 2, Operation: model.OpSetValue, Target: model.Ref{Kind: model.KindPart, Entity: "part:p", Path: []string{"p"}}, Value: model.Value{Kind: model.ValueKindText, Text: "x"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Open(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	originalHead, _ := original.HeadHash()
+	restoredHead, _ := restored.HeadHash()
+	if originalHead == restoredHead {
+		t.Fatalf("expected divergent heads, both are %s", originalHead)
+	}
+}
+
+func BenchmarkEventHash(b *testing.B) {
+	event := model.Event{
+		ID:        model.EventID("event:bench"),
+		Sequence:  1,
+		Operation: model.OpSetValue,
+		Target:    model.Ref{Kind: model.KindPart, Entity: "part:p", Path: []string{"p"}},
+		Value:     model.Value{Kind: model.ValueKindText, Text: "bench"},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = computeEventHash(event, "previous")
 	}
 }
 

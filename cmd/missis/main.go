@@ -377,10 +377,18 @@ func runShow(args []string) int {
 			}
 			return exitStorage
 		}
+		storeID, _ := db.StoreID()
+		headHash, _ := db.HeadHash()
+		eventCount, _ := db.EventCount()
 		if jsonMode {
-			writeJSON(map[string]any{"status": "ok"})
+			writeJSON(map[string]any{
+				"status":      "ok",
+				"store_id":    storeID,
+				"head_hash":   headHash,
+				"event_count": eventCount,
+			})
 		} else {
-			fmt.Println("ok")
+			fmt.Printf("ok store=%s head=%s events=%d\n", storeID, headHash, eventCount)
 		}
 		return exitSuccess
 	}
