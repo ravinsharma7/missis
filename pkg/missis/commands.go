@@ -44,6 +44,16 @@ type LineageOptions struct {
 	Relations []string
 }
 
+type SearchOptions struct {
+	Query       string
+	Status      string
+	Project     string
+	Group       string
+	Type        string
+	Tag         string
+	EffectiveAt time.Time
+}
+
 func (c *Client) NewTicket(ctx context.Context, opts NewTicketOptions) (TicketSummary, error) {
 	now := time.Now().UTC()
 	if opts.EffectiveAt.IsZero() {
@@ -295,6 +305,36 @@ func (c *Client) ShowLineage(ctx context.Context, ref string, opts LineageOption
 			Origin:    edge.Origin,
 			CreatedBy: string(edge.CreatedBy),
 		})
+	}
+	return out, nil
+}
+
+func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]TicketSummary, error) {
+	summaries, err := c.ListTicketSummaries(ctx, opts.EffectiveAt)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TicketSummary, 0)
+	for _, summary := range summaries {
+		if opts.Status != "" && summary.Status != opts.Status {
+			continue
+		}
+		if opts.Query != "" {
+			proj, err := c.ShowTicket(ctx, summary.Ref, ShowOptions{EffectiveAt: opts.EffectiveAt, KnownAt: opts.EffectiveAt})
+			if err != nil {
+				continue
+			}
+			text := summary.Title
+			for _, part := range proj.Parts {
+				if s, ok := part.Value.(string); ok {
+					text += " " + s
+				}
+			}
+			if !strings.Contains(strings.ToLower(text), strings.ToLower(opts.Query)) {
+				continue
+			}
+		}
+		out = append(out, summary)
 	}
 	return out, nil
 }

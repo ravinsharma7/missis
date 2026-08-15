@@ -85,6 +85,10 @@ func HistoryText(events []missis.EventView) string {
 	return b.String()
 }
 
+func HistoryJSON(events []missis.EventView) ([]byte, error) {
+	return json.Marshal(map[string]any{"events": events})
+}
+
 func ReferencesText(links []missis.LinkView) string {
 	var b strings.Builder
 	for _, link := range links {
@@ -93,10 +97,18 @@ func ReferencesText(links []missis.LinkView) string {
 	return b.String()
 }
 
+func ReferencesJSON(links []missis.LinkView) ([]byte, error) {
+	return json.Marshal(map[string]any{"links": links})
+}
+
 func LineageText(edges []missis.LineageEdge) string {
 	var b strings.Builder
 	for _, edge := range edges {
 		b.WriteString(fmt.Sprintf("%d %s %s %s %s\n", edge.Depth, edge.Direction, edge.From, edge.Relation, edge.To))
 	}
 	return b.String()
+}
+
+func LineageJSON(edges []missis.LineageEdge) ([]byte, error) {
+	return json.Marshal(map[string]any{"edges": edges})
 }
