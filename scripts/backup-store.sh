@@ -12,7 +12,7 @@ backup_name="${store_id//:/_}-${head_hash}.db"
 dst="backups/$backup_name"
 
 if [ -f "$dst" ]; then
-  echo "backup already exists: $dst"
+  echo "backup already exists: $dst (identical head is safe to skip)"
   exit 0
 fi
 
@@ -22,3 +22,5 @@ echo "$dst"
 # Optional R2/S3 upload:
 # rclone copy "$dst" remote:missis-backups/
 # aws s3 cp "$dst" s3://your-bucket/missis-backups/
+# Safety: filename is keyed by store-id and head-hash, so a different head
+# cannot overwrite an existing backup without an explicit force step.

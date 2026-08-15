@@ -522,16 +522,25 @@ func TestMultiProcessConcurrency(t *testing.T) {
 	}
 
 	var setWG sync.WaitGroup
+	setResults := make([]cmdResult, workers)
 	for i := 0; i < workers; i++ {
 		setWG.Add(1)
 		go func(i int) {
 			defer setWG.Done()
-			if _, err := runMissisRaw(store, "set", "--json", "#1/agent-"+strconv.Itoa(i), "value-"+strconv.Itoa(i)); err != nil {
+			result, err := runMissisRaw(store, "set", "--json", "#1/agent-"+strconv.Itoa(i), "value-"+strconv.Itoa(i))
+			if err != nil {
 				t.Errorf("set worker %d: %v", i, err)
+				return
 			}
+			setResults[i] = result
 		}(i)
 	}
 	setWG.Wait()
+	for i, result := range setResults {
+		if result.code != 0 {
+			t.Fatalf("set worker %d failed: %d stdout=%s stderr=%s", i, result.code, result.stdout, result.stderr)
+		}
+	}
 	projection := mustJSON(t, runMissis(t, store, "show", "--json", "#1"))
 	parts := projection["parts"].(map[string]any)
 	for i := 0; i < workers; i++ {

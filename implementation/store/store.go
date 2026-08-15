@@ -230,7 +230,7 @@ func migrate(db *sql.DB) error {
 func configureDB(db *sql.DB) error {
 	for _, pragma := range []string{
 		`PRAGMA foreign_keys = ON`,
-		`PRAGMA busy_timeout = 5000`,
+		`PRAGMA busy_timeout = 10000`,
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			return err
@@ -419,12 +419,12 @@ func (s *Store) appendBatchWithRetry(events []model.Event, idempotencyKey string
 		alias   uint64
 		err     error
 	)
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 6; attempt++ {
 		outcome, alias, err = s.appendBatchOnce(events, idempotencyKey, preconditions, result, allocateAlias)
 		if err == nil || !isRetryableAppendError(err) {
 			return outcome, alias, err
 		}
-		time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+		time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
 	}
 	return outcome, alias, err
 }
@@ -496,7 +496,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		return AppendOutcome{}, 0, err
 	}
 
-	nextSequence, err := nextSequenceTx(tx, streamKind, streamEntity)
+	nextSequence, err := allocateSequenceTx(tx, streamKind, streamEntity, uint64(len(events)))
 	if err != nil {
 		return AppendOutcome{}, 0, err
 	}
@@ -558,15 +558,6 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 	if _, err := tx.Exec(
 		`UPDATE store_meta SET head_hash = ?, updated_at = ? WHERE singleton = 1`,
 		previousHash, now.Format(time.RFC3339Nano),
-	); err != nil {
-		return AppendOutcome{}, 0, err
-	}
-
-	newNext := nextSequence + uint64(len(events))
-	if _, err := tx.Exec(
-		`INSERT INTO streams (stream_kind, stream_entity, next_sequence) VALUES (?, ?, ?)
-		 ON CONFLICT(stream_kind, stream_entity) DO UPDATE SET next_sequence = excluded.next_sequence`,
-		streamKind, streamEntity, newNext,
 	); err != nil {
 		return AppendOutcome{}, 0, err
 	}
@@ -798,6 +789,21 @@ func nextSequenceTx(tx *sql.Tx, streamKind, streamEntity string) (uint64, error)
 		return 1, nil
 	}
 	return next, err
+}
+
+func allocateSequenceTx(tx *sql.Tx, streamKind, streamEntity string, count uint64) (uint64, error) {
+	var newValue uint64
+	err := tx.QueryRow(
+		`INSERT INTO streams (stream_kind, stream_entity, next_sequence) VALUES (?, ?, ?)
+		 ON CONFLICT(stream_kind, stream_entity)
+		 DO UPDATE SET next_sequence = next_sequence + excluded.next_sequence
+		 RETURNING next_sequence`,
+		streamKind, streamEntity, count,
+	).Scan(&newValue)
+	if err != nil {
+		return 0, err
+	}
+	return newValue - count + 1, nil
 }
 
 func checkPreconditions(events []model.Event, preconditions []Precondition) error {
