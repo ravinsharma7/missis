@@ -8,3 +8,35 @@
 - You can hack and build your own "missis" implementation by reusing and mixing any parts of these. it is organized in this way to make it easy to cleanroom port into another language, or extend or change parts of it for different purposes. These three are always stable and constantly will be made more rigorous so anything project extending from this will always have a strong baseline.
 - All three implementation will expose some flaws in each other and can be used as basis to continuously improve each other.
 - This project uses AI heavily to experiment with matters.
+
+# Viewing tickets
+
+`show` reads the event ledger and derives the current projection on demand. It
+does not require exporting Markdown or writing files.
+
+```bash
+# list tickets
+missis show
+
+# show one ticket's current part tree
+missis show '#16'
+
+# show one virtual part directly
+missis show '#16/analysis/no-pointer/pros'
+
+# machine-readable projection
+missis show '#16' --json
+
+# optional Markdown export
+missis show '#16' --format markdown
+```
+
+For an interactive shell over those views, use the development tool:
+
+```bash
+bash tools/ticket-explorer.sh
+```
+
+That tool is not a fourth top-level `missis` command. It wraps `show` and can
+list tickets, inspect a ticket or part, emit JSON, follow references, walk
+lineage, search, and write Markdown to a file when requested.
