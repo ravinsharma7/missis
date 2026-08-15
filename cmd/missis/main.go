@@ -97,6 +97,15 @@ type errorResult struct {
 
 const modulePath = "github.com/ravinsharma7/missis"
 
+const agentBriefCommands = `missis new "Title" [--priority X] [--type T]... [--tag T]... [--from FILE|--stdin] [--json]
+missis show [#REF] [--json|--format markdown] [--search S] [--status S] [--type T] [--tag T]
+missis set <REF> <VALUE> [--add] [--retract [--recursive] [--reason R]] [--json]`
+
+const agentBriefRules = `- No destructive delete; use --retract --reason instead.
+- If a ticket is requested without a title, derive it from the active focus and state the assumption; do not block on a question.
+- Prefer missis refs (#N) over free text.
+- Use --json for machine-readable output.`
+
 func buildVersion() (string, string) {
 	version := "dev"
 	commit := "unknown"
@@ -196,8 +205,8 @@ func printVersion(jsonMode bool) {
 	fmt.Printf("missis version=%s commit=%s\n", version, commit)
 }
 
-func outputContext(storePath string, jsonMode bool) {
-	project, group, focus := "none", "none", ""
+func readActivePointer() (project, group, focus, ticket string) {
+	project, group, focus, ticket = "none", "none", "", ""
 	activePath := filepath.Join(".missis.d", "active.local.md")
 	if _, err := os.Stat(activePath); err != nil {
 		activePath = filepath.Join(".missis.d", "active.example.md")
@@ -214,8 +223,16 @@ func outputContext(storePath string, jsonMode bool) {
 			if strings.HasPrefix(line, "focus:") {
 				focus = strings.TrimSpace(strings.TrimPrefix(line, "focus:"))
 			}
+			if strings.HasPrefix(line, "ticket:") {
+				ticket = strings.TrimSpace(strings.TrimPrefix(line, "ticket:"))
+			}
 		}
 	}
+	return project, group, focus, ticket
+}
+
+func outputContext(storePath string, jsonMode bool) {
+	project, group, focus, _ := readActivePointer()
 	if jsonMode {
 		writeJSON(map[string]string{
 			"store":   storePath,
@@ -231,6 +248,58 @@ func outputContext(storePath string, jsonMode bool) {
 	if focus != "" {
 		fmt.Printf("focus: %s\n", focus)
 	}
+}
+
+func runAgentBrief(args []string) int {
+	storeFlag := ""
+	jsonMode := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--store":
+			if i+1 < len(args) {
+				storeFlag = args[i+1]
+				i++
+			}
+		case "--json":
+			jsonMode = true
+		}
+	}
+	storePath, err := missis.ResolveStorePath(storeFlag)
+	if err != nil {
+		printError(err, exitInvalid, jsonMode, nil)
+		return exitInvalid
+	}
+	project, group, focus, ticket := readActivePointer()
+	if jsonMode {
+		writeJSON(map[string]any{
+			"store":    storePath,
+			"project":  project,
+			"group":    group,
+			"focus":    focus,
+			"ticket":   ticket,
+			"commands": strings.Split(agentBriefCommands, "\n"),
+			"rules":    strings.Split(agentBriefRules, "\n"),
+		})
+		return exitSuccess
+	}
+	fmt.Printf("store: %s\n", storePath)
+	fmt.Printf("project: %s\n", project)
+	fmt.Printf("group: %s\n", group)
+	if focus != "" {
+		fmt.Printf("focus: %s\n", focus)
+	}
+	if ticket != "" {
+		fmt.Printf("ticket: %s\n", ticket)
+	}
+	fmt.Println("\ncommands:")
+	for _, line := range strings.Split(agentBriefCommands, "\n") {
+		fmt.Printf("  %s\n", line)
+	}
+	fmt.Println("\nrules:")
+	for _, line := range strings.Split(agentBriefRules, "\n") {
+		fmt.Printf("  %s\n", line)
+	}
+	return exitSuccess
 }
 
 func runInit(args []string) int {
@@ -346,8 +415,25 @@ func main() {
 		usage()
 		os.Exit(exitInvalid)
 	}
+	switch os.Args[1] {
+	case "--version":
+		jsonMode := false
+		for _, arg := range os.Args[2:] {
+			if arg == "--json" {
+				jsonMode = true
+			}
+		}
+		printVersion(jsonMode)
+		os.Exit(exitSuccess)
+	case "--help":
+		fmt.Print(usageText())
+		os.Exit(exitSuccess)
+	}
 	if os.Args[1] == "--init" || os.Args[1] == "--start" {
 		os.Exit(runInit(os.Args[2:]))
+	}
+	if os.Args[1] == "--agent-brief" {
+		os.Exit(runAgentBrief(os.Args[2:]))
 	}
 	if os.Args[1] == "--self-update-check" || os.Args[1] == "--self-update" {
 		jsonMode := false
@@ -378,9 +464,13 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  missis [--init|--start] [--self-update-check|--self-update]")
-	fmt.Fprintln(os.Stderr, "  missis new|show|set ...")
+	fmt.Fprint(os.Stderr, usageText())
+}
+
+func usageText() string {
+	return "usage:\n" +
+		"  missis [--version|--help] [--init|--start] [--self-update-check|--self-update] [--agent-brief [--json]]\n" +
+		"  missis new|show|set ...\n"
 }
 
 func reorderArgs(args []string, valueFlags map[string]bool) []string {

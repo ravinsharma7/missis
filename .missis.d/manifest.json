@@ -1,6 +1,6 @@
 {
-  "event_count": 255,
-  "head_hash": "d4936a796abd6ba7dc22896b87f8edc4c0af9ae5f632d49c6fc5749ea9c9cdf2",
+  "event_count": 292,
+  "head_hash": "46d37470d2d2bdf08171edf27ea266fca489b8da8846d00861e89c9cb9d13ffb",
   "schema_version": "0003_store_identity",
   "store_id": "store:01M02NX913VK0T05R7CMPYJCMR"
 }
