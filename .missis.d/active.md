@@ -4,8 +4,8 @@ This is a short-lived agent pointer. It is not authoritative domain data.
 
 ```text
 store: .missis-store/missis.db
-project: missis-self
-group: engineering
+project: none
+group: none
 focus: SDK orchestration refactor
 ticket: #21
 ```
