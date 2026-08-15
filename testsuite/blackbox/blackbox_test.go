@@ -2,21 +2,23 @@ package blackbox
 
 // Black-box coverage references for the Phase 1 traceability check.
 // covers PH1-CLI-001 PH1-CLI-002 PH1-CLI-003 PH1-CLI-004 PH1-CLI-005 PH1-CLI-006 PH1-CLI-007 PH1-CLI-008
-// covers PH1-PART-001 PH1-PART-002 PH1-PART-003 PH1-PART-004 PH1-PART-005 PH1-PART-006 PH1-PART-007 PH1-PART-008 PH1-PART-009 PH1-PART-010 PH1-PART-011 PH1-PART-012 PH1-PART-013
-// covers PH1-REF-001 PH1-REF-002 PH1-REF-003 PH1-REF-004
-// covers PH1-EVT-001 PH1-EVT-002 PH1-EVT-003 PH1-EVT-004 PH1-EVT-005 PH1-EVT-006 PH1-EVT-007 PH1-EVT-008
+// covers PH1-PART-001 PH1-PART-002 PH1-PART-003 PH1-PART-004 PH1-PART-005 PH1-PART-006 PH1-PART-007 PH1-PART-008 PH1-PART-009 PH1-PART-010 PH1-PART-011 PH1-PART-012
+// covers PH1-REF-001 PH1-REF-003 PH1-REF-004
+// covers PH1-EVT-001 PH1-EVT-002 PH1-EVT-003 PH1-EVT-004 PH1-EVT-005 PH1-EVT-006 PH1-EVT-007
 // covers PH1-PRJ-001 PH1-PRJ-002 PH1-PRJ-003 PH1-PRJ-004 PH1-PRJ-005
 // covers PH1-PRV-001 PH1-PRV-002 PH1-PRV-003 PH1-PRV-004
-// covers PH1-CON-001 PH1-CON-002 PH1-CON-003 PH1-CON-004
-// covers PH1-DM-001 PH1-DM-002 PH1-ACC-001
-// covers N002 N004 N005 N006 N009 N012 N014 N015 N019 N022 N024 N028 N029 N042 N047 N049 N051 N053 N055 N057 N106 N107 N108 N109 N110 N111 N112 N113
+// covers PH1-CON-004
+// covers PH1-DM-001 PH1-ACC-001
+// covers N002 N004 N005 N006 N009 N012 N014 N019 N028 N029 N042 N047 N049 N051 N053 N055 N057 N111 N112 N113
 
 import (
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -79,6 +81,21 @@ func runMissisWithEnv(t *testing.T, store, dir string, env []string, args ...str
 		t.Fatalf("run %v: %v", args, err)
 	}
 	return cmdResult{stdout: stdout.String(), stderr: stderr.String(), code: code}
+}
+
+func runMissisRaw(store string, args ...string) (cmdResult, error) {
+	cmd := exec.Command(missisBin, args...)
+	cmd.Env = append(os.Environ(), "MISSIS_STORE="+store)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	code := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		code = exitErr.ExitCode()
+		err = nil
+	}
+	return cmdResult{stdout: stdout.String(), stderr: stderr.String(), code: code}, err
 }
 
 func newTicket(t *testing.T, store, title string) map[string]any {
@@ -455,5 +472,78 @@ func TestTicketNumbering(t *testing.T) {
 	shown := mustJSON(t, runMissis(t, store, "show", "--json", first["ref"].(string)))
 	if shown["id"] != first["id"] {
 		t.Fatalf("canonical id mismatch: %v vs %v", shown["id"], first["id"])
+	}
+}
+
+func TestMultiProcessConcurrency(t *testing.T) {
+	t.Parallel()
+	// covers PH1-CON-001 PH1-CON-002 N106 N107 N108 N109
+	store := filepath.Join(t.TempDir(), "missis.db")
+	base := newTicket(t, store, "base")
+	if base["ref"] != "#1" {
+		t.Fatalf("base ref = %v", base["ref"])
+	}
+
+	const workers = 8
+	var wg sync.WaitGroup
+	results := make([]cmdResult, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			result, err := runMissisRaw(store, "new", "--json", "agent-"+strconv.Itoa(i))
+			if err != nil {
+				t.Errorf("worker %d: %v", i, err)
+				return
+			}
+			results[i] = result
+		}(i)
+	}
+	wg.Wait()
+	for i, result := range results {
+		if result.code != 0 {
+			t.Fatalf("worker %d failed: %d %s", i, result.code, result.stderr)
+		}
+	}
+
+	shown := mustJSON(t, runMissis(t, store, "show", "--json"))
+	tickets := shown["tickets"].([]any)
+	if len(tickets) != workers+1 {
+		t.Fatalf("expected %d tickets, got %d", workers+1, len(tickets))
+	}
+
+	var setWG sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		setWG.Add(1)
+		go func(i int) {
+			defer setWG.Done()
+			if _, err := runMissisRaw(store, "set", "--json", "#1/agent-"+strconv.Itoa(i), "value-"+strconv.Itoa(i)); err != nil {
+				t.Errorf("set worker %d: %v", i, err)
+			}
+		}(i)
+	}
+	setWG.Wait()
+	projection := mustJSON(t, runMissis(t, store, "show", "--json", "#1"))
+	parts := projection["parts"].(map[string]any)
+	for i := 0; i < workers; i++ {
+		key := "agent-" + strconv.Itoa(i)
+		if _, ok := parts[key]; !ok {
+			t.Fatalf("missing part %s: %v", key, parts)
+		}
+	}
+}
+
+func TestShowHealth(t *testing.T) {
+	t.Parallel()
+	// covers PH1-EVT-008
+	store := filepath.Join(t.TempDir(), "missis.db")
+	newTicket(t, store, "health")
+	result := runMissis(t, store, "show", "--health", "--json")
+	if result.code != 0 {
+		t.Fatalf("health failed: %d %s", result.code, result.stderr)
+	}
+	body := mustJSON(t, result)
+	if body["status"] != "ok" {
+		t.Fatalf("health status = %v", body["status"])
 	}
 }

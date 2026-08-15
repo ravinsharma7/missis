@@ -136,6 +136,18 @@ func (s *Store) LookupIdempotency(key string, result any) (bool, error) {
 	return true, nil
 }
 
+func (s *Store) UpdateIdempotencyResult(key string, result any) error {
+	if key == "" {
+		return nil
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	_, err = s.writer.Exec(`UPDATE idempotency SET result_json = ? WHERE key = ?`, string(raw), key)
+	return err
+}
+
 func migrate(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version TEXT PRIMARY KEY,
@@ -207,14 +219,111 @@ func newULID(prefix string) string {
 	return prefix + ":" + ulid.Make().String()
 }
 
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "database is locked") ||
+		strings.Contains(text, "sqlite_busy") ||
+		strings.Contains(text, "database table is locked")
+}
+
+func isRetryableAppendError(err error) bool {
+	if isBusyError(err) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "unique constraint failed: events.stream_kind, events.stream_entity, events.sequence")
+}
+
+func insertTicketAliasTx(tx *sql.Tx, ticketID model.TicketID) (uint64, error) {
+	result, err := tx.Exec(`INSERT INTO ticket_aliases (ticket_id) VALUES (?)`, string(ticketID))
+	if err != nil {
+		return 0, err
+	}
+	id, err := result.LastInsertId()
+	return uint64(id), err
+}
+
+func aliasForTicketTx(tx *sql.Tx, ticketID model.TicketID) (uint64, error) {
+	var number uint64
+	err := tx.QueryRow(`SELECT number FROM ticket_aliases WHERE ticket_id = ?`, string(ticketID)).Scan(&number)
+	return number, err
+}
+
+func (s *Store) CheckConsistency() error {
+	events, err := s.LoadEvents()
+	if err != nil {
+		return err
+	}
+	byStream := make(map[string][]model.Event)
+	for _, event := range events {
+		key := string(event.Stream.Kind) + ":" + event.Stream.Entity
+		byStream[key] = append(byStream[key], event)
+	}
+	for stream, streamEvents := range byStream {
+		sort.Slice(streamEvents, func(i, j int) bool {
+			return streamEvents[i].Sequence < streamEvents[j].Sequence
+		})
+		for i, event := range streamEvents {
+			expected := uint64(i + 1)
+			if event.Sequence != expected {
+				return fmt.Errorf("stream %s sequence gap at %d: got %d", stream, expected, event.Sequence)
+			}
+		}
+	}
+	rows, err := s.reader.Query(`SELECT key, event_ids_json FROM idempotency`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, eventIDsJSON string
+		if err := rows.Scan(&key, &eventIDsJSON); err != nil {
+			return err
+		}
+		var ids []string
+		if err := json.Unmarshal([]byte(eventIDsJSON), &ids); err != nil {
+			return fmt.Errorf("idempotency %s has invalid event ids: %w", key, err)
+		}
+	}
+	return rows.Err()
+}
+
 func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, preconditions []Precondition, result any) (AppendOutcome, error) {
+	outcome, _, err := s.appendBatchWithRetry(events, idempotencyKey, preconditions, result, false)
+	return outcome, err
+}
+
+func (s *Store) AppendTicketBatch(events []model.Event, idempotencyKey string, result any) (AppendOutcome, uint64, error) {
+	return s.appendBatchWithRetry(events, idempotencyKey, nil, result, true)
+}
+
+func (s *Store) appendBatchWithRetry(events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool) (AppendOutcome, uint64, error) {
+	var (
+		outcome AppendOutcome
+		alias   uint64
+		err     error
+	)
+	for attempt := 0; attempt < 3; attempt++ {
+		outcome, alias, err = s.appendBatchOnce(events, idempotencyKey, preconditions, result, allocateAlias)
+		if err == nil || !isRetryableAppendError(err) {
+			return outcome, alias, err
+		}
+		time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+	}
+	return outcome, alias, err
+}
+
+func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool) (AppendOutcome, uint64, error) {
 	if len(events) == 0 {
-		return AppendOutcome{}, fmt.Errorf("event batch is empty")
+		return AppendOutcome{}, 0, fmt.Errorf("event batch is empty")
 	}
 
 	tx, err := s.writer.Begin()
 	if err != nil {
-		return AppendOutcome{}, err
+		return AppendOutcome{}, 0, err
 	}
 	defer tx.Rollback()
 
@@ -225,43 +334,58 @@ func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, precond
 		if err == nil {
 			if result != nil && resultJSON != "" {
 				if err := json.Unmarshal([]byte(resultJSON), result); err != nil {
-					return AppendOutcome{}, err
+					return AppendOutcome{}, 0, err
 				}
 			}
-			events, err := eventsByIDsJSON(tx, eventIDsJSON)
+			replayedEvents, err := eventsByIDsJSON(tx, eventIDsJSON)
 			if err != nil {
-				return AppendOutcome{}, err
+				return AppendOutcome{}, 0, err
 			}
-			return AppendOutcome{Replayed: true, Events: events}, nil
+			var replayAlias uint64
+			if allocateAlias {
+				replayAlias, err = aliasForTicketTx(tx, model.TicketID(events[0].Stream.Entity))
+				if err != nil {
+					return AppendOutcome{}, 0, err
+				}
+			}
+			return AppendOutcome{Replayed: true, Events: replayedEvents}, replayAlias, nil
 		}
 		if err != sql.ErrNoRows {
-			return AppendOutcome{}, err
+			return AppendOutcome{}, 0, err
 		}
 	}
 
 	if events[0].Stream.Kind == "" || events[0].Stream.Entity == "" {
-		return AppendOutcome{}, fmt.Errorf("event stream is required")
+		return AppendOutcome{}, 0, fmt.Errorf("event stream is required")
 	}
 	streamKind := string(events[0].Stream.Kind)
 	streamEntity := events[0].Stream.Entity
 	for _, event := range events {
 		if string(event.Stream.Kind) != streamKind || event.Stream.Entity != streamEntity {
-			return AppendOutcome{}, fmt.Errorf("batch contains multiple streams")
+			return AppendOutcome{}, 0, fmt.Errorf("batch contains multiple streams")
+		}
+	}
+
+	var alias uint64
+	if allocateAlias {
+		alias, err = insertTicketAliasTx(tx, model.TicketID(streamEntity))
+		if err != nil {
+			return AppendOutcome{}, 0, err
 		}
 	}
 
 	existing, err := loadEventsTx(tx)
 	if err != nil {
-		return AppendOutcome{}, err
+		return AppendOutcome{}, 0, err
 	}
 
 	if err := checkPreconditions(existing, preconditions); err != nil {
-		return AppendOutcome{}, err
+		return AppendOutcome{}, 0, err
 	}
 
 	nextSequence, err := nextSequenceTx(tx, streamKind, streamEntity)
 	if err != nil {
-		return AppendOutcome{}, err
+		return AppendOutcome{}, 0, err
 	}
 
 	now := time.Now().UTC()
@@ -283,21 +407,21 @@ func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, precond
 			event.EffectiveAt = event.RecordedAt
 		}
 		if err := model.ValidateAppend(running, event); err != nil {
-			return AppendOutcome{}, err
+			return AppendOutcome{}, 0, err
 		}
 		eventJSON, err := json.Marshal(event)
 		if err != nil {
-			return AppendOutcome{}, err
+			return AppendOutcome{}, 0, err
 		}
 		if _, err := tx.Exec(
 			`INSERT INTO events (id, stream_kind, stream_entity, sequence, event_json) VALUES (?, ?, ?, ?, ?)`,
 			event.ID, streamKind, streamEntity, event.Sequence, eventJSON,
 		); err != nil {
-			return AppendOutcome{}, err
+			return AppendOutcome{}, 0, err
 		}
 		var aliasSeq uint64
 		if err := tx.QueryRow(`SELECT alias_seq FROM events WHERE id = ?`, event.ID).Scan(&aliasSeq); err != nil {
-			return AppendOutcome{}, err
+			return AppendOutcome{}, 0, err
 		}
 		event.AliasSeq = aliasSeq
 		running = append(running, event)
@@ -310,7 +434,7 @@ func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, precond
 		 ON CONFLICT(stream_kind, stream_entity) DO UPDATE SET next_sequence = excluded.next_sequence`,
 		streamKind, streamEntity, newNext,
 	); err != nil {
-		return AppendOutcome{}, err
+		return AppendOutcome{}, 0, err
 	}
 
 	if idempotencyKey != "" {
@@ -323,7 +447,7 @@ func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, precond
 		if result != nil {
 			raw, err := json.Marshal(result)
 			if err != nil {
-				return AppendOutcome{}, err
+				return AppendOutcome{}, 0, err
 			}
 			resultJSON = string(raw)
 		}
@@ -331,14 +455,14 @@ func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, precond
 			`INSERT INTO idempotency (key, event_ids_json, result_json, created_at) VALUES (?, ?, ?, ?)`,
 			idempotencyKey, string(idsJSON), resultJSON, now.Format(time.RFC3339Nano),
 		); err != nil {
-			return AppendOutcome{}, err
+			return AppendOutcome{}, 0, err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return AppendOutcome{}, err
+		return AppendOutcome{}, 0, err
 	}
-	return AppendOutcome{Replayed: false, Events: appended}, nil
+	return AppendOutcome{Replayed: false, Events: appended}, alias, nil
 }
 
 func (s *Store) LoadEvents() ([]model.Event, error) {

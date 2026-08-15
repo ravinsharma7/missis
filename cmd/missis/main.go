@@ -209,26 +209,19 @@ func runNew(args []string) int {
 	}
 
 	result := newResult{}
-	if idemKey != "" {
-		replayed, lookupErr := db.LookupIdempotency(idemKey, &result)
-		if lookupErr != nil {
-			printError(lookupErr, mapStoreError(lookupErr), jsonMode, nil)
-			return mapStoreError(lookupErr)
-		}
-		if replayed {
-			if jsonMode {
-				writeJSON(result)
-			} else {
-				fmt.Printf("%s  %s\n", result.Ref, result.Title)
-				fmt.Printf("status: %s\n", result.Status)
-			}
-			return exitSuccess
-		}
-	}
-	alias, err := db.AllocateTicketAlias(ticketID)
+	outcome, alias, err := db.AppendTicketBatch(events, idemKey, &result)
 	if err != nil {
 		printError(err, mapStoreError(err), jsonMode, nil)
 		return mapStoreError(err)
+	}
+	if outcome.Replayed {
+		if jsonMode {
+			writeJSON(result)
+		} else {
+			fmt.Printf("%s  %s\n", result.Ref, result.Title)
+			fmt.Printf("status: %s\n", result.Status)
+		}
+		return exitSuccess
 	}
 	result = newResult{
 		Ref:        "#" + strconv.FormatUint(alias, 10),
@@ -238,12 +231,12 @@ func runNew(args []string) int {
 		Project:    stringPtrOrNil(project),
 		RecordedAt: recordedAt.Format(time.RFC3339),
 	}
-	outcome, err := db.AppendBatch(events, idemKey, nil, &result)
-	if err != nil {
-		printError(err, mapStoreError(err), jsonMode, nil)
-		return mapStoreError(err)
+	if idemKey != "" {
+		if err := db.UpdateIdempotencyResult(idemKey, result); err != nil {
+			printError(err, mapStoreError(err), jsonMode, nil)
+			return mapStoreError(err)
+		}
 	}
-	_ = outcome
 	if result.Ref == "" {
 		result = newResult{
 			Ref:        "#" + strconv.FormatUint(alias, 10),
@@ -287,6 +280,7 @@ func runShow(args []string) int {
 		since       string
 		between     string
 		storeFlag   string
+		health      bool
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -296,6 +290,7 @@ func runShow(args []string) int {
 	fs.StringVar(&since, "since", "", "history lower bound")
 	fs.StringVar(&between, "between", "", "history interval")
 	fs.StringVar(&storeFlag, "store", "", "store path")
+	fs.BoolVar(&health, "health", false, "run store consistency check")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -308,6 +303,23 @@ func runShow(args []string) int {
 		return exitStorage
 	}
 	defer db.Close()
+
+	if health {
+		if err := db.CheckConsistency(); err != nil {
+			if jsonMode {
+				writeJSON(errorResult{Error: "storage_failure", Target: nil, Message: err.Error(), Ontology: nil, MissingObligations: []string{}})
+			} else {
+				fmt.Fprintf(os.Stderr, "missis: consistency failure: %s\n", err.Error())
+			}
+			return exitStorage
+		}
+		if jsonMode {
+			writeJSON(map[string]any{"status": "ok"})
+		} else {
+			fmt.Println("ok")
+		}
+		return exitSuccess
+	}
 
 	now := time.Now().UTC()
 	effectiveTime, knownTime := now, now
