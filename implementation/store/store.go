@@ -469,6 +469,33 @@ func (s *Store) LoadEvents() ([]model.Event, error) {
 	return loadEventsTx(s.reader)
 }
 
+func (s *Store) LoadLinkEvents() ([]model.Event, error) {
+	rows, err := s.reader.Query(
+		`SELECT event_json, alias_seq FROM events
+		 WHERE json_extract(event_json, '$.Operation') IN ('assert-link', 'retract-link')
+		 ORDER BY alias_seq ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []model.Event
+	for rows.Next() {
+		var raw string
+		var aliasSeq uint64
+		if err := rows.Scan(&raw, &aliasSeq); err != nil {
+			return nil, err
+		}
+		var event model.Event
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			return nil, err
+		}
+		event.AliasSeq = aliasSeq
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
 func (s *Store) LoadTicketEvents(ticketID model.TicketID) ([]model.Event, error) {
 	rows, err := s.reader.Query(
 		`SELECT event_json, alias_seq FROM events WHERE stream_kind = ? AND stream_entity = ? ORDER BY sequence ASC`,

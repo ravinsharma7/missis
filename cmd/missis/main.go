@@ -400,7 +400,7 @@ func runShow(args []string) int {
 			printError(err, exitNotFound, jsonMode, &ref)
 			return exitNotFound
 		}
-		events, err := db.LoadEvents()
+		events, err := db.LoadLinkEvents()
 		if err != nil {
 			printError(err, exitStorage, jsonMode, nil)
 			return exitStorage
@@ -457,7 +457,7 @@ func runShow(args []string) int {
 			printError(err, exitNotFound, jsonMode, &ref)
 			return exitNotFound
 		}
-		events, err := db.LoadEvents()
+		events, err := db.LoadLinkEvents()
 		if err != nil {
 			printError(err, exitStorage, jsonMode, nil)
 			return exitStorage

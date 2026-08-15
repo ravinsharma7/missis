@@ -96,3 +96,53 @@ func TestCheckConsistencyHealthy(t *testing.T) {
 		t.Fatalf("empty store should be consistent: %v", err)
 	}
 }
+
+func TestLoadLinkEventsEquivalence(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	s, err := Open(filepath.Join(tmp, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	from := model.TicketID("ticket:from")
+	to := model.TicketID("ticket:to")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(from)}
+	now := time.Now().UTC()
+	toRef := model.Ref{Kind: model.KindTicket, Entity: string(to)}
+	events := []model.Event{
+		{ID: model.EventID("event:create"), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(from)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: model.EventID("event:link"), Stream: stream, Sequence: 2, Operation: model.OpAssertLink, Target: model.Ref{Kind: model.KindTicket, Entity: string(from)}, Value: model.Value{Text: "blocked-by", Ref: &toRef}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, err := s.AppendBatch(events, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	linkEvents, err := s.LoadLinkEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(linkEvents) != 1 || linkEvents[0].Operation != model.OpAssertLink {
+		t.Fatalf("expected one link event, got %+v", linkEvents)
+	}
+
+	allEvents, err := s.LoadEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := model.Ref{Kind: model.KindTicket, Entity: string(from)}
+	allGraph, err := model.BuildLineageGraph(allEvents, now.Add(time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkGraph, err := model.BuildLineageGraph(linkEvents, now.Add(time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	allEdges, _ := allGraph.Walk(start, "both", 3, nil)
+	linkEdges, _ := linkGraph.Walk(start, "both", 3, nil)
+	if len(allEdges) != len(linkEdges) {
+		t.Fatalf("lineage mismatch: all=%d link=%d", len(allEdges), len(linkEdges))
+	}
+}

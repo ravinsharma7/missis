@@ -639,3 +639,38 @@ func TestLineageTraversal(t *testing.T) {
 		t.Fatalf("expected one filtered edge: %v", filtered["edges"])
 	}
 }
+
+func TestPartLevelLinks(t *testing.T) {
+	t.Parallel()
+	// covers PH2-LINK-005 PH2-LINK-006
+	store := filepath.Join(t.TempDir(), "missis.db")
+	first := newTicket(t, store, "first")
+	second := newTicket(t, store, "second")
+
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "problem"); result.code != 0 {
+		t.Fatalf("set first problem: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "set", "--json", second["ref"].(string)+"/evidence", "evidence"); result.code != 0 {
+		t.Fatalf("set second evidence: %d %s", result.code, result.stderr)
+	}
+
+	links := []struct {
+		ref    string
+		target string
+	}{
+		{first["ref"].(string) + "/links", second["ref"].(string) + "/evidence"},
+		{first["ref"].(string) + "/problem/links", second["ref"].(string) + "/evidence"},
+		{second["ref"].(string) + "/evidence/links", first["ref"].(string)},
+	}
+	for _, link := range links {
+		result := runMissis(t, store, "set", "--json", link.ref, "--add", "blocked-by:"+link.target)
+		if result.code != 0 {
+			t.Fatalf("link %s -> %s: %d %s", link.ref, link.target, result.code, result.stderr)
+		}
+	}
+
+	refs := mustJSON(t, runMissis(t, store, "show", "--json", first["ref"].(string)+"/problem", "--references"))
+	if len(refs["links"].([]any)) == 0 {
+		t.Fatalf("expected part-level references: %v", refs["links"])
+	}
+}
