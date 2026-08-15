@@ -1,5 +1,9 @@
 # What is missis?
 
+> **Alpha status:** This project is under active development. Features,
+> storage behavior, CLI details, and stability are not yet confirmed. Use it
+> for experiments, not as a production dependency.
+
 The repository is organized around three core artifacts:
 
 - canonical specifications
