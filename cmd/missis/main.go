@@ -14,10 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
 	"github.com/ravinsharma7/missis/implementation/model"
 	"github.com/ravinsharma7/missis/implementation/store"
+	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
 const (
@@ -217,17 +216,18 @@ func runNew(args []string) int {
 	}
 
 	title := fs.Arg(0)
-	storePath, err := resolveStorePath(storeFlag)
+	storePath, err := missis.ResolveStorePath(storeFlag)
 	if err != nil {
 		printError(err, exitInvalid, jsonMode, nil)
 		return exitInvalid
 	}
-	db, err := store.Open(storePath)
+	client, err := missis.OpenPath(storePath)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
-	defer db.Close()
+	defer client.Close()
+	db := client.Store()
 
 	recordedAt := time.Now().UTC()
 	effectiveTime := recordedAt
@@ -265,7 +265,7 @@ func runNew(args []string) int {
 		}
 		stream := model.Ref{Kind: model.Kind(kind), Entity: id}
 		event := model.Event{
-			ID:          model.EventID(newID("event")),
+			ID:          model.EventID(missis.NewID("event")),
 			Stream:      stream,
 			Operation:   model.OpCreateEntity,
 			Target:      model.Ref{Kind: model.Kind(kind), Entity: id},
@@ -315,14 +315,14 @@ func runNew(args []string) int {
 				title = "stdin"
 			}
 		}
-		ticketID := model.TicketID(newID("ticket"))
-		batchID := model.BatchID(newID("batch"))
+		ticketID := model.TicketID(missis.NewID("ticket"))
+		batchID := model.BatchID(missis.NewID("batch"))
 		stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
 		actorRef := parseActor(actor)
 		events := []model.Event{
-			newEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actorRef, recordedAt, effectiveTime, batchID, ""),
-			partEvent(stream, "title", title, model.ValueKindText, actorRef, recordedAt, effectiveTime, batchID),
-			partEvent(stream, "status", "open", model.ValueKindStatus, actorRef, recordedAt, effectiveTime, batchID),
+			missis.NewEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actorRef, recordedAt, effectiveTime, batchID, ""),
+			missis.PartEvent(stream, "title", title, model.ValueKindText, actorRef, recordedAt, effectiveTime, batchID),
+			missis.PartEvent(stream, "status", "open", model.ValueKindStatus, actorRef, recordedAt, effectiveTime, batchID),
 		}
 		events = append(events, buildImportEvents(stream, parts, actorRef, recordedAt, effectiveTime, batchID, artifact)...)
 		result := newResult{}
@@ -343,23 +343,23 @@ func runNew(args []string) int {
 		return exitSuccess
 	}
 
-	ticketID := model.TicketID(newID("ticket"))
-	batchID := model.BatchID(newID("batch"))
+	ticketID := model.TicketID(missis.NewID("ticket"))
+	batchID := model.BatchID(missis.NewID("batch"))
 	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
 	actorRef := parseActor(actor)
 	events := []model.Event{
-		newEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actorRef, recordedAt, effectiveTime, batchID, ""),
-		partEvent(stream, "title", title, model.ValueKindText, actorRef, recordedAt, effectiveTime, batchID),
-		partEvent(stream, "status", "open", model.ValueKindStatus, actorRef, recordedAt, effectiveTime, batchID),
+		missis.NewEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actorRef, recordedAt, effectiveTime, batchID, ""),
+		missis.PartEvent(stream, "title", title, model.ValueKindText, actorRef, recordedAt, effectiveTime, batchID),
+		missis.PartEvent(stream, "status", "open", model.ValueKindStatus, actorRef, recordedAt, effectiveTime, batchID),
 	}
 	if priority != "" {
-		events = append(events, partEvent(stream, "priority", priority, model.ValueKindPriority, actorRef, recordedAt, effectiveTime, batchID))
+		events = append(events, missis.PartEvent(stream, "priority", priority, model.ValueKindPriority, actorRef, recordedAt, effectiveTime, batchID))
 	}
 	if len(types) > 0 {
-		events = append(events, partEvent(stream, "type", []string(types), model.ValueKindList, actorRef, recordedAt, effectiveTime, batchID))
+		events = append(events, missis.PartEvent(stream, "type", []string(types), model.ValueKindList, actorRef, recordedAt, effectiveTime, batchID))
 	}
 	if len(tags) > 0 {
-		events = append(events, partEvent(stream, "tag", []string(tags), model.ValueKindList, actorRef, recordedAt, effectiveTime, batchID))
+		events = append(events, missis.PartEvent(stream, "tag", []string(tags), model.ValueKindList, actorRef, recordedAt, effectiveTime, batchID))
 	}
 
 	result := newResult{}
@@ -486,17 +486,18 @@ func runShow(args []string) int {
 	}
 
 	ref := fs.Arg(0)
-	storePath, err := resolveStorePath(storeFlag)
+	storePath, err := missis.ResolveStorePath(storeFlag)
 	if err != nil {
 		printError(err, exitInvalid, jsonMode, nil)
 		return exitInvalid
 	}
-	db, err := store.Open(storePath)
+	client, err := missis.OpenPath(storePath)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
-	defer db.Close()
+	defer client.Close()
+	db := client.Store()
 
 	if health {
 		if err := db.CheckConsistency(); err != nil {
@@ -783,17 +784,18 @@ func runSet(args []string) int {
 	ref := fs.Arg(0)
 	value := fs.Arg(1)
 
-	storePath, err := resolveStorePath(storeFlag)
+	storePath, err := missis.ResolveStorePath(storeFlag)
 	if err != nil {
 		printError(err, exitInvalid, jsonMode, nil)
 		return exitInvalid
 	}
-	db, err := store.Open(storePath)
+	client, err := missis.OpenPath(storePath)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
-	defer db.Close()
+	defer client.Close()
+	db := client.Store()
 
 	recordedAt := time.Now().UTC()
 	effectiveTime := recordedAt
@@ -831,7 +833,7 @@ func runSet(args []string) int {
 			printError(fmt.Errorf("import target must be a ticket reference"), exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
-		batchID := model.BatchID(newID("batch"))
+		batchID := model.BatchID(missis.NewID("batch"))
 		actorRef := parseActor(actor)
 		events, err := buildReimportEvents(db, ticketID, parts, actorRef, recordedAt, effectiveTime, batchID, artifact)
 		if err != nil {
@@ -877,7 +879,7 @@ func runSet(args []string) int {
 	}
 
 	actorRef := parseActor(actor)
-	batchID := model.BatchID(newID("batch"))
+	batchID := model.BatchID(missis.NewID("batch"))
 
 	requiresExisting := retract || name != "" || parent != ""
 	var (
@@ -1083,7 +1085,7 @@ func runSetLink(db *store.Store, ref string, ticketID model.TicketID, path []str
 		Reason:      reason,
 	}
 	if idemKey != "" {
-		batchID := model.BatchID(newID("batch"))
+		batchID := model.BatchID(missis.NewID("batch"))
 		event.BatchID = &batchID
 	}
 
@@ -1172,110 +1174,6 @@ func runSetScopeLink(db *store.Store, ref, value, actor, reason string, effectiv
 	return exitSuccess
 }
 
-func newEvent(stream model.Ref, operation model.Operation, target model.Ref, value model.Value, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, reason string) model.Event {
-	return model.Event{
-		ID:          model.EventID(newID("event")),
-		Stream:      stream,
-		Operation:   operation,
-		Target:      target,
-		Value:       value,
-		RecordedAt:  recordedAt,
-		EffectiveAt: effectiveAt,
-		Actor:       actor,
-		BatchID:     &batchID,
-		Reason:      reason,
-	}
-}
-
-func partEvent(stream model.Ref, path string, value any, kind model.ValueKind, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID) model.Event {
-	partID := model.PartID(newID("part"))
-	target := model.Ref{Kind: model.KindPart, Entity: string(partID), Path: []string{path}}
-	var valueModel model.Value
-	switch typed := value.(type) {
-	case string:
-		valueModel = model.Value{Kind: kind, Text: typed}
-	case []string:
-		if kind == model.ValueKindList {
-			valueModel = model.Value{Kind: kind, List: typed}
-		} else {
-			valueModel = model.Value{Kind: kind, Data: typed}
-		}
-	default:
-		valueModel = model.Value{Kind: kind, Data: value}
-	}
-	return model.Event{
-		ID:          model.EventID(newID("event")),
-		Stream:      stream,
-		Operation:   model.OpCreatePart,
-		Target:      target,
-		Value:       valueModel,
-		RecordedAt:  recordedAt,
-		EffectiveAt: effectiveAt,
-		Actor:       actor,
-		BatchID:     &batchID,
-	}
-}
-
-func resolveStorePath(storeFlag string) (string, error) {
-	if storeFlag != "" {
-		return storeFlag, nil
-	}
-	marker, err := findMissisMarker()
-	if err != nil {
-		return "", err
-	}
-	if marker != "" {
-		return marker, nil
-	}
-	if env := os.Getenv("MISSIS_STORE"); env != "" {
-		return env, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".", ".missis", "missis.db"), nil
-	}
-	return filepath.Join(home, ".local", "share", "missis", "missis.db"), nil
-}
-
-func findMissisMarker() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", nil
-	}
-	for {
-		marker := filepath.Join(dir, ".missis")
-		info, statErr := os.Stat(marker)
-		if statErr == nil {
-			if info.IsDir() {
-				return filepath.Join(marker, "missis.db"), nil
-			}
-			data, readErr := os.ReadFile(marker)
-			if readErr != nil {
-				return "", readErr
-			}
-			line := strings.TrimSpace(string(data))
-			if line == "" {
-				return "", fmt.Errorf(".missis marker is empty; expected one store path line")
-			}
-			if strings.ContainsRune(line, '\n') {
-				return "", fmt.Errorf(".missis marker must contain exactly one line")
-			}
-			if strings.ContainsRune(line, 0) {
-				return "", fmt.Errorf(".missis marker contains a NUL byte")
-			}
-			if filepath.IsAbs(line) {
-				return line, nil
-			}
-			return filepath.Join(dir, line), nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", nil
-		}
-		dir = parent
-	}
-}
-
 func parseTime(value string) (time.Time, error) {
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
@@ -1290,10 +1188,6 @@ func parseActor(value string) model.ActorRef {
 		kind = value[:idx]
 	}
 	return model.ActorRef{Kind: kind, ID: value, Name: value}
-}
-
-func newID(prefix string) string {
-	return prefix + ":" + ulid.Make().String()
 }
 
 func shortID(id model.TicketID) string {
@@ -1350,7 +1244,7 @@ func buildImportEvents(stream model.Ref, parts []model.MarkdownPart, actor model
 		return strings.Join(parts[i].Path, "/") < strings.Join(parts[j].Path, "/")
 	})
 	for _, part := range parts {
-		partIDs[strings.Join(part.Path, "/")] = model.PartID(newID("part"))
+		partIDs[strings.Join(part.Path, "/")] = model.PartID(missis.NewID("part"))
 	}
 	for _, part := range parts {
 		start, end := part.StartLine, part.EndLine
@@ -1373,7 +1267,7 @@ func buildImportEvents(stream model.Ref, parts []model.MarkdownPart, actor model
 		value.Ref = parentRef
 		partID := partIDs[strings.Join(part.Path, "/")]
 		events = append(events, model.Event{
-			ID:          model.EventID(newID("event")),
+			ID:          model.EventID(missis.NewID("event")),
 			Stream:      stream,
 			Operation:   model.OpCreatePart,
 			Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: part.Path},
@@ -1420,7 +1314,7 @@ func buildReimportEvents(db *store.Store, ticketID model.TicketID, parts []model
 		}
 
 		if partID == "" {
-			partID = model.PartID(newID("part"))
+			partID = model.PartID(missis.NewID("part"))
 			parentRef := parentRefForPath(part.Path, pathToID)
 			events = append(events, importPartEvent(proj.TicketID, partID, part, parentRef, actor, recordedAt, effectiveAt, batchID, artifact, model.OpCreatePart, model.ValueKindMarkdown))
 			pathToID[pathKey] = partID
@@ -1481,7 +1375,7 @@ func importPartEvent(ticketID model.TicketID, partID model.PartID, part model.Ma
 		value = model.Value{Ref: parentRef}
 	}
 	return model.Event{
-		ID:          model.EventID(newID("event")),
+		ID:          model.EventID(missis.NewID("event")),
 		Stream:      model.Ref{Kind: model.KindTicket, Entity: string(ticketID)},
 		Operation:   operation,
 		Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: part.Path},
@@ -1649,14 +1543,14 @@ func ensurePartPath(db *store.Store, ticketID model.TicketID, path []string, act
 			continue
 		}
 		existed = false
-		newIDValue := model.PartID(newID("part"))
+		newIDValue := model.PartID(missis.NewID("part"))
 		target := model.Ref{Kind: model.KindPart, Entity: string(newIDValue), Path: append([]string(nil), currentPath...)}
 		var parentRef *model.Ref
 		if parentID != nil {
 			parentRef = &model.Ref{Kind: model.KindPart, Entity: string(*parentID)}
 		}
 		event := model.Event{
-			ID:          model.EventID(newID("event")),
+			ID:          model.EventID(missis.NewID("event")),
 			Stream:      stream,
 			Operation:   model.OpCreatePart,
 			Target:      target,
