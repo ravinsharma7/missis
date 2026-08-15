@@ -196,10 +196,81 @@ func printVersion(jsonMode bool) {
 	fmt.Printf("missis version=%s commit=%s\n", version, commit)
 }
 
+func runInit(args []string) int {
+	storeFlag := ""
+	jsonMode := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--store":
+			if i+1 < len(args) {
+				storeFlag = args[i+1]
+				i++
+			}
+		case "--json":
+			jsonMode = true
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		printError(err, exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	target := storeFlag
+	if target == "" {
+		target = filepath.Join(cwd, ".missis-store", "missis.db")
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		printError(err, exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	markerPath := filepath.Join(cwd, ".missis")
+	if _, statErr := os.Stat(markerPath); statErr == nil {
+		if jsonMode {
+			writeJSON(map[string]string{"status": "already_initialized", "store_path": absTarget})
+		} else {
+			fmt.Printf("already initialized: %s\n", absTarget)
+		}
+		return exitSuccess
+	}
+	if err := os.MkdirAll(filepath.Dir(absTarget), 0o755); err != nil {
+		printError(err, exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	rel, err := filepath.Rel(cwd, absTarget)
+	if err != nil {
+		printError(err, exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	if err := os.WriteFile(markerPath, []byte(rel+"\n"), 0o644); err != nil {
+		printError(err, exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	if err := os.MkdirAll(filepath.Join(cwd, ".missis.d"), 0o755); err != nil {
+		printError(err, exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	client, err := missis.OpenPath(absTarget)
+	if err != nil {
+		printError(err, exitStorage, jsonMode, nil)
+		return exitStorage
+	}
+	defer client.Close()
+	if jsonMode {
+		writeJSON(map[string]string{"status": "initialized", "store_path": absTarget})
+	} else {
+		fmt.Printf("initialized %s\n", absTarget)
+	}
+	return exitSuccess
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(exitInvalid)
+	}
+	if os.Args[1] == "--init" {
+		os.Exit(runInit(os.Args[2:]))
 	}
 	if os.Args[1] == "--self-update-check" || os.Args[1] == "--self-update" {
 		jsonMode := false
@@ -230,7 +301,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  missis [--self-update-check|--self-update]")
+	fmt.Fprintln(os.Stderr, "  missis [--init] [--self-update-check|--self-update]")
 	fmt.Fprintln(os.Stderr, "  missis new|show|set ...")
 }
 

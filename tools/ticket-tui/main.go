@@ -402,6 +402,9 @@ func (m tuiModel) viewCompare() string {
 	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("A: %s  %s  %s\n", m.compareA.Ref, m.compareA.Status, m.compareA.Title))
 	b.WriteString(fmt.Sprintf("B: %s  %s  %s\n", m.compareB.Ref, m.compareB.Status, m.compareB.Title))
+	if m.compareA.ID == m.compareB.ID {
+		b.WriteString("\n(same ticket)\n")
+	}
 	b.WriteString("\n")
 	a := ticketSummaryParts(m.client, *m.compareA)
 	bb := ticketSummaryParts(m.client, *m.compareB)

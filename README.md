@@ -102,6 +102,13 @@ Update the installed binary:
 missis --self-update
 ```
 
+Initialize a local missis project:
+
+```bash
+missis --init
+missis --init --store ./.missis-store/missis.db
+```
+
 ## Project layout and store discovery
 
 ```text
