@@ -678,10 +678,10 @@ func runShow(args []string) int {
 		depth       int
 		relations   stringList
 		format      string
-		project     string
-		group       string
+		project     stringList
+		group       stringList
 		search      string
-		status      string
+		status      stringList
 		typeFilter  stringList
 		tagFilter   stringList
 		version     bool
@@ -702,10 +702,10 @@ func runShow(args []string) int {
 	fs.IntVar(&depth, "depth", 3, "maximum lineage depth")
 	fs.Var(&relations, "relations", "comma-separated relation allow-list")
 	fs.StringVar(&format, "format", "", "output format: text, json, or markdown")
-	fs.StringVar(&project, "project", "", "show project scope")
-	fs.StringVar(&group, "group", "", "show group scope")
+	fs.Var(&project, "project", "show project scope")
+	fs.Var(&group, "group", "show group scope")
 	fs.StringVar(&search, "search", "", "search query")
-	fs.StringVar(&status, "status", "", "filter by status")
+	fs.Var(&status, "status", "filter by status")
 	fs.Var(&typeFilter, "type", "filter by type")
 	fs.Var(&tagFilter, "tag", "filter by tag")
 	fs.BoolVar(&version, "version", false, "show version")
@@ -792,13 +792,13 @@ func runShow(args []string) int {
 		}
 	}
 
-	if project != "" || group != "" || search != "" || status != "" || len(typeFilter) > 0 || len(tagFilter) > 0 {
+	if len(project) > 0 || len(group) > 0 || search != "" || len(status) > 0 || len(typeFilter) > 0 || len(tagFilter) > 0 {
 		summaries, err := db.ListTickets(effectiveTime)
 		if err != nil {
 			printError(err, exitStorage, jsonMode, nil)
 			return exitStorage
 		}
-		filtered, err := filterTicketSummaries(db, summaries, search, status, project, group, strings.Join(typeFilter, ","), strings.Join(tagFilter, ","), effectiveTime, knownTime)
+		filtered, err := filterTicketSummaries(db, summaries, search, strings.Join(status, ","), strings.Join(project, ","), strings.Join(group, ","), strings.Join(typeFilter, ","), strings.Join(tagFilter, ","), effectiveTime, knownTime)
 		if err != nil {
 			printError(err, exitStorage, jsonMode, nil)
 			return exitStorage
@@ -1971,30 +1971,8 @@ func filterTicketSummaries(db *store.Store, summaries []store.TicketSummary, sea
 	}
 	projectTicketIDs := make(map[model.TicketID]bool)
 	if project != "" {
-		links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: project}, effectiveAt, knownAt)
-		if err != nil {
-			return nil, err
-		}
-		for _, link := range links {
-			if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
-				projectTicketIDs[model.TicketID(link.To.Entity)] = true
-			}
-		}
-	}
-	if group != "" {
-		groupRef := model.Ref{Kind: model.KindGroup, Entity: group}
-		groupLinks, err := model.LinksForRef(linkEvents, groupRef, effectiveAt, knownAt)
-		if err != nil {
-			return nil, err
-		}
-		projectIDs := make(map[string]bool)
-		for _, link := range groupLinks {
-			if link.Direction == "asserted" && (link.Relation == "contains" || link.Relation == "governs") && link.To.Kind == model.KindProject {
-				projectIDs[link.To.Entity] = true
-			}
-		}
-		for projectID := range projectIDs {
-			links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: projectID}, effectiveAt, knownAt)
+		for _, projectID := range strings.Split(project, ",") {
+			links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: strings.TrimSpace(projectID)}, effectiveAt, knownAt)
 			if err != nil {
 				return nil, err
 			}
@@ -2005,10 +1983,36 @@ func filterTicketSummaries(db *store.Store, summaries []store.TicketSummary, sea
 			}
 		}
 	}
+	if group != "" {
+		for _, groupID := range strings.Split(group, ",") {
+			groupRef := model.Ref{Kind: model.KindGroup, Entity: strings.TrimSpace(groupID)}
+			groupLinks, err := model.LinksForRef(linkEvents, groupRef, effectiveAt, knownAt)
+			if err != nil {
+				return nil, err
+			}
+			projectIDs := make(map[string]bool)
+			for _, link := range groupLinks {
+				if link.Direction == "asserted" && (link.Relation == "contains" || link.Relation == "governs") && link.To.Kind == model.KindProject {
+					projectIDs[link.To.Entity] = true
+				}
+			}
+			for projectID := range projectIDs {
+				links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: projectID}, effectiveAt, knownAt)
+				if err != nil {
+					return nil, err
+				}
+				for _, link := range links {
+					if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
+						projectTicketIDs[model.TicketID(link.To.Entity)] = true
+					}
+				}
+			}
+		}
+	}
 
 	result := make([]store.TicketSummary, 0, len(summaries))
 	for _, summary := range summaries {
-		if status != "" && summary.Status != status {
+		if status != "" && !csvContains(status, summary.Status) {
 			continue
 		}
 		if (project != "" || group != "") && !projectTicketIDs[summary.ID] {
@@ -2033,6 +2037,15 @@ func filterTicketSummaries(db *store.Store, summaries []store.TicketSummary, sea
 		result = append(result, summary)
 	}
 	return result, nil
+}
+
+func csvContains(csv, value string) bool {
+	for _, candidate := range strings.Split(csv, ",") {
+		if strings.EqualFold(strings.TrimSpace(candidate), value) {
+			return true
+		}
+	}
+	return false
 }
 
 func projectionText(proj *model.Projection) string {
