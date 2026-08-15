@@ -60,7 +60,7 @@ EOF
   else
     remote_target="$remote_path/$store_id/$head_hash.db"
   fi
-  rclone --config "$tmpconfig" copy "$backup" "$remote_target"
+  rclone --config "$tmpconfig" copyto "$backup" "$remote_target"
   echo "uploaded with rclone"
   exit 0
 fi

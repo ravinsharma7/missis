@@ -45,7 +45,7 @@ if [[ "$remote_path" == *: ]]; then
 else
   remote_source="$remote_path/$store_id/$head_hash.db"
 fi
-rclone --config "$tmpconfig" copy "$remote_source" "$tmpdir"
+rclone --config "$tmpconfig" copyto "$remote_source" "$dest"
 
 restored="$(MISSIS_STORE="$dest" go run ./tools/store-manifest)"
 restored_id="$(printf '%s' "$restored" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"
