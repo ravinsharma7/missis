@@ -41,6 +41,8 @@ type tuiModel struct {
 	width      int
 	height     int
 	listOffset int
+	editing    bool
+	input      string
 }
 
 func newModel() (*tuiModel, error) {
@@ -74,7 +76,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if m.view == "list" || m.view == "detail" || m.view == "compare" {
+			if m.view == "list" || m.view == "detail" || m.view == "compare" || m.view == "input" {
 				if m.view != "list" {
 					m.view = "list"
 					m.detail = nil
@@ -95,6 +97,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDetail(msg)
 	case "compare":
 		return m.updateCompare(msg)
+	case "input":
+		return m.updateInput(msg)
 	default:
 		return m, nil
 	}
@@ -215,6 +219,60 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.message = "exported " + m.detail.summary.Ref + " -> " + dst
 		}
+	case "t":
+		m.editing = true
+		m.input = m.detail.summary.Title
+		m.view = "input"
+	}
+	return m, nil
+}
+
+func (m tuiModel) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "enter":
+		if m.detail == nil {
+			m.view = "detail"
+			m.editing = false
+			return m, nil
+		}
+		title := strings.TrimSpace(m.input)
+		if title == "" {
+			m.view = "detail"
+			m.editing = false
+			return m, nil
+		}
+		if err := setTicketTitle(m.client, m.detail.summary, title); err != nil {
+			m.err = err
+			m.view = "detail"
+			m.editing = false
+			return m, nil
+		}
+		m.detail.summary.Title = title
+		lines, err := ticketLines(m.client, m.detail.summary)
+		if err != nil {
+			m.err = err
+		} else {
+			m.detail.lines = lines
+		}
+		m.view = "detail"
+		m.editing = false
+		m.message = "title updated"
+	case "esc":
+		m.view = "detail"
+		m.editing = false
+	case "backspace":
+		runes := []rune(m.input)
+		if len(runes) > 0 {
+			m.input = string(runes[:len(runes)-1])
+		}
+	default:
+		if len([]rune(key.String())) == 1 && !strings.Contains(key.String(), "ctrl") {
+			m.input += key.String()
+		}
 	}
 	return m, nil
 }
@@ -245,6 +303,8 @@ func (m tuiModel) View() string {
 		body = m.viewDetail()
 	case "compare":
 		body = m.viewCompare()
+	case "input":
+		body = "New title: " + m.input
 	default:
 		body = "unknown view"
 	}
@@ -325,7 +385,7 @@ func (m tuiModel) viewDetail() string {
 	if width < 20 {
 		width = 20
 	}
-	visibleLines := wrapText(strings.Join(m.detail.lines[start:end], "\n"), width)
+	visibleLines := wrapIndentedLines(m.detail.lines[start:end], width)
 	for _, line := range visibleLines {
 		b.WriteString(line)
 		b.WriteByte('\n')
@@ -522,6 +582,31 @@ func exportTicket(client *missis.Client, summary store.TicketSummary) (string, e
 	return dst, os.WriteFile(dst, []byte(b.String()), 0o644)
 }
 
+func setTicketTitle(client *missis.Client, summary store.TicketSummary, title string) error {
+	now := time.Now().UTC()
+	proj, err := client.BitemporalProjection(summary.ID, now, now)
+	if err != nil {
+		return err
+	}
+	partID, ok := proj.Paths["title"]
+	if !ok {
+		return fmt.Errorf("title part not found")
+	}
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(summary.ID)}
+	event := model.Event{
+		ID:          model.EventID(missis.NewID("event")),
+		Stream:      stream,
+		Operation:   model.OpSetValue,
+		Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: []string{"title"}},
+		Value:       model.Value{Kind: model.ValueKindText, Text: title},
+		RecordedAt:  now,
+		EffectiveAt: now,
+		Actor:       model.ActorRef{Kind: "human", ID: "tui", Name: "tui"},
+	}
+	_, err = client.AppendBatch([]model.Event{event}, "", nil, nil)
+	return err
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a
@@ -546,6 +631,32 @@ func wrapText(text string, width int) []string {
 		}
 		if len(runes) > 0 {
 			out = append(out, string(runes))
+		}
+	}
+	return out
+}
+
+func wrapIndentedLines(lines []string, width int) []string {
+	var out []string
+	for _, line := range lines {
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		prefix := line[:indent]
+		content := line[indent:]
+		available := width - indent
+		if available < 1 {
+			available = 1
+		}
+		runes := []rune(content)
+		if len(runes) <= available {
+			out = append(out, line)
+			continue
+		}
+		for len(runes) > available {
+			out = append(out, prefix+string(runes[:available]))
+			runes = runes[available:]
+		}
+		if len(runes) > 0 {
+			out = append(out, prefix+string(runes))
 		}
 	}
 	return out
