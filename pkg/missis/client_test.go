@@ -1,6 +1,7 @@
 package missis
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -27,13 +28,13 @@ func TestClientOpenHealthBackupAndSequenceGaps(t *testing.T) {
 	if storeID == "" {
 		t.Fatal("empty store id")
 	}
-	if err := client.CheckConsistency(); err != nil {
+	if err := client.CheckConsistency(context.Background()); err != nil {
 		t.Fatalf("empty store consistency: %v", err)
 	}
-	if err := client.Backup(backup); err != nil {
+	if err := client.Backup(context.Background(), backup); err != nil {
 		t.Fatal(err)
 	}
-	gaps, err := client.SequenceGaps()
+	gaps, err := client.SequenceGaps(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,18 +59,18 @@ func TestClientAppendListProjection(t *testing.T) {
 		{ID: model.EventID("event:1"), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
 		{ID: model.EventID("event:2"), Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "SDK"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
 	}
-	if _, _, err := client.AppendTicketBatch(events, "", nil); err != nil {
+	if _, _, err := client.AppendTicketBatch(context.Background(), events, "", nil); err != nil {
 		t.Fatal(err)
 	}
 
-	summaries, err := client.ListTickets(now)
+	summaries, err := client.ListTickets(context.Background(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(summaries) != 1 {
 		t.Fatalf("expected 1 ticket, got %d", len(summaries))
 	}
-	proj, err := client.CurrentProjection(ticketID, now)
+	proj, err := client.CurrentProjection(context.Background(), ticketID, now)
 	if err != nil {
 		t.Fatal(err)
 	}

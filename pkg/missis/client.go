@@ -1,6 +1,7 @@
 package missis
 
 import (
+	"context"
 	"time"
 
 	"github.com/ravinsharma7/missis/implementation/model"
@@ -60,55 +61,55 @@ func (c *Client) SchemaVersion() (string, error) {
 	return c.store.SchemaVersion()
 }
 
-func (c *Client) CheckConsistency() error {
+func (c *Client) CheckConsistency(ctx context.Context) error {
 	return c.store.CheckConsistency()
 }
 
-func (c *Client) Backup(dst string) error {
+func (c *Client) Backup(ctx context.Context, dst string) error {
 	return c.store.Backup(dst)
 }
 
-func (c *Client) SequenceGaps() ([]store.SequenceGap, error) {
+func (c *Client) SequenceGaps(ctx context.Context) ([]store.SequenceGap, error) {
 	return c.store.SequenceGaps()
 }
 
-func (c *Client) RepairSequenceGaps() error {
+func (c *Client) RepairSequenceGaps(ctx context.Context) error {
 	return c.store.RepairSequenceGaps()
 }
 
-func (c *Client) LoadEvents() ([]model.Event, error) {
+func (c *Client) LoadEvents(ctx context.Context) ([]model.Event, error) {
 	return c.store.LoadEvents()
 }
 
-func (c *Client) LoadLinkEvents() ([]model.Event, error) {
+func (c *Client) LoadLinkEvents(ctx context.Context) ([]model.Event, error) {
 	return c.store.LoadLinkEvents()
 }
 
-func (c *Client) LoadTicketEvents(ticketID model.TicketID) ([]model.Event, error) {
+func (c *Client) LoadTicketEvents(ctx context.Context, ticketID model.TicketID) ([]model.Event, error) {
 	return c.store.LoadTicketEvents(ticketID)
 }
 
-func (c *Client) CurrentProjection(ticketID model.TicketID, effectiveAt time.Time) (*model.Projection, error) {
+func (c *Client) CurrentProjection(ctx context.Context, ticketID model.TicketID, effectiveAt time.Time) (*model.Projection, error) {
 	return c.store.CurrentProjection(ticketID, effectiveAt)
 }
 
-func (c *Client) BitemporalProjection(ticketID model.TicketID, effectiveAt, knownAt time.Time) (*model.Projection, error) {
+func (c *Client) BitemporalProjection(ctx context.Context, ticketID model.TicketID, effectiveAt, knownAt time.Time) (*model.Projection, error) {
 	return c.store.BitemporalProjection(ticketID, effectiveAt, knownAt)
 }
 
-func (c *Client) GetEventByAlias(alias string) (model.Event, error) {
+func (c *Client) GetEventByAlias(ctx context.Context, alias string) (model.Event, error) {
 	return c.store.GetEventByAlias(alias)
 }
 
-func (c *Client) ListTickets(effectiveAt time.Time) ([]store.TicketSummary, error) {
+func (c *Client) ListTickets(ctx context.Context, effectiveAt time.Time) ([]store.TicketSummary, error) {
 	return c.store.ListTickets(effectiveAt)
 }
 
-func (c *Client) AppendBatch(events []model.Event, idempotencyKey string, preconditions []store.Precondition, result any) (store.AppendOutcome, error) {
+func (c *Client) AppendBatch(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []store.Precondition, result any) (store.AppendOutcome, error) {
 	return c.store.AppendBatch(events, idempotencyKey, preconditions, result)
 }
 
-func (c *Client) AppendTicketBatch(events []model.Event, idempotencyKey string, result any) (store.AppendOutcome, uint64, error) {
+func (c *Client) AppendTicketBatch(ctx context.Context, events []model.Event, idempotencyKey string, result any) (store.AppendOutcome, uint64, error) {
 	return c.store.AppendTicketBatch(events, idempotencyKey, result)
 }
 

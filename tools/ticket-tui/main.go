@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func newModel() (*tuiModel, error) {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	summaries, err := client.ListTickets(now)
+	summaries, err := client.ListTickets(context.Background(), now)
 	if err != nil {
 		client.Close()
 		return nil, err
@@ -510,7 +511,7 @@ func (m tuiModel) viewCompare() string {
 
 func ticketLines(client *missis.Client, summary store.TicketSummary) ([]string, error) {
 	now := time.Now().UTC()
-	proj, err := client.BitemporalProjection(summary.ID, now, now)
+	proj, err := client.BitemporalProjection(context.Background(), summary.ID, now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -542,7 +543,7 @@ func ticketLines(client *missis.Client, summary store.TicketSummary) ([]string, 
 
 func referenceLines(client *missis.Client, summary store.TicketSummary) ([]string, error) {
 	now := time.Now().UTC()
-	events, err := client.LoadLinkEvents()
+	events, err := client.LoadLinkEvents(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -625,7 +626,7 @@ func renderMarkdownValue(value string) string {
 
 func ticketSummaryParts(client *missis.Client, summary store.TicketSummary) map[string]string {
 	now := time.Now().UTC()
-	proj, err := client.BitemporalProjection(summary.ID, now, now)
+	proj, err := client.BitemporalProjection(context.Background(), summary.ID, now, now)
 	if err != nil {
 		return map[string]string{"error": err.Error()}
 	}
@@ -690,7 +691,7 @@ func exportTicket(client *missis.Client, summary store.TicketSummary) (string, e
 
 func setTicketTitle(client *missis.Client, summary store.TicketSummary, title string) error {
 	now := time.Now().UTC()
-	proj, err := client.BitemporalProjection(summary.ID, now, now)
+	proj, err := client.BitemporalProjection(context.Background(), summary.ID, now, now)
 	if err != nil {
 		return err
 	}
@@ -709,7 +710,7 @@ func setTicketTitle(client *missis.Client, summary store.TicketSummary, title st
 		EffectiveAt: now,
 		Actor:       model.ActorRef{Kind: "human", ID: "tui", Name: "tui"},
 	}
-	_, err = client.AppendBatch([]model.Event{event}, "", nil, nil)
+	_, err = client.AppendBatch(context.Background(), []model.Event{event}, "", nil, nil)
 	return err
 }
 
