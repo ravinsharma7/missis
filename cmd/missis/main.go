@@ -370,6 +370,7 @@ func main() {
 	case "set":
 		code = runSet(os.Args[2:])
 	default:
+		fmt.Fprintf(os.Stderr, "missis: unknown command: %s\n", os.Args[1])
 		usage()
 		code = exitInvalid
 	}
