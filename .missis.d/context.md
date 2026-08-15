@@ -32,6 +32,10 @@ Default active project and group are both `none`. Projects and groups are
 supported by missis, but this repository is not currently using them as active
 scopes. They can be created later and linked to existing tickets at any time.
 
+Project IDs and group IDs are canonical identifiers. Duplicate IDs for the
+same entity kind are rejected. A project ID and a group ID may share the same
+text because they are different entity kinds.
+
 Run these to verify the current setup:
 
 ```bash

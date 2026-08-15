@@ -15,3 +15,4 @@ Rules:
 - Prefer missis refs over free-text descriptions.
 - Do not duplicate authoritative ticket content here.
 - Update this file only when the active project, group, or ticket focus changes.
+- `project:` and `group:` values are canonical IDs, not display titles.
