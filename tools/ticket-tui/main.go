@@ -29,17 +29,18 @@ type detailState struct {
 }
 
 type tuiModel struct {
-	client    *missis.Client
-	summaries []store.TicketSummary
-	selected  int
-	view      string
-	detail    *detailState
-	compareA  *store.TicketSummary
-	compareB  *store.TicketSummary
-	message   string
-	err       error
-	width     int
-	height    int
+	client     *missis.Client
+	summaries  []store.TicketSummary
+	selected   int
+	view       string
+	detail     *detailState
+	compareA   *store.TicketSummary
+	compareB   *store.TicketSummary
+	message    string
+	err        error
+	width      int
+	height     int
+	listOffset int
 }
 
 func newModel() (*tuiModel, error) {
@@ -108,11 +109,23 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if m.selected > 0 {
 			m.selected--
+			m.clampListOffset()
 		}
 	case "down", "j":
 		if m.selected < len(m.summaries)-1 {
 			m.selected++
+			m.clampListOffset()
 		}
+	case "pgup":
+		if m.height > 0 {
+			m.listOffset -= maxInt(1, m.height-3)
+		}
+		m.clampListOffset()
+	case "pgdown":
+		if m.height > 0 {
+			m.listOffset += maxInt(1, m.height-3)
+		}
+		m.clampListOffset()
 	case "enter", " ":
 		if len(m.summaries) == 0 {
 			return m, nil
@@ -170,6 +183,26 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.detail.offset < len(m.detail.lines)-1 {
 			m.detail.offset++
 		}
+	case "pgup":
+		if m.height > 0 {
+			m.detail.offset -= maxInt(1, m.height-4)
+		}
+		if m.detail.offset < 0 {
+			m.detail.offset = 0
+		}
+	case "pgdown":
+		if m.height > 0 {
+			m.detail.offset += maxInt(1, m.height-4)
+		}
+		if m.detail.offset > len(m.detail.lines)-1 {
+			m.detail.offset = len(m.detail.lines) - 1
+		}
+	case "g", "home":
+		m.detail.offset = 0
+	case "G", "end":
+		if len(m.detail.lines) > 0 {
+			m.detail.offset = len(m.detail.lines) - 1
+		}
 	case "b", "esc":
 		m.view = "list"
 		m.detail = nil
@@ -224,7 +257,17 @@ func (m tuiModel) viewList() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("missis tickets"))
 	b.WriteString("\n\n")
-	for i, summary := range m.summaries {
+	visible := m.height - 3
+	if visible < 1 {
+		visible = 1
+	}
+	start := m.listOffset
+	end := start + visible
+	if end > len(m.summaries) {
+		end = len(m.summaries)
+	}
+	for i := start; i < end; i++ {
+		summary := m.summaries[i]
 		line := fmt.Sprintf("%s  %s  %s", summary.Ref, summary.Status, summary.Title)
 		if i == m.selected {
 			line = "> " + line
@@ -235,6 +278,32 @@ func (m tuiModel) viewList() string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+func (m *tuiModel) clampListOffset() {
+	if m.listOffset < 0 {
+		m.listOffset = 0
+	}
+	if m.height <= 0 {
+		return
+	}
+	visible := m.height - 3
+	if visible < 1 {
+		visible = 1
+	}
+	maxOffset := len(m.summaries) - visible
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.listOffset > maxOffset {
+		m.listOffset = maxOffset
+	}
+	if m.selected < m.listOffset {
+		m.listOffset = m.selected
+	}
+	if m.selected >= m.listOffset+visible {
+		m.listOffset = m.selected - visible + 1
+	}
 }
 
 func (m tuiModel) viewDetail() string {
@@ -271,7 +340,7 @@ func (m tuiModel) viewCompare() string {
 	for path, av := range a {
 		bv := bb[path]
 		if av != bv {
-			b.WriteString(fmt.Sprintf("%s\n  A: %s\n  B: %s\n", path, av, bv))
+			b.WriteString(fmt.Sprintf("%s\n  A: %s\n  B: %s\n", path, renderMarkdownValue(av), renderMarkdownValue(bv)))
 		}
 	}
 	return b.String()
@@ -288,9 +357,39 @@ func ticketLines(client *missis.Client, summary store.TicketSummary) ([]string, 
 		"status: " + summary.Status,
 	}
 	for _, path := range paths {
-		lines = append(lines, path+": "+parts[path])
+		valueLines := strings.Split(renderMarkdownValue(parts[path]), "\n")
+		lines = append(lines, path+": "+valueLines[0])
+		for _, line := range valueLines[1:] {
+			lines = append(lines, "  "+line)
+		}
 	}
 	return lines, nil
+}
+
+func renderMarkdownValue(value string) string {
+	lines := strings.Split(value, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "### "):
+			lines[i] = "▸ " + strings.TrimSpace(strings.TrimPrefix(trimmed, "### "))
+		case strings.HasPrefix(trimmed, "## "):
+			lines[i] = "▸▸ " + strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+		case strings.HasPrefix(trimmed, "# "):
+			lines[i] = "▸▸▸ " + strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+		case strings.HasPrefix(trimmed, "- "):
+			lines[i] = "  • " + strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+		case strings.HasPrefix(trimmed, "* "):
+			lines[i] = "  • " + strings.TrimSpace(strings.TrimPrefix(trimmed, "* "))
+		case strings.HasPrefix(trimmed, "> "):
+			lines[i] = "  " + strings.TrimSpace(strings.TrimPrefix(trimmed, "> "))
+		case strings.HasPrefix(trimmed, "```"):
+			lines[i] = "  ─ code fence ─"
+		default:
+			lines[i] = trimmed
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func ticketSummaryParts(client *missis.Client, summary store.TicketSummary) map[string]string {
@@ -356,6 +455,13 @@ func exportTicket(client *missis.Client, summary store.TicketSummary) error {
 	}
 	dst := filepath.Join(dir, summary.Ref[1:]+".md")
 	return os.WriteFile(dst, []byte(b.String()), 0o644)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func main() {

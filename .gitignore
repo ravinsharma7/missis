@@ -2,3 +2,4 @@
 .missis-store/
 backups/
 .env.local
+.missis.d/exports/
