@@ -79,17 +79,7 @@ missis show '#16' --json
 missis show '#16' --format markdown
 ```
 
-For an interactive shell over those views, use the development tool:
-
-```bash
-bash tools/ticket-explorer.sh
-```
-
-That tool is not a fourth top-level `missis` command. It wraps `show` and can
-list tickets, inspect a ticket or part, emit JSON, follow references, walk
-lineage, search, and write Markdown to a file when requested.
-
-For a visual terminal UI, use:
+For an interactive terminal UI, use:
 
 ```bash
 go run ./tools/ticket-tui

@@ -160,10 +160,11 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		summary := m.summaries[m.selected]
-		if err := exportTicket(m.client, summary); err != nil {
+		dst, err := exportTicket(m.client, summary)
+		if err != nil {
 			m.err = err
 		} else {
-			m.message = "exported " + summary.Ref
+			m.message = "exported " + summary.Ref + " -> " + dst
 		}
 	}
 	return m, nil
@@ -208,10 +209,11 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail = nil
 		m.message = ""
 	case "e":
-		if err := exportTicket(m.client, m.detail.summary); err != nil {
+		dst, err := exportTicket(m.client, m.detail.summary)
+		if err != nil {
 			m.err = err
 		} else {
-			m.message = "exported " + m.detail.summary.Ref
+			m.message = "exported " + m.detail.summary.Ref + " -> " + dst
 		}
 	}
 	return m, nil
@@ -318,7 +320,12 @@ func (m tuiModel) viewDetail() string {
 	if end > len(m.detail.lines) {
 		end = len(m.detail.lines)
 	}
-	for _, line := range m.detail.lines[start:end] {
+	width := m.width - 2
+	if width < 20 {
+		width = 20
+	}
+	visibleLines := wrapText(strings.Join(m.detail.lines[start:end], "\n"), width)
+	for _, line := range visibleLines {
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
@@ -347,23 +354,71 @@ func (m tuiModel) viewCompare() string {
 }
 
 func ticketLines(client *missis.Client, summary store.TicketSummary) ([]string, error) {
-	parts := ticketSummaryParts(client, summary)
-	paths := make([]string, 0, len(parts))
-	for path := range parts {
-		paths = append(paths, path)
+	now := time.Now().UTC()
+	proj, err := client.BitemporalProjection(summary.ID, now, now)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(paths)
 	lines := []string{
 		"status: " + summary.Status,
 	}
-	for _, path := range paths {
-		valueLines := strings.Split(renderMarkdownValue(parts[path]), "\n")
-		lines = append(lines, path+": "+valueLines[0])
-		for _, line := range valueLines[1:] {
-			lines = append(lines, "  "+line)
+	pathByID := make(map[model.PartID]string)
+	for path, id := range proj.Paths {
+		pathByID[id] = path
+	}
+	var roots []model.PartID
+	for id, part := range proj.Parts {
+		if part.ParentID != nil {
+			continue
 		}
+		if pathByID[id] == "title" || pathByID[id] == "status" {
+			continue
+		}
+		roots = append(roots, id)
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		return pathByID[roots[i]] < pathByID[roots[j]]
+	})
+	for _, id := range roots {
+		lines = append(lines, partSubtree(proj, id, 0, pathByID)...)
 	}
 	return lines, nil
+}
+
+func partSubtree(proj *model.Projection, id model.PartID, depth int, pathByID map[model.PartID]string) []string {
+	part := proj.Parts[id]
+	if part == nil {
+		return nil
+	}
+	path := pathByID[id]
+	if path == "" {
+		path = part.Name
+	}
+	name := part.DisplayName
+	if name == "" {
+		name = part.Name
+	}
+	indent := strings.Repeat("  ", depth)
+	lines := []string{indent + "▸ " + name}
+	if part.Value != nil {
+		value := renderMarkdownValue(valueText(*part.Value))
+		for _, valueLine := range strings.Split(value, "\n") {
+			lines = append(lines, indent+"   "+valueLine)
+		}
+	}
+	var children []model.PartID
+	for childID, child := range proj.Parts {
+		if child.ParentID != nil && *child.ParentID == id {
+			children = append(children, childID)
+		}
+	}
+	sort.Slice(children, func(i, j int) bool {
+		return pathByID[children[i]] < pathByID[children[j]]
+	})
+	for _, childID := range children {
+		lines = append(lines, partSubtree(proj, childID, depth+1, pathByID)...)
+	}
+	return lines
 }
 
 func renderMarkdownValue(value string) string {
@@ -435,10 +490,10 @@ func targetText(ref model.Ref) string {
 	return string(ref.Kind) + ":" + ref.Entity
 }
 
-func exportTicket(client *missis.Client, summary store.TicketSummary) error {
+func exportTicket(client *missis.Client, summary store.TicketSummary) (string, error) {
 	dir := filepath.Join(".", ".missis.d", "exports")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	parts := ticketSummaryParts(client, summary)
 	var b strings.Builder
@@ -454,7 +509,7 @@ func exportTicket(client *missis.Client, summary store.TicketSummary) error {
 		b.WriteString(parts[path] + "\n\n")
 	}
 	dst := filepath.Join(dir, summary.Ref[1:]+".md")
-	return os.WriteFile(dst, []byte(b.String()), 0o644)
+	return dst, os.WriteFile(dst, []byte(b.String()), 0o644)
 }
 
 func maxInt(a, b int) int {
@@ -462,6 +517,28 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func wrapText(text string, width int) []string {
+	if width <= 0 {
+		return strings.Split(text, "\n")
+	}
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if len([]rune(line)) <= width {
+			out = append(out, line)
+			continue
+		}
+		runes := []rune(line)
+		for len(runes) > width {
+			out = append(out, string(runes[:width]))
+			runes = runes[width:]
+		}
+		if len(runes) > 0 {
+			out = append(out, string(runes))
+		}
+	}
+	return out
 }
 
 func main() {
