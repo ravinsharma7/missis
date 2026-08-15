@@ -304,15 +304,30 @@ func (m tuiModel) View() string {
 	case "compare":
 		body = m.viewCompare()
 	case "input":
-		body = "New title: " + m.input
+		body = "Edit title: " + m.input + "▌"
 	default:
 		body = "unknown view"
 	}
-	help := helpStyle.Render("q quit | arrows/jk move | enter open | c/v compare | e export | b back")
+	help := helpStyle.Render(m.helpForView())
 	if m.message != "" {
 		help += "\n" + m.message
 	}
 	return lipgloss.JoinVertical(lipgloss.Top, body, help)
+}
+
+func (m tuiModel) helpForView() string {
+	switch m.view {
+	case "list":
+		return "j/k move | enter open | c compare A | v compare B | e export | pgup/pgdn page | q quit"
+	case "detail":
+		return "j/k scroll | pgup/pgdn page | g/G top/end | t edit title | e export | b back | q back"
+	case "compare":
+		return "b back | q quit"
+	case "input":
+		return "enter save | esc cancel | backspace delete"
+	default:
+		return "q quit"
+	}
 }
 
 func (m tuiModel) viewList() string {
@@ -377,7 +392,10 @@ func (m tuiModel) viewDetail() string {
 	b.WriteString(titleStyle.Render(m.detail.summary.Ref + "  " + m.detail.summary.Title))
 	b.WriteString("\n\n")
 	start := m.detail.offset
-	end := start + m.height - 5
+	end := start + m.height - 6
+	if end < start {
+		end = start
+	}
 	if end > len(m.detail.lines) {
 		end = len(m.detail.lines)
 	}
