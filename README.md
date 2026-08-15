@@ -9,6 +9,27 @@
 - All three implementation will expose some flaws in each other and can be used as basis to continuously improve each other.
 - This project uses AI heavily to experiment with matters.
 
+# Install
+
+From a local checkout:
+
+```bash
+go install ./cmd/missis
+```
+
+From the published module:
+
+```bash
+go install github.com/ravinsharma7/missis/cmd/missis@latest
+```
+
+Go places the binary in `$(go env GOPATH)/bin`. Make sure that directory is on
+your `PATH`:
+
+```bash
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
 # Viewing tickets
 
 `show` reads the event ledger and derives the current projection on demand. It
