@@ -18,6 +18,12 @@ var relationInverses = map[string]string{
 	"supported-by":  "supports",
 	"contradicts":   "contradicted-by",
 	"contradicted-by": "contradicts",
+	"implements":     "implemented-by",
+	"implemented-by": "implements",
+	"tracks":         "tracked-by",
+	"tracked-by":     "tracks",
+	"documents":      "documented-by",
+	"documented-by":  "documents",
 }
 
 type LinkView struct {
