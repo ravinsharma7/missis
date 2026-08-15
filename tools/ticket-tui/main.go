@@ -23,9 +23,10 @@ var (
 )
 
 type detailState struct {
-	summary store.TicketSummary
-	lines   []string
-	offset  int
+	summary  store.TicketSummary
+	lines    []string
+	offset   int
+	showRefs bool
 }
 
 type tuiModel struct {
@@ -243,6 +244,19 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.editing = true
 		m.input = m.detail.summary.Title
 		m.view = "input"
+	case "r":
+		m.detail.showRefs = !m.detail.showRefs
+		var err error
+		if m.detail.showRefs {
+			m.detail.lines, err = referenceLines(m.client, m.detail.summary)
+		} else {
+			m.detail.lines, err = ticketLines(m.client, m.detail.summary)
+		}
+		if err != nil {
+			m.err = err
+		} else {
+			m.detail.offset = 0
+		}
 	}
 	return m, nil
 }
@@ -340,7 +354,7 @@ func (m tuiModel) helpForView() string {
 	case "list":
 		return "j/k move | enter open | c compare A | v compare B | e export | pgup/pgdn page | q quit"
 	case "detail":
-		return "j/k scroll | pgup/pgdn page | g/G top/end | t edit title | e export | b back | q back"
+		return "j/k scroll | pgup/pgdn page | g/G top/end | r refs | t edit title | e export | b back | q back"
 	case "compare":
 		return "b back | q quit"
 	case "input":
@@ -416,7 +430,11 @@ func (m tuiModel) viewDetail() string {
 	if detailTitle == "" {
 		detailTitle = "<no title>"
 	}
-	b.WriteString(titleStyle.Render(m.detail.summary.Ref + "  " + detailTitle))
+	viewLabel := ""
+	if m.detail.showRefs {
+		viewLabel = "  (references)"
+	}
+	b.WriteString(titleStyle.Render(m.detail.summary.Ref + "  " + detailTitle + viewLabel))
 	b.WriteString("\n\n")
 	if len(m.detail.lines) <= 1 {
 		b.WriteString("<no parts>\n")
@@ -510,6 +528,27 @@ func ticketLines(client *missis.Client, summary store.TicketSummary) ([]string, 
 	})
 	for _, id := range roots {
 		lines = append(lines, partSubtree(proj, id, 0, pathByID)...)
+	}
+	return lines, nil
+}
+
+func referenceLines(client *missis.Client, summary store.TicketSummary) ([]string, error) {
+	now := time.Now().UTC()
+	events, err := client.LoadLinkEvents()
+	if err != nil {
+		return nil, err
+	}
+	ref := model.Ref{Kind: model.KindTicket, Entity: string(summary.ID)}
+	links, err := model.LinksForRef(events, ref, now, now)
+	if err != nil {
+		return nil, err
+	}
+	if len(links) == 0 {
+		return []string{"<no references>"}, nil
+	}
+	lines := make([]string, 0, len(links))
+	for _, link := range links {
+		lines = append(lines, fmt.Sprintf("%s %s %s", link.Direction, link.Relation, targetText(link.To)))
 	}
 	return lines, nil
 }
