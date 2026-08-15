@@ -9,7 +9,8 @@ Read this before starting implementation. Then run:
 missis show
 ```
 
-For the current active project/group/ticket focus, read `.missis.d/active.md`.
+For the current active project/group/ticket focus, read `active.md` from the
+same metadata directory as this file.
 
 ## Active focus
 
