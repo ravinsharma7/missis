@@ -211,6 +211,58 @@ func TestLinksForRef(t *testing.T) {
 	}
 }
 
+func TestLineageWalk(t *testing.T) {
+	t.Parallel()
+	// covers PH2-LINEAGE-001 PH2-LINEAGE-002
+	ticketA := TicketID("ticket:a")
+	ticketB := TicketID("ticket:b")
+	ticketC := TicketID("ticket:c")
+	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}
+	base := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	events := []Event{
+		linkEvent(ticketA, ticketB, "blocked-by", actor, base, 1),
+		linkEvent(ticketB, ticketC, "caused-by", actor, base.Add(time.Second), 2),
+	}
+	graph, err := BuildLineageGraph(events, base.Add(time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := Ref{Kind: KindTicket, Entity: string(ticketA)}
+	edges, err := graph.Walk(start, "both", 3, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 edges, got %d: %+v", len(edges), edges)
+	}
+	if edges[0].Depth != 1 || edges[1].Depth != 2 {
+		t.Fatalf("unexpected depths: %+v", edges)
+	}
+
+	filtered, err := graph.Walk(start, "outgoing", 1, map[string]bool{"blocked-by": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("expected one filtered edge, got %d", len(filtered))
+	}
+}
+
+func linkEvent(from, to TicketID, relation string, actor ActorRef, effectiveAt time.Time, sequence uint64) Event {
+	toRef := Ref{Kind: KindTicket, Entity: string(to)}
+	return Event{
+		ID:          EventID("event:" + string(from) + ":" + relation + ":" + string(to)),
+		Stream:      Ref{Kind: KindTicket, Entity: string(from)},
+		Sequence:    sequence,
+		Operation:   OpAssertLink,
+		Target:      Ref{Kind: KindTicket, Entity: string(from)},
+		Value:       Value{Text: relation, Ref: &toRef},
+		RecordedAt:  effectiveAt,
+		EffectiveAt: effectiveAt,
+		Actor:       actor,
+	}
+}
+
 func partCreateEvent(stream Ref, id PartID, path []string, parent *PartID, value Value, actor ActorRef, effectiveAt time.Time, sequence uint64) Event {
 	var parentRef *Ref
 	if parent != nil {

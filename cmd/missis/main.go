@@ -268,6 +268,7 @@ func runShow(args []string) int {
 	args = reorderArgs(args, map[string]bool{
 		"at": true, "effective-at": true, "known-at": true,
 		"since": true, "between": true, "store": true,
+		"direction": true, "depth": true, "relations": true,
 	})
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -282,6 +283,10 @@ func runShow(args []string) int {
 		storeFlag   string
 		health      bool
 		references  bool
+		lineage     bool
+		direction   string
+		depth       int
+		relations   string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -293,6 +298,10 @@ func runShow(args []string) int {
 	fs.StringVar(&storeFlag, "store", "", "store path")
 	fs.BoolVar(&health, "health", false, "run store consistency check")
 	fs.BoolVar(&references, "references", false, "show incoming and outgoing links")
+	fs.BoolVar(&lineage, "lineage", false, "traverse typed links")
+	fs.StringVar(&direction, "direction", "both", "lineage direction: both, outgoing, or incoming")
+	fs.IntVar(&depth, "depth", 3, "maximum lineage depth")
+	fs.StringVar(&relations, "relations", "", "comma-separated relation allow-list")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -382,6 +391,63 @@ func runShow(args []string) int {
 		}
 		filtered := filterHistory(events, effectiveTime, knownTime, since, between, partPath)
 		outputHistory(filtered, jsonMode)
+		return exitSuccess
+	}
+
+	if lineage {
+		targetRef, err := resolveAnyRef(db, ref, ticketID, effectiveTime)
+		if err != nil {
+			printError(err, exitNotFound, jsonMode, &ref)
+			return exitNotFound
+		}
+		events, err := db.LoadEvents()
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+		graph, err := model.BuildLineageGraph(events, effectiveTime, knownTime)
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+		relationSet := make(map[string]bool)
+		if relations != "" {
+			for _, relation := range strings.Split(relations, ",") {
+				relation = strings.TrimSpace(relation)
+				if relation == "" {
+					continue
+				}
+				if !model.ValidRelation(relation) {
+					printError(fmt.Errorf("unsupported relation: %s", relation), exitValidation, jsonMode, &ref)
+					return exitValidation
+				}
+				relationSet[relation] = true
+			}
+		}
+		edges, err := graph.Walk(targetRef, direction, depth, relationSet)
+		if err != nil {
+			printError(err, exitInvalid, jsonMode, &ref)
+			return exitInvalid
+		}
+		if jsonMode {
+			items := make([]map[string]any, 0, len(edges))
+			for _, edge := range edges {
+				items = append(items, map[string]any{
+					"from":       targetText(edge.From),
+					"relation":   edge.Relation,
+					"to":         targetText(edge.To),
+					"direction":  edge.Direction,
+					"depth":      edge.Depth,
+					"origin":     edge.Origin,
+					"created_by": string(edge.CreatedBy),
+				})
+			}
+			writeJSON(map[string]any{"start": targetText(targetRef), "edges": items})
+		} else {
+			for _, edge := range edges {
+				fmt.Printf("%d %s %s %s %s\n", edge.Depth, edge.Direction, targetText(edge.From), edge.Relation, targetText(edge.To))
+			}
+		}
 		return exitSuccess
 	}
 

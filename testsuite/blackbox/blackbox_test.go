@@ -607,3 +607,35 @@ func TestTypedLinksRejectMissingTarget(t *testing.T) {
 		t.Fatalf("expected malformed link failure, got %d %s", malformed.code, malformed.stdout)
 	}
 }
+
+func TestLineageTraversal(t *testing.T) {
+	t.Parallel()
+	// covers PH2-LINEAGE-001 PH2-LINEAGE-002 PH2-LINEAGE-003
+	store := filepath.Join(t.TempDir(), "missis.db")
+	first := newTicket(t, store, "first")
+	second := newTicket(t, store, "second")
+	third := newTicket(t, store, "third")
+
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/links", "--add", "blocked-by:"+second["ref"].(string)); result.code != 0 {
+		t.Fatalf("link first->second: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "set", "--json", second["ref"].(string)+"/links", "--add", "caused-by:"+third["ref"].(string)); result.code != 0 {
+		t.Fatalf("link second->third: %d %s", result.code, result.stderr)
+	}
+
+	lineage := mustJSON(t, runMissis(t, store, "show", "--json", first["ref"].(string), "--lineage", "--direction", "both", "--depth", "3"))
+	edges := lineage["edges"].([]any)
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 lineage edges, got %d: %v", len(edges), edges)
+	}
+
+	shallow := mustJSON(t, runMissis(t, store, "show", "--json", first["ref"].(string), "--lineage", "--depth", "1"))
+	if len(shallow["edges"].([]any)) != 1 {
+		t.Fatalf("expected one shallow edge: %v", shallow["edges"])
+	}
+
+	filtered := mustJSON(t, runMissis(t, store, "show", "--json", first["ref"].(string), "--lineage", "--relations", "blocked-by"))
+	if len(filtered["edges"].([]any)) != 1 {
+		t.Fatalf("expected one filtered edge: %v", filtered["edges"])
+	}
+}
