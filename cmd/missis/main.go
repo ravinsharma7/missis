@@ -384,6 +384,7 @@ func runShow(args []string) int {
 		"since": true, "between": true, "store": true,
 		"direction": true, "depth": true, "relations": true, "format": true,
 		"project": true, "group": true,
+		"search": true, "status": true, "type": true, "tag": true,
 	})
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -405,6 +406,10 @@ func runShow(args []string) int {
 		format      string
 		project     string
 		group       string
+		search      string
+		status      string
+		typeFilter  string
+		tagFilter   string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -423,6 +428,10 @@ func runShow(args []string) int {
 	fs.StringVar(&format, "format", "", "output format: text, json, or markdown")
 	fs.StringVar(&project, "project", "", "show project scope")
 	fs.StringVar(&group, "group", "", "show group scope")
+	fs.StringVar(&search, "search", "", "search query")
+	fs.StringVar(&status, "status", "", "filter by status")
+	fs.StringVar(&typeFilter, "type", "", "filter by type")
+	fs.StringVar(&tagFilter, "tag", "", "filter by tag")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -489,47 +498,18 @@ func runShow(args []string) int {
 		}
 	}
 
-	if project != "" || group != "" {
-		scopeKind := model.KindProject
-		scopeID := project
-		if group != "" {
-			scopeKind = model.KindGroup
-			scopeID = group
-		}
-		targetRef := model.Ref{Kind: scopeKind, Entity: scopeID}
-		linkEvents, err := db.LoadLinkEvents()
+	if project != "" || group != "" || search != "" || status != "" || typeFilter != "" || tagFilter != "" {
+		summaries, err := db.ListTickets(effectiveTime)
 		if err != nil {
 			printError(err, exitStorage, jsonMode, nil)
 			return exitStorage
 		}
-		links, err := model.LinksForRef(linkEvents, targetRef, effectiveTime, knownTime)
+		filtered, err := filterTicketSummaries(db, summaries, search, status, project, group, typeFilter, tagFilter, effectiveTime, knownTime)
 		if err != nil {
 			printError(err, exitStorage, jsonMode, nil)
 			return exitStorage
 		}
-		items := make([]map[string]any, 0, len(links))
-		for _, link := range links {
-			if link.Direction != "asserted" {
-				continue
-			}
-			if scopeKind == model.KindProject && link.Relation != "contains" {
-				continue
-			}
-			if scopeKind == model.KindGroup && link.Relation != "contains" && link.Relation != "governs" {
-				continue
-			}
-			items = append(items, map[string]any{
-				"relation": link.Relation,
-				"to":       targetText(link.To),
-			})
-		}
-		if jsonMode {
-			writeJSON(map[string]any{"scope": string(scopeKind) + ":" + scopeID, "members": items})
-		} else {
-			for _, item := range items {
-				fmt.Printf("%s %s\n", item["relation"], item["to"])
-			}
-		}
+		outputTicketList(filtered, jsonMode)
 		return exitSuccess
 	}
 
@@ -1774,6 +1754,122 @@ func outputTicketList(summaries []store.TicketSummary, jsonMode bool) {
 	for _, summary := range summaries {
 		fmt.Printf("%s\t%s\t%s\t%s\n", summary.Ref, summary.Status, summary.Title, summary.RecordedAt.UTC().Format(time.RFC3339))
 	}
+}
+
+func filterTicketSummaries(db *store.Store, summaries []store.TicketSummary, search, status, project, group, typeFilter, tagFilter string, effectiveAt, knownAt time.Time) ([]store.TicketSummary, error) {
+	var linkEvents []model.Event
+	if project != "" || group != "" {
+		var err error
+		linkEvents, err = db.LoadLinkEvents()
+		if err != nil {
+			return nil, err
+		}
+	}
+	projectTicketIDs := make(map[model.TicketID]bool)
+	if project != "" {
+		links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: project}, effectiveAt, knownAt)
+		if err != nil {
+			return nil, err
+		}
+		for _, link := range links {
+			if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
+				projectTicketIDs[model.TicketID(link.To.Entity)] = true
+			}
+		}
+	}
+	if group != "" {
+		groupRef := model.Ref{Kind: model.KindGroup, Entity: group}
+		groupLinks, err := model.LinksForRef(linkEvents, groupRef, effectiveAt, knownAt)
+		if err != nil {
+			return nil, err
+		}
+		projectIDs := make(map[string]bool)
+		for _, link := range groupLinks {
+			if link.Direction == "asserted" && (link.Relation == "contains" || link.Relation == "governs") && link.To.Kind == model.KindProject {
+				projectIDs[link.To.Entity] = true
+			}
+		}
+		for projectID := range projectIDs {
+			links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: projectID}, effectiveAt, knownAt)
+			if err != nil {
+				return nil, err
+			}
+			for _, link := range links {
+				if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
+					projectTicketIDs[model.TicketID(link.To.Entity)] = true
+				}
+			}
+		}
+	}
+
+	result := make([]store.TicketSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		if status != "" && summary.Status != status {
+			continue
+		}
+		if (project != "" || group != "") && !projectTicketIDs[summary.ID] {
+			continue
+		}
+		proj, err := db.BitemporalProjection(summary.ID, effectiveAt, knownAt)
+		if err != nil {
+			return nil, err
+		}
+		if search != "" {
+			text := summary.Title + " " + projectionText(proj)
+			if !matchesAllTokens(text, search) {
+				continue
+			}
+		}
+		if typeFilter != "" && !partHasValue(proj, "type", typeFilter) {
+			continue
+		}
+		if tagFilter != "" && !partHasValue(proj, "tag", tagFilter) {
+			continue
+		}
+		result = append(result, summary)
+	}
+	return result, nil
+}
+
+func projectionText(proj *model.Projection) string {
+	var b strings.Builder
+	for _, part := range proj.Parts {
+		if part == nil || part.Value == nil {
+			continue
+		}
+		b.WriteString(fmt.Sprint(valueText(*part.Value)))
+		b.WriteByte(' ')
+	}
+	return b.String()
+}
+
+func partHasValue(proj *model.Projection, path, want string) bool {
+	partID, ok := proj.Paths[path]
+	if !ok {
+		return false
+	}
+	part := proj.Parts[partID]
+	if part == nil || part.Value == nil {
+		return false
+	}
+	if len(part.Value.List) > 0 {
+		for _, value := range part.Value.List {
+			if value == want {
+				return true
+			}
+		}
+	}
+	return strings.EqualFold(part.Value.Text, want)
+}
+
+func matchesAllTokens(text, query string) bool {
+	text = strings.ToLower(text)
+	for _, token := range strings.Fields(strings.ToLower(query)) {
+		if !strings.Contains(text, token) {
+			return false
+		}
+	}
+	return true
 }
 
 func outputProjection(ticketID model.TicketID, proj *model.Projection, pathFilter []string, jsonMode bool, recordedAt, ticketRef string) {
