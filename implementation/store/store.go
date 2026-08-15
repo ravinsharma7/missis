@@ -59,7 +59,7 @@ func Open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	writer, err := sql.Open("sqlite", path)
+	writer, err := sql.Open("sqlite", path+"?_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
