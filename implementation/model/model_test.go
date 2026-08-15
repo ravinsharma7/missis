@@ -151,6 +151,66 @@ func TestReproducibleProjection(t *testing.T) {
 	}
 }
 
+func TestLinksForRef(t *testing.T) {
+	t.Parallel()
+	// covers PH2-LINK-001 PH2-LINK-002 PH2-LINK-003
+	ticketA := TicketID("ticket:a")
+	ticketB := TicketID("ticket:b")
+	streamA := Ref{Kind: KindTicket, Entity: string(ticketA)}
+	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}
+	base := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	from := Ref{Kind: KindTicket, Entity: string(ticketA)}
+	to := Ref{Kind: KindTicket, Entity: string(ticketB)}
+
+	assert := Event{
+		ID:          EventID("event:link:1"),
+		Stream:      streamA,
+		Sequence:    1,
+		Operation:   OpAssertLink,
+		Target:      from,
+		Value:       Value{Text: "blocked-by", Ref: &to},
+		RecordedAt:  base,
+		EffectiveAt: base,
+		Actor:       actor,
+	}
+	events := []Event{assert}
+	links, err := LinksForRef(events, from, base.Add(time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].Relation != "blocked-by" || links[0].Direction != "asserted" {
+		t.Fatalf("unexpected links: %+v", links)
+	}
+
+	incoming, err := LinksForRef(events, to, base.Add(time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(incoming) != 1 || incoming[0].Relation != "blocks" || incoming[0].Direction != "derived-inverse" {
+		t.Fatalf("unexpected inverse links: %+v", incoming)
+	}
+
+	retract := Event{
+		ID:          EventID("event:link:2"),
+		Stream:      streamA,
+		Sequence:    2,
+		Operation:   OpRetractLink,
+		Target:      from,
+		Value:       Value{Text: "blocked-by", Ref: &to},
+		RecordedAt:  base.Add(time.Second),
+		EffectiveAt: base.Add(time.Second),
+		Actor:       actor,
+	}
+	events = append(events, retract)
+	links, err = LinksForRef(events, from, base.Add(time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("expected no current links after retraction, got %+v", links)
+	}
+}
+
 func partCreateEvent(stream Ref, id PartID, path []string, parent *PartID, value Value, actor ActorRef, effectiveAt time.Time, sequence uint64) Event {
 	var parentRef *Ref
 	if parent != nil {

@@ -113,6 +113,9 @@ func sortEvents(events []Event) {
 }
 
 func applyEvent(proj *Projection, event Event) error {
+	if event.Operation == OpAssertLink || event.Operation == OpRetractLink {
+		return applyLinkEvent(proj, event)
+	}
 	if event.Target.Kind == KindPart {
 		partID := PartID(event.Target.Entity)
 		part := proj.Parts[partID]

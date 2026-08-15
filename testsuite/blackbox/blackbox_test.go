@@ -555,3 +555,55 @@ func TestShowHealth(t *testing.T) {
 		t.Fatalf("health status = %v", body["status"])
 	}
 }
+
+func TestTypedLinksLifecycle(t *testing.T) {
+	t.Parallel()
+	// covers PH2-LINK-001 PH2-LINK-002 PH2-LINK-003
+	store := filepath.Join(t.TempDir(), "missis.db")
+	first := newTicket(t, store, "first")
+	second := newTicket(t, store, "second")
+
+	add := runMissis(t, store, "set", "--json", first["ref"].(string)+"/links", "--add", "blocked-by:"+second["ref"].(string))
+	if add.code != 0 {
+		t.Fatalf("link add failed: %d %s", add.code, add.stderr)
+	}
+	refs := mustJSON(t, runMissis(t, store, "show", "--json", first["ref"].(string), "--references"))
+	links := refs["links"].([]any)
+	if len(links) != 1 {
+		t.Fatalf("expected one link, got %d: %v", len(links), links)
+	}
+	link := links[0].(map[string]any)
+	if link["relation"] != "blocked-by" || link["direction"] != "asserted" {
+		t.Fatalf("unexpected link: %v", link)
+	}
+
+	inverse := mustJSON(t, runMissis(t, store, "show", "--json", second["ref"].(string), "--references"))
+	inverseLinks := inverse["links"].([]any)
+	if len(inverseLinks) != 1 || inverseLinks[0].(map[string]any)["relation"] != "blocks" {
+		t.Fatalf("unexpected inverse links: %v", inverseLinks)
+	}
+
+	retract := runMissis(t, store, "set", "--json", first["ref"].(string)+"/links", "--retract", "blocked-by:"+second["ref"].(string))
+	if retract.code != 0 {
+		t.Fatalf("link retract failed: %d %s", retract.code, retract.stderr)
+	}
+	after := mustJSON(t, runMissis(t, store, "show", "--json", first["ref"].(string), "--references"))
+	if len(after["links"].([]any)) != 0 {
+		t.Fatalf("expected no current links after retract: %v", after["links"])
+	}
+}
+
+func TestTypedLinksRejectMissingTarget(t *testing.T) {
+	t.Parallel()
+	// covers PH2-LINK-004
+	store := filepath.Join(t.TempDir(), "missis.db")
+	first := newTicket(t, store, "first")
+	bad := runMissis(t, store, "set", "--json", first["ref"].(string)+"/links", "--add", "blocked-by:#9999")
+	if bad.code != 3 {
+		t.Fatalf("expected missing target failure, got %d %s", bad.code, bad.stdout)
+	}
+	malformed := runMissis(t, store, "set", "--json", first["ref"].(string)+"/links", "--add", "blocked-by")
+	if malformed.code != 2 {
+		t.Fatalf("expected malformed link failure, got %d %s", malformed.code, malformed.stdout)
+	}
+}

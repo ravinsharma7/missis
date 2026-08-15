@@ -281,6 +281,7 @@ func runShow(args []string) int {
 		between     string
 		storeFlag   string
 		health      bool
+		references  bool
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -291,6 +292,7 @@ func runShow(args []string) int {
 	fs.StringVar(&between, "between", "", "history interval")
 	fs.StringVar(&storeFlag, "store", "", "store path")
 	fs.BoolVar(&health, "health", false, "run store consistency check")
+	fs.BoolVar(&references, "references", false, "show incoming and outgoing links")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -383,6 +385,43 @@ func runShow(args []string) int {
 		return exitSuccess
 	}
 
+	if references {
+		targetRef, err := resolveAnyRef(db, ref, ticketID, effectiveTime)
+		if err != nil {
+			printError(err, exitNotFound, jsonMode, &ref)
+			return exitNotFound
+		}
+		events, err := db.LoadEvents()
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+		links, err := model.LinksForRef(events, targetRef, effectiveTime, knownTime)
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+		if jsonMode {
+			items := make([]map[string]any, 0, len(links))
+			for _, link := range links {
+				items = append(items, map[string]any{
+					"from":       targetText(link.From),
+					"relation":   link.Relation,
+					"to":         targetText(link.To),
+					"direction":  link.Direction,
+					"origin":     link.Origin,
+					"created_by": string(link.CreatedBy),
+				})
+			}
+			writeJSON(map[string]any{"links": items})
+		} else {
+			for _, link := range links {
+				fmt.Printf("%s %s %s %s\n", link.Direction, link.Relation, targetText(link.From), targetText(link.To))
+			}
+		}
+		return exitSuccess
+	}
+
 	proj, err := db.BitemporalProjection(ticketID, effectiveTime, knownTime)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
@@ -465,6 +504,11 @@ func runSet(args []string) int {
 			printError(err, exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
+	}
+
+	baseTicketID, basePath, err := resolveTicketRef(db, ref, effectiveTime)
+	if err == nil && len(basePath) > 0 && basePath[len(basePath)-1] == "links" && (add || retract) {
+		return runSetLink(db, ref, baseTicketID, basePath, value, actor, reason, effectiveTime, recordedAt, add, retract, idemKey, jsonMode)
 	}
 
 	actorRef := parseActor(actor)
@@ -628,6 +672,77 @@ func runSet(args []string) int {
 			fmt.Printf(" %s", result.Event)
 		}
 		fmt.Println()
+	}
+	return exitSuccess
+}
+
+func runSetLink(db *store.Store, ref string, ticketID model.TicketID, path []string, value, actor, reason string, effectiveTime, recordedAt time.Time, add, retract bool, idemKey string, jsonMode bool) int {
+	if !add && !retract {
+		printError(fmt.Errorf("link mutation requires --add or --retract"), exitInvalid, jsonMode, &ref)
+		return exitInvalid
+	}
+	relation, targetStr, ok := strings.Cut(value, ":")
+	if !ok || relation == "" || targetStr == "" {
+		printError(fmt.Errorf("link value must be relation:ref"), exitInvalid, jsonMode, &ref)
+		return exitInvalid
+	}
+	if !model.ValidRelation(relation) {
+		printError(fmt.Errorf("unsupported relation: %s", relation), exitValidation, jsonMode, &ref)
+		return exitValidation
+	}
+
+	fromRef, err := resolveAnyRef(db, strings.TrimSuffix(ref, "/links"), ticketID, effectiveTime)
+	if err != nil {
+		printError(err, exitNotFound, jsonMode, &ref)
+		return exitNotFound
+	}
+	toRef, err := resolveAnyRef(db, targetStr, ticketID, effectiveTime)
+	if err != nil {
+		printError(err, exitNotFound, jsonMode, &targetStr)
+		return exitNotFound
+	}
+
+	operation := model.OpAssertLink
+	if retract {
+		operation = model.OpRetractLink
+	}
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	event := model.Event{
+		Stream:      stream,
+		Operation:   operation,
+		Target:      fromRef,
+		Value:       model.Value{Text: relation, Ref: &toRef},
+		RecordedAt:  recordedAt,
+		EffectiveAt: effectiveTime,
+		Actor:       parseActor(actor),
+		Reason:      reason,
+	}
+	if idemKey != "" {
+		batchID := model.BatchID(newID("batch"))
+		event.BatchID = &batchID
+	}
+
+	result := setResult{
+		Ref:       ref,
+		Operation: string(operation),
+		Value:     relation + ":" + targetStr,
+	}
+	outcome, err := db.AppendBatch([]model.Event{event}, idemKey, nil, &result)
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			printError(err, exitConflict, jsonMode, &ref)
+			return exitConflict
+		}
+		printError(err, mapStoreError(err), jsonMode, &ref)
+		return mapStoreError(err)
+	}
+	if len(outcome.Events) > 0 {
+		result.Event = "@e" + fmt.Sprintf("%d", outcome.Events[len(outcome.Events)-1].AliasSeq)
+	}
+	if jsonMode {
+		writeJSON(result)
+	} else {
+		fmt.Printf("%s %s %s\n", ref, operation, result.Value)
 	}
 	return exitSuccess
 }
@@ -926,6 +1041,37 @@ func parseReference(db *store.Store, ref string, ticketID model.TicketID, effect
 		return model.Ref{}, err
 	}
 	return model.Ref{Kind: model.KindPart, Entity: string(partID)}, nil
+}
+
+func resolveAnyRef(db *store.Store, ref string, ticketID model.TicketID, effectiveAt time.Time) (model.Ref, error) {
+	if strings.HasPrefix(ref, "part:") {
+		return model.Ref{Kind: model.KindPart, Entity: strings.TrimPrefix(ref, "part:")}, nil
+	}
+	if strings.HasPrefix(ref, "ticket:") {
+		return model.Ref{Kind: model.KindTicket, Entity: strings.TrimPrefix(ref, "ticket:")}, nil
+	}
+	if strings.HasPrefix(ref, "@") {
+		event, err := db.GetEventByAlias(ref)
+		if err != nil {
+			return model.Ref{}, err
+		}
+		return model.Ref{Kind: model.KindEvent, Entity: string(event.ID)}, nil
+	}
+	if strings.HasPrefix(ref, "#") {
+		ticket, path, err := resolveTicketRef(db, ref, effectiveAt)
+		if err != nil {
+			return model.Ref{}, err
+		}
+		if len(path) == 0 {
+			return model.Ref{Kind: model.KindTicket, Entity: string(ticket)}, nil
+		}
+		_, partID, _, err := resolvePartRef(db, ref, effectiveAt)
+		if err != nil {
+			return model.Ref{}, err
+		}
+		return model.Ref{Kind: model.KindPart, Entity: string(partID), Path: path}, nil
+	}
+	return model.Ref{}, fmt.Errorf("unsupported reference: %s", ref)
 }
 
 func inferValueKind(path []string, value string) model.ValueKind {
