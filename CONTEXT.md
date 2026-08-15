@@ -9,6 +9,8 @@ Read this before starting implementation. Then run:
 missis show
 ```
 
+For the current active project/group/ticket focus, read `ACTIVE.md`.
+
 ## Active focus
 
 - Reusable Go SDK facade: `pkg/missis`
