@@ -208,6 +208,15 @@ func runNew(args []string) int {
 		}
 		title := fs.Arg(0)
 		if title == "" {
+			for i, part := range parts {
+				if len(part.Path) == 1 {
+					title = part.Path[0]
+					parts = append(parts[:i], parts[i+1:]...)
+					break
+				}
+			}
+		}
+		if title == "" {
 			if fromFile != "" {
 				title = filepath.Base(fromFile)
 			} else {
@@ -668,6 +677,12 @@ func runSet(args []string) int {
 		if err != nil {
 			printError(err, exitValidation, jsonMode, &ref)
 			return exitValidation
+		}
+		for i, part := range parts {
+			if len(part.Path) == 1 {
+				parts = append(parts[:i], parts[i+1:]...)
+				break
+			}
 		}
 		ticketID, partPath, err := resolveTicketRef(db, ref, effectiveTime)
 		if err != nil {
@@ -1648,6 +1663,9 @@ func outputMarkdownProjection(ticketID model.TicketID, proj *model.Projection, p
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
+		if path == "title" || path == "status" {
+			continue
+		}
 		part := proj.Parts[proj.Paths[path]]
 		if part == nil {
 			continue
@@ -1730,6 +1748,9 @@ func valueOrNil(value model.Value) any {
 
 func valueOrNilFromPart(part *model.Part) any {
 	if part == nil || part.Value == nil {
+		return nil
+	}
+	if part.Value.Text == "" && part.Value.Data == nil && len(part.Value.List) == 0 {
 		return nil
 	}
 	return valueText(*part.Value)

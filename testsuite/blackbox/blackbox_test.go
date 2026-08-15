@@ -2,6 +2,7 @@ package blackbox
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -692,7 +693,7 @@ func TestMarkdownImportNew(t *testing.T) {
 	ref := created["ref"].(string)
 	shown := mustJSON(t, runMissis(t, store, "show", "--json", ref))
 	parts := shown["parts"].(map[string]any)
-	if _, ok := parts["imported-issue/problem"]; !ok {
+	if _, ok := parts["problem"]; !ok {
 		t.Fatalf("imported problem part missing: %v", parts)
 	}
 }
@@ -712,7 +713,7 @@ func TestMarkdownImportSet(t *testing.T) {
 	}
 	shown := mustJSON(t, runMissis(t, store, "show", "--json", created["ref"].(string)))
 	parts := shown["parts"].(map[string]any)
-	if _, ok := parts["extra/detail"]; !ok {
+	if _, ok := parts["detail"]; !ok {
 		t.Fatalf("imported set part missing: %v", parts)
 	}
 }
@@ -767,4 +768,73 @@ func TestMarkdownReimportIdentity(t *testing.T) {
 	if result := runMissis(t, store, "set", "--json", created["ref"].(string), "--from", file); result.code != 4 {
 		t.Fatalf("missing part reimport should fail with validation, got %d %s", result.code, result.stdout)
 	}
+}
+
+func TestMarkdownRoundTrip(t *testing.T) {
+	t.Parallel()
+	// covers PH3-ROUNDTRIP-001
+	storeA := filepath.Join(t.TempDir(), "a.db")
+	storeB := filepath.Join(t.TempDir(), "b.db")
+	fixture := filepath.Join(t.TempDir(), "fixture.md")
+	content := "# Root\n\n## Problem\n\nThe problem body.\n\n## Evidence\n\n### Empty child\n\n### Race test\n\nEvidence body.\n"
+	if err := os.WriteFile(fixture, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	createdA := mustJSON(t, runMissis(t, storeA, "new", "--json", "--from", fixture))
+	refA := createdA["ref"].(string)
+	exported := runMissis(t, storeA, "show", refA, "--format", "markdown")
+	if exported.code != 0 {
+		t.Fatalf("export failed: %d %s", exported.code, exported.stderr)
+	}
+	exportFile := filepath.Join(t.TempDir(), "exported.md")
+	if err := os.WriteFile(exportFile, []byte(exported.stdout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	createdB := mustJSON(t, runMissis(t, storeB, "new", "--json", "--from", exportFile))
+	refB := createdB["ref"].(string)
+	showA := mustJSON(t, runMissis(t, storeA, "show", "--json", refA))
+	showB := mustJSON(t, runMissis(t, storeB, "show", "--json", refB))
+	partsA := showA["parts"].(map[string]any)
+	partsB := showB["parts"].(map[string]any)
+	filteredA := filterSystemParts(partsA)
+	filteredB := filterSystemParts(partsB)
+	if len(filteredA) != len(filteredB) {
+		t.Fatalf("round-trip part count mismatch: %d != %d\nA=%v\nB=%v", len(filteredA), len(filteredB), filteredA, filteredB)
+	}
+	for path, rawA := range filteredA {
+		rawB, ok := filteredB[path]
+		if !ok {
+			t.Fatalf("missing path %s in round-trip export", path)
+		}
+		valueA := rawA.(map[string]any)["value"]
+		valueB := rawB.(map[string]any)["value"]
+		if valueA == nil || valueB == nil {
+			continue
+		}
+		if fmt.Sprint(valueA) != fmt.Sprint(valueB) {
+			t.Fatalf("value mismatch for %s: %v != %v", path, valueA, valueB)
+		}
+	}
+
+	beforeCount := len(filteredA)
+	if result := runMissis(t, storeA, "set", "--json", refA, "--from", fixture); result.code != 0 {
+		t.Fatalf("reimport into store A failed: %d %s", result.code, result.stderr)
+	}
+	after := mustJSON(t, runMissis(t, storeA, "show", "--json", refA))
+	if len(filterSystemParts(after["parts"].(map[string]any))) != beforeCount {
+		t.Fatalf("reimport changed part count")
+	}
+}
+
+func filterSystemParts(parts map[string]any) map[string]any {
+	filtered := make(map[string]any)
+	for path, part := range parts {
+		if path == "title" || path == "status" {
+			continue
+		}
+		filtered[path] = part
+	}
+	return filtered
 }
