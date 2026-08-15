@@ -43,6 +43,8 @@ type tuiModel struct {
 	listOffset int
 	editing    bool
 	input      string
+	projectCtx string
+	groupCtx   string
 }
 
 func newModel() (*tuiModel, error) {
@@ -56,10 +58,24 @@ func newModel() (*tuiModel, error) {
 		client.Close()
 		return nil, err
 	}
+	projectCtx, groupCtx := "none", "none"
+	if data, readErr := os.ReadFile(filepath.Join(".missis.d", "active.md")); readErr == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "project:") {
+				projectCtx = strings.TrimSpace(strings.TrimPrefix(line, "project:"))
+			}
+			if strings.HasPrefix(line, "group:") {
+				groupCtx = strings.TrimSpace(strings.TrimPrefix(line, "group:"))
+			}
+		}
+	}
 	return &tuiModel{
-		client:    client,
-		summaries: summaries,
-		view:      "list",
+		client:     client,
+		summaries:  summaries,
+		view:       "list",
+		projectCtx: projectCtx,
+		groupCtx:   groupCtx,
 	}, nil
 }
 
@@ -332,7 +348,7 @@ func (m tuiModel) helpForView() string {
 
 func (m tuiModel) viewList() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("missis tickets"))
+	b.WriteString(titleStyle.Render(fmt.Sprintf("missis tickets | project: %s | group: %s", m.projectCtx, m.groupCtx)))
 	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("%-8s %-10s %s\n", "REF", "STATUS", "TITLE"))
 	visible := m.height - 3

@@ -196,6 +196,39 @@ func printVersion(jsonMode bool) {
 	fmt.Printf("missis version=%s commit=%s\n", version, commit)
 }
 
+func outputContext(storePath string, jsonMode bool) {
+	project, group, focus := "none", "none", ""
+	if data, err := os.ReadFile(filepath.Join(".missis.d", "active.md")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "project:") {
+				project = strings.TrimSpace(strings.TrimPrefix(line, "project:"))
+			}
+			if strings.HasPrefix(line, "group:") {
+				group = strings.TrimSpace(strings.TrimPrefix(line, "group:"))
+			}
+			if strings.HasPrefix(line, "focus:") {
+				focus = strings.TrimSpace(strings.TrimPrefix(line, "focus:"))
+			}
+		}
+	}
+	if jsonMode {
+		writeJSON(map[string]string{
+			"store":   storePath,
+			"project": project,
+			"group":   group,
+			"focus":   focus,
+		})
+		return
+	}
+	fmt.Printf("store: %s\n", storePath)
+	fmt.Printf("project: %s\n", project)
+	fmt.Printf("group: %s\n", group)
+	if focus != "" {
+		fmt.Printf("focus: %s\n", focus)
+	}
+}
+
 func runInit(args []string) int {
 	storeFlag := ""
 	jsonMode := false
@@ -607,6 +640,7 @@ func runShow(args []string) int {
 		typeFilter  string
 		tagFilter   string
 		version     bool
+		context     bool
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -630,6 +664,7 @@ func runShow(args []string) int {
 	fs.StringVar(&typeFilter, "type", "", "filter by type")
 	fs.StringVar(&tagFilter, "tag", "", "filter by tag")
 	fs.BoolVar(&version, "version", false, "show version")
+	fs.BoolVar(&context, "context", false, "show active project/group context")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -646,6 +681,10 @@ func runShow(args []string) int {
 	if err != nil {
 		printError(err, exitInvalid, jsonMode, nil)
 		return exitInvalid
+	}
+	if context {
+		outputContext(storePath, jsonMode)
+		return exitSuccess
 	}
 	client, err := missis.OpenPath(storePath)
 	if err != nil {
