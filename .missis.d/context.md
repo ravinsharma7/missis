@@ -61,8 +61,10 @@ go run ./tools/store-gaps .missis-store/missis.db
   strictly increasing; no in-place repair; recovery = restore from backup
   (ticket #41).
 - Bitemporal winner rule: latest effective time wins, recorded time breaks
-  ties (subspec `specs/bitemporal-winner.subspec.md`, ticket #42).
+  ties (main spec section 10.9, ticket #42).
 - Timestamp canonical form: 9-digit nanoseconds UTC (ticket #45).
+- Canonical event encoding v1: main spec section 10.10; reference
+  implementation `model.CanonicalEventBytesV1` (ticket #45).
 
 ## Known open areas
 

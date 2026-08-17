@@ -32,6 +32,7 @@ func bStatusValue(proj *Projection) *string {
 }
 
 func TestBitemporalNormalUpdate(t *testing.T) {
+	// covers PH1-BT-001
 	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
 	events := []Event{
 		bScalarEvent("e1", 1, OpSetValue, base, base, "open"),
@@ -47,6 +48,7 @@ func TestBitemporalNormalUpdate(t *testing.T) {
 }
 
 func TestBitemporalBackdatedUpdate(t *testing.T) {
+	// covers PH1-BT-001
 	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
 	events := []Event{
 		bScalarEvent("e1", 1, OpSetValue, base, base, "open"),
@@ -70,6 +72,7 @@ func TestBitemporalBackdatedUpdate(t *testing.T) {
 }
 
 func TestBitemporalFutureUpdate(t *testing.T) {
+	// covers PH1-BT-001
 	base := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC) // Monday
 	events := []Event{
 		bScalarEvent("e1", 1, OpSetValue, base, base, "open"),
@@ -92,6 +95,7 @@ func TestBitemporalFutureUpdate(t *testing.T) {
 }
 
 func TestBitemporalSameEffectiveTime(t *testing.T) {
+	// covers PH1-BT-001
 	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
 	events := []Event{
 		bScalarEvent("e1", 1, OpSetValue, base, base.Add(2*time.Hour), "open"),
@@ -107,6 +111,7 @@ func TestBitemporalSameEffectiveTime(t *testing.T) {
 }
 
 func TestBitemporalRetraction(t *testing.T) {
+	// covers PH1-BT-001 PH1-BT-002
 	base := time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC)
 	events := []Event{
 		bScalarEvent("e1", 1, OpSetValue, base.Add(1*time.Hour), base, "A"),
@@ -133,6 +138,7 @@ func TestBitemporalRetraction(t *testing.T) {
 }
 
 func TestBitemporalBackdatedRetraction(t *testing.T) {
+	// covers PH1-BT-001 PH1-BT-002
 	base := time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC)
 	events := []Event{
 		bScalarEvent("e1", 1, OpSetValue, base.Add(1*time.Hour), base, "A"),
@@ -155,6 +161,7 @@ func TestBitemporalBackdatedRetraction(t *testing.T) {
 }
 
 func TestBitemporalSupersession(t *testing.T) {
+	// covers PH1-BT-001 PH1-BT-003
 	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
 	events := []Event{
 		bScalarEvent("e1", 1, OpSetValue, base, base, "A"),
@@ -184,6 +191,7 @@ func TestBitemporalSupersession(t *testing.T) {
 }
 
 func TestBitemporalOutOfOrderImport(t *testing.T) {
+	// covers PH1-BT-001 PH1-BT-004
 	base := time.Date(2026, 8, 15, 8, 0, 0, 0, time.UTC)
 	events := []Event{
 		bScalarEvent("e1", 1, OpSetValue, base.Add(1*time.Hour), base.Add(4*time.Hour), "done"),
@@ -212,6 +220,7 @@ func TestBitemporalOutOfOrderImport(t *testing.T) {
 }
 
 func TestBitemporalBackdatedMove(t *testing.T) {
+	// covers PH1-BT-004
 	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
 	stream := Ref{Kind: KindTicket, Entity: string(bitemporalTicket)}
 	actor := ActorRef{Kind: "test", ID: "test"}
@@ -245,6 +254,7 @@ func TestBitemporalBackdatedMove(t *testing.T) {
 }
 
 func TestBitemporalBackdatedLinkRetraction(t *testing.T) {
+	// covers PH1-BT-004
 	base := time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC)
 	streamA := Ref{Kind: KindTicket, Entity: "ticket:a"}
 	from := Ref{Kind: KindTicket, Entity: "ticket:a"}

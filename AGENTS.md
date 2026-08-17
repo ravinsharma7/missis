@@ -17,3 +17,12 @@ Transient or generated context (treat as context, never as contract):
 - Markdown exports and anything under `temp/` or `backups/`
 - `.missis.d/context.md` — agent scratchpad; authoritative work items live in
   the store
+
+## Ticket lifecycle
+
+- A ticket is `done` only when its `done-when` criteria are met AND no
+  follow-up remains. Outstanding work becomes a new ticket linked to the old
+  ref; a done ticket must not carry a `next` or `followup` part.
+- Verify with `go run ./tools/check-done` (exit non-zero on violations).
+- Before creating tickets, list existing refs with `missis show` — alias
+  numbers may be allocated by other sessions.

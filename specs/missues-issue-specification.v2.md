@@ -1534,6 +1534,78 @@ none append
 
 A partial-import mode MAY exist but must be explicit and produce a rejection report for omitted parts.
 
+## 10.9 Bitemporal winner rule (decided 2026-08-17)
+
+For scalar values, the visible value at valid time `V` and known time `K` is:
+
+```text
+Candidates(x, V, K) =
+    { e : target(e) = x
+          and recorded_at(e) <= K
+          and effective_at(e) <= V
+          and not superseded_as_of(e, K) }
+
+Winner(x, V, K) = argmax over Candidates of
+    (effective_at, recorded_at, stream_sequence, event_id)
+```
+
+Semantics:
+
+- Each assertion applies from its `effective_at` until a candidate with a
+  strictly greater tuple wins (historical-correction model). A backdated
+  assertion changes only the interval it names.
+- Bounds are inclusive: `recorded_at <= K` and `effective_at <= V`.
+- A retraction at effective time `T` means no value from `T` until a later
+  assertion wins; it does not mean the value never existed. The retraction is
+  invisible at known times before it was recorded. "No value" is an interval
+  hole, not a tombstone.
+- `Supersedes(new, old)` targets the same canonical target and operation
+  family. The superseded event is void in any projection where the superseder
+  is known, even before the superseder's own effective time.
+- Projection fields: `CurrentFrom` is the event that established the value at
+  `(V, K)`; `RetractedBy` is the retraction opening the current hole, if any.
+- Projections fold events ordered by `(effective_at, recorded_at,
+  stream_sequence, event_id)`. Stream sequence remains the order of
+  acceptance; it never replaces valid time for projection.
+
+## 10.10 Canonical event encoding v1 (decided 2026-08-17)
+
+Event hashing and cleanroom portability use one canonical byte form:
+
+```text
+CanonicalEventBytes(event, v1) -> byte string
+```
+
+Contract:
+
+- Format: canonical JSON (RFC 8259), UTF-8, no HTML escaping, deterministic
+  key order, no duplicate keys, no NaN/Infinity.
+- Top-level fields included, in order: `ID`, `Stream`, `Sequence`,
+  `BatchID`, `Operation`, `Target`, `Value`, `RecordedAt`, `EffectiveAt`,
+  `Actor`, `Sources`, `Inputs`, `Causes`, `Effects`, `Supersedes`, `Reason`,
+  `Ontologies`, `Invocation`.
+- Excluded, never hashed: `AliasSeq`, `PreviousHash`, `Hash`.
+- Nested object key order follows the reference schema (the Go model types);
+  published test vectors pin the exact bytes.
+- Timestamps: UTC, exactly 9 fractional digits, `Z` suffix, trailing zeros
+  retained, e.g. `2026-08-17T02:40:29.123456789Z`.
+- Integers are JSON integers. `Value.Data` must be JSON-safe; object keys are
+  sorted.
+- Closed schema per version: unknown fields make the event invalid for v1.
+- Hash framing is domain-separated:
+
+```text
+HashInput  = "MISSIS-EVENT-HASH" || 0x00 || "v1" || 0x00
+             || previous_hash || 0x00 || canonical_bytes
+event_hash = SHA-256(HashInput)
+```
+
+- Existing chains are not reinterpreted. v1 applies to new chain segments; a
+  format-versioned migration is a separate storage task.
+- Reference implementation: `model.CanonicalEventBytesV1` and
+  `model.ComputeEventHashV1`; test vectors live in
+  `implementation/model/canonical_test.go`.
+
 ---
 
 ## 11. Provenance-first model

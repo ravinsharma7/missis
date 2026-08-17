@@ -421,6 +421,57 @@
         "TestNestedPartRenameMoveRetractHistory",
         "TestResolvePartPath"
       ]
+    },
+    {
+      "id": "PH1-BT-001",
+      "source": "10.9",
+      "text": "The bitemporal scalar winner is argmax of (effective_at, recorded_at, stream_sequence, event_id) over candidates visible at (V, K); backdated assertions correct intervals only.",
+      "tests": [
+        "TestBitemporalNormalUpdate",
+        "TestBitemporalBackdatedUpdate",
+        "TestBitemporalFutureUpdate",
+        "TestBitemporalSameEffectiveTime",
+        "TestBitemporalRetraction",
+        "TestBitemporalBackdatedRetraction",
+        "TestBitemporalSupersession",
+        "TestBitemporalOutOfOrderImport"
+      ]
+    },
+    {
+      "id": "PH1-BT-002",
+      "source": "10.9",
+      "text": "Retraction is an interval hole: no value from its effective time until a later assertion wins, and it is invisible before it is recorded.",
+      "tests": [
+        "TestBitemporalRetraction",
+        "TestBitemporalBackdatedRetraction"
+      ]
+    },
+    {
+      "id": "PH1-BT-003",
+      "source": "10.9",
+      "text": "A superseding event voids its target as soon as it is known, even before the superseder's effective time.",
+      "tests": [
+        "TestBitemporalSupersession"
+      ]
+    },
+    {
+      "id": "PH1-BT-004",
+      "source": "10.9",
+      "text": "Bitemporal reconstruction applies to hierarchy moves and link retractions, not only scalar values.",
+      "tests": [
+        "TestBitemporalOutOfOrderImport",
+        "TestBitemporalBackdatedMove",
+        "TestBitemporalBackdatedLinkRetraction"
+      ]
+    },
+    {
+      "id": "PH1-ENC-001",
+      "source": "10.10",
+      "text": "Canonical event encoding v1 defines deterministic language-independent bytes with fixed field order, UTC 9-digit timestamps, no HTML escaping, and domain-separated SHA-256 framing.",
+      "tests": [
+        "TestCanonicalEventBytesV1Vector",
+        "TestComputeEventHashV1Vector"
+      ]
     }
   ],
   "norms": [
