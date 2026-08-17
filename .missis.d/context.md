@@ -65,6 +65,8 @@ go run ./tools/store-gaps .missis-store/missis.db
 - Timestamp canonical form: 9-digit nanoseconds UTC (ticket #45).
 - Canonical event encoding v1: main spec section 10.10; reference
   implementation `model.CanonicalEventBytesV1` (ticket #45).
+- Store discovery: env outranks repo markers; markers must stay inside the
+  repo root; store dirs 0700 and DB 0600 by default (ticket #47).
 
 ## Known open areas
 

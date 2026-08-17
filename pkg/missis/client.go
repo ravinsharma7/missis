@@ -18,23 +18,30 @@ type HealthInfo struct {
 }
 
 type Client struct {
-	store *store.Store
+	store    *store.Store
+	path     string
+	supplied string
+	source   DiscoverySource
 }
 
 func Open(storeFlag string) (*Client, error) {
-	path, err := ResolveStorePath(storeFlag)
+	resolved, err := ResolveStore(storeFlag)
 	if err != nil {
 		return nil, err
 	}
-	return OpenPath(path)
+	return openResolved(resolved)
 }
 
 func OpenPath(path string) (*Client, error) {
-	s, err := store.Open(path)
+	return openResolved(ResolvedStore{Path: path, Supplied: path, Source: DiscoveryFlag})
+}
+
+func openResolved(resolved ResolvedStore) (*Client, error) {
+	s, err := store.Open(resolved.Path)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{store: s}, nil
+	return &Client{store: s, path: resolved.Path, supplied: resolved.Supplied, source: resolved.Source}, nil
 }
 
 func (c *Client) Close() error {
@@ -43,6 +50,21 @@ func (c *Client) Close() error {
 
 func (c *Client) Store() *store.Store {
 	return c.store
+}
+
+// StorePath returns the resolved absolute store path.
+func (c *Client) StorePath() string {
+	return c.path
+}
+
+// SuppliedPath returns the store path as supplied by the discovery source.
+func (c *Client) SuppliedPath() string {
+	return c.supplied
+}
+
+// DiscoverySource returns where the store path came from.
+func (c *Client) DiscoverySource() DiscoverySource {
+	return c.source
 }
 
 func (c *Client) StoreID() (string, error) {

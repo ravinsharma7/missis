@@ -61,7 +61,9 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store path is empty")
 	}
 	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		// Personal provenance data is private by default: the store directory
+		// is owner-only. Shared stores require an explicit mode (future work).
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
 	}
@@ -78,6 +80,12 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := ensureStoreIdentityAndHashes(writer); err != nil {
+		writer.Close()
+		return nil, err
+	}
+	// The SQLite file is created with the process umask; tighten it to
+	// owner-only so ticket content is not world-readable by default.
+	if err := os.Chmod(path, 0o600); err != nil {
 		writer.Close()
 		return nil, err
 	}

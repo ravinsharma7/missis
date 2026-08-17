@@ -144,6 +144,25 @@ func buildVersion() (string, string) {
 	return version, commit
 }
 
+// storePermissionWarnings reports observable permission problems on the store
+// file so a redirected or shared store is visible instead of silent.
+func storePermissionWarnings(path string) []string {
+	var warnings []string
+	if fi, err := os.Stat(path); err == nil {
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+			warnings = append(warnings, fmt.Sprintf("store file permissions are %04o; private stores should be 0600", perm))
+		}
+	}
+	if dir := filepath.Dir(path); dir != "." {
+		if fi, err := os.Stat(dir); err == nil {
+			if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+				warnings = append(warnings, fmt.Sprintf("store directory permissions are %04o; private stores should be 0700", perm))
+			}
+		}
+	}
+	return warnings
+}
+
 type moduleVersion struct {
 	Version string `json:"Version"`
 	Time    string `json:"Time"`
@@ -489,7 +508,7 @@ func runInit(args []string) int {
 		}
 		return exitSuccess
 	}
-	if err := os.MkdirAll(filepath.Dir(absTarget), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(absTarget), 0o700); err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
@@ -497,6 +516,10 @@ func runInit(args []string) int {
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		printError(fmt.Errorf("external store %s cannot be initialized with a repo marker; use MISSIS_STORE or --store", absTarget), exitInvalid, jsonMode, nil)
+		return exitInvalid
 	}
 	if err := os.WriteFile(markerPath, []byte(rel+"\n"), 0o644); err != nil {
 		printError(err, exitStorage, jsonMode, nil)
@@ -699,12 +722,7 @@ func runNew(args []string) int {
 		printError(fmt.Errorf("title is required for missis new"), exitInvalid, jsonMode, nil)
 		return exitInvalid
 	}
-	storePath, err := missis.ResolveStorePath(storeFlag)
-	if err != nil {
-		printError(err, exitInvalid, jsonMode, nil)
-		return exitInvalid
-	}
-	client, err := missis.OpenPath(storePath)
+	client, err := missis.Open(storeFlag)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
@@ -980,7 +998,7 @@ func runShow(args []string) int {
 		outputContext(storePath, jsonMode)
 		return exitSuccess
 	}
-	client, err := missis.OpenPath(storePath)
+	client, err := missis.Open(storeFlag)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
@@ -1015,21 +1033,30 @@ func runShow(args []string) int {
 			}
 			return exitStorage
 		}
+		storePath := client.StorePath()
+		source := string(client.DiscoverySource())
+		warnings := storePermissionWarnings(storePath)
 		storeID, _ := db.StoreID()
 		headHash, _ := db.HeadHash()
 		eventCount, _ := db.EventCount()
 		version, commit := buildVersion()
 		if jsonMode {
 			writeJSON(map[string]any{
-				"status":      "ok",
-				"store_id":    storeID,
-				"head_hash":   headHash,
-				"event_count": eventCount,
-				"version":     version,
-				"commit":      commit,
+				"status":           "ok",
+				"store_id":         storeID,
+				"head_hash":        headHash,
+				"event_count":      eventCount,
+				"version":          version,
+				"commit":           commit,
+				"store_path":       storePath,
+				"discovery_source": source,
+				"warnings":         warnings,
 			})
 		} else {
 			fmt.Printf("ok store=%s head=%s events=%d version=%s commit=%s\n", storeID, headHash, eventCount, version, commit)
+			for _, warning := range warnings {
+				fmt.Printf("warning: %s\n", warning)
+			}
 		}
 		return exitSuccess
 	}
@@ -1292,12 +1319,7 @@ func runSet(args []string) int {
 	ref := fs.Arg(0)
 	value := fs.Arg(1)
 
-	storePath, err := missis.ResolveStorePath(storeFlag)
-	if err != nil {
-		printError(err, exitInvalid, jsonMode, nil)
-		return exitInvalid
-	}
-	client, err := missis.OpenPath(storePath)
+	client, err := missis.Open(storeFlag)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage

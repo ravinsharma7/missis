@@ -81,7 +81,7 @@ func TestMissisFileInvalidEmptyMarker(t *testing.T) {
 	}
 }
 
-func TestMissisFileAbsoluteMarker(t *testing.T) {
+func TestMissisFileAbsoluteMarkerRejected(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	projectDir := filepath.Join(tmp, "project")
@@ -93,11 +93,11 @@ func TestMissisFileAbsoluteMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := runMissisWithEnv(t, "", projectDir, nil, "new", "--json", "Absolute")
-	if result.code != 0 {
-		t.Fatalf("new absolute: %d %s", result.code, result.stderr)
+	if result.code == 0 {
+		t.Fatalf("absolute marker should be rejected: %s", result.stdout)
 	}
-	if _, err := os.Stat(absoluteStore); err != nil {
-		t.Fatalf("absolute store not created: %v", err)
+	if _, err := os.Stat(absoluteStore); err == nil {
+		t.Fatal("absolute store must not be created via a marker")
 	}
 }
 
@@ -134,5 +134,34 @@ func TestXDGFallback(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".local", "share", "missis", "missis.db")); err != nil {
 		t.Fatalf("xdg store not created: %v", err)
+	}
+}
+
+func TestHealthShowsStorePathAndSource(t *testing.T) {
+	t.Parallel()
+	store := filepath.Join(t.TempDir(), "missis.db")
+	newTicket(t, store, "Health")
+	health := mustJSON(t, runMissis(t, store, "show", "--health", "--json"))
+	if health["discovery_source"] != "flag" {
+		t.Fatalf("discovery_source = %v, want flag", health["discovery_source"])
+	}
+	if health["store_path"] != store {
+		t.Fatalf("store_path = %v, want %s", health["store_path"], store)
+	}
+}
+
+func TestMarkerEscapeRejectedByCLI(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".missis"), []byte("../outside.db\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := runMissisWithEnv(t, "", projectDir, nil, "show", "--json")
+	if result.code == 0 {
+		t.Fatalf("escaping marker should be rejected: %s", result.stdout)
 	}
 }

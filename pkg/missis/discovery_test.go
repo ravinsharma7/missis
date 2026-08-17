@@ -3,6 +3,7 @@ package missis
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,15 +21,20 @@ func chdirForTest(t *testing.T, dir string) {
 	})
 }
 
+func writeMarker(t *testing.T, dir, content string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".missis"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestResolveStorePathRelativeMarker(t *testing.T) {
 	tmp := t.TempDir()
 	project := filepath.Join(tmp, "project")
-	if err := os.MkdirAll(project, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(project, ".missis"), []byte("db/store.db\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeMarker(t, project, "db/store.db\n")
 	chdirForTest(t, project)
 
 	got, err := ResolveStorePath("")
@@ -41,24 +47,28 @@ func TestResolveStorePathRelativeMarker(t *testing.T) {
 	}
 }
 
-func TestResolveStorePathAbsoluteMarker(t *testing.T) {
+func TestResolveStorePathAbsoluteMarkerRejected(t *testing.T) {
 	tmp := t.TempDir()
 	project := filepath.Join(tmp, "project")
 	storePath := filepath.Join(tmp, "absolute.db")
-	if err := os.MkdirAll(project, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(project, ".missis"), []byte(storePath+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeMarker(t, project, storePath+"\n")
 	chdirForTest(t, project)
 
-	got, err := ResolveStorePath("")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := ResolveStorePath(""); err == nil {
+		t.Fatal("expected absolute marker path to be rejected")
 	}
-	if got != storePath {
-		t.Fatalf("got %q, want %q", got, storePath)
+}
+
+func TestResolveStorePathMarkerEscapeRejected(t *testing.T) {
+	for _, content := range []string{"../shared.db\n", "../../shared/db\n", "db/../../evil.db\n"} {
+		tmp := t.TempDir()
+		project := filepath.Join(tmp, "project")
+		writeMarker(t, project, content)
+		chdirForTest(t, project)
+
+		if _, err := ResolveStorePath(""); err == nil {
+			t.Fatalf("expected escaping marker %q to be rejected", content)
+		}
 	}
 }
 
@@ -92,12 +102,7 @@ func TestResolveStorePathInvalidMarker(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tmp := t.TempDir()
 			project := filepath.Join(tmp, "project")
-			if err := os.MkdirAll(project, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(project, ".missis"), []byte(tt.content), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			writeMarker(t, project, tt.content)
 			chdirForTest(t, project)
 
 			if _, err := ResolveStorePath(""); err == nil {
@@ -107,30 +112,92 @@ func TestResolveStorePathInvalidMarker(t *testing.T) {
 	}
 }
 
-func TestResolveStorePathEnvAndOverride(t *testing.T) {
+func TestResolveStoreEnvBeatsMarker(t *testing.T) {
 	tmp := t.TempDir()
 	project := filepath.Join(tmp, "project")
-	storePath := filepath.Join(tmp, "env.db")
-	if err := os.MkdirAll(project, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeMarker(t, project, "db/store.db\n")
+	envPath := filepath.Join(tmp, "env.db")
+	t.Setenv("MISSIS_STORE", envPath)
 	chdirForTest(t, project)
-	t.Setenv("MISSIS_STORE", storePath)
 
 	got, err := ResolveStorePath("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != storePath {
-		t.Fatalf("env got %q, want %q", got, storePath)
+	if got != envPath {
+		t.Fatalf("env got %q, want %q (env must outrank the repo marker)", got, envPath)
 	}
+}
 
-	explicit := filepath.Join(tmp, "explicit.db")
-	got, err = ResolveStorePath(explicit)
+func TestResolveStoreSources(t *testing.T) {
+	tmp := t.TempDir()
+
+	flagPath := filepath.Join(tmp, "flag.db")
+	rs, err := ResolveStore(flagPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != explicit {
-		t.Fatalf("override got %q, want %q", got, explicit)
+	if rs.Source != DiscoveryFlag || rs.Path != flagPath || rs.Supplied != flagPath {
+		t.Fatalf("flag source = %+v", rs)
+	}
+
+	envPath := filepath.Join(tmp, "env.db")
+	t.Setenv("MISSIS_STORE", envPath)
+	rs, err = ResolveStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rs.Source != DiscoveryEnv || rs.Path != envPath {
+		t.Fatalf("env source = %+v", rs)
+	}
+
+	t.Setenv("MISSIS_STORE", "")
+	project := filepath.Join(tmp, "project")
+	writeMarker(t, project, "db/store.db\n")
+	chdirForTest(t, project)
+	rs, err = ResolveStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rs.Source != DiscoveryMarker || rs.MarkerDir != project {
+		t.Fatalf("marker source = %+v", rs)
+	}
+	if rs.Path != filepath.Join(project, "db", "store.db") {
+		t.Fatalf("marker path = %q", rs.Path)
+	}
+}
+
+func TestResolveStoreMarkerThroughSymlinkedCwd(t *testing.T) {
+	tmp := t.TempDir()
+	project := filepath.Join(tmp, "project")
+	writeMarker(t, project, "db/store.db\n")
+	link := filepath.Join(tmp, "linked")
+	if err := os.Symlink(project, link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	chdirForTest(t, link)
+
+	got, err := ResolveStorePath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(project, "db", "store.db")
+	if got != want {
+		t.Fatalf("got %q, want %q (store must stay inside the real project root)", got, want)
+	}
+}
+
+func TestResolveStoreEnvBeatsMarkerErrorText(t *testing.T) {
+	tmp := t.TempDir()
+	project := filepath.Join(tmp, "project")
+	writeMarker(t, project, "../outside.db\n")
+	chdirForTest(t, project)
+
+	_, err := ResolveStorePath("")
+	if err == nil {
+		t.Fatal("expected escape rejection")
+	}
+	if !strings.Contains(err.Error(), "MISSIS_STORE") {
+		t.Fatalf("error should point to the explicit alternatives: %v", err)
 	}
 }

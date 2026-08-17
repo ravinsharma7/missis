@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -134,6 +135,34 @@ func TestStoreIdentityAndHeadHash(t *testing.T) {
 	}
 	if head == "" {
 		t.Fatal("head hash is empty after append")
+	}
+}
+
+func TestOpenCreatesPrivateStore(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	storeDir := filepath.Join(tmp, "store")
+	path := filepath.Join(storeDir, "missis.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("store dir mode = %04o, want 0700", perm)
+	}
+	fi, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("store file mode = %04o, want 0600", perm)
 	}
 }
 
