@@ -1,0 +1,1464 @@
+{
+  "schema_version": "0001",
+  "spec_version": "v3",
+  "description": "Machine-readable requirements registry generated from specs/phase1-requirements.md and the test coverage map. Keeps the canonical spec and the black-box/model test suite unified in both directions.",
+  "requirements": [
+    {
+      "id": "PH1-ACC-001",
+      "source": "29.1, 29.2, 29.3, 29.4, 29.11",
+      "text": "Phase 1 acceptance criteria are mapped to the requirements above.",
+      "tests": [
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "PH1-CLI-001",
+      "source": "5.1, 5.2",
+      "text": "`missis` exposes only `new`, `show`, and `set` as top-level domain subcommands; a small allowlist of global operational flags is allowed.",
+      "tests": [
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "PH1-CLI-002",
+      "source": "5.2",
+      "text": "Commands support `--json`, `--format text\\",
+      "tests": [
+        "TestNewShowSetLifecycle",
+        "TestShowVersion"
+      ]
+    },
+    {
+      "id": "PH1-CLI-003",
+      "source": "5.2",
+      "text": "`recorded_at` is system-assigned; callers cannot forge transaction time.",
+      "tests": [
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "PH1-CLI-004",
+      "source": "5.3",
+      "text": "No operation depends on an implicit current ticket.",
+      "tests": [
+        "TestNewRequiresTitle",
+        "TestNewShowSetLifecycle",
+        "TestSetRequiresReference"
+      ]
+    },
+    {
+      "id": "PH1-CLI-005",
+      "source": "5.4, 5.5, 5.6",
+      "text": "`new`, `show`, and `set` cover identity creation, projection, and Phase 1 mutations.",
+      "tests": [
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "PH1-CLI-006",
+      "source": "22",
+      "text": "Exit classes and structured JSON errors are part of the stable contract.",
+      "tests": [
+        "TestBlockedRequiresReason",
+        "TestStorageFailureExitCode",
+        "TestStructuredJSONErrorShape"
+      ]
+    },
+    {
+      "id": "PH1-CLI-007",
+      "source": "5.7",
+      "text": "Default coordination statuses are `open`, `doing`, `blocked`, and `done`; avoid status proliferation.",
+      "tests": [
+        "TestBlockedRequiresReason"
+      ]
+    },
+    {
+      "id": "PH1-CLI-008",
+      "source": "5.7",
+      "text": "A blocked ticket has a reason or dependency.",
+      "tests": [
+        "TestBlockedRequiresReason"
+      ]
+    },
+    {
+      "id": "PH1-CON-001",
+      "source": "21.1, 21.2",
+      "text": "Scalar and hierarchy updates support expected-revision checks.",
+      "tests": [
+        "TestMultiProcessConcurrency"
+      ]
+    },
+    {
+      "id": "PH1-CON-002",
+      "source": "21.2, 20.1",
+      "text": "Concurrent hierarchy mutations are atomic and reject cycles or path collisions.",
+      "tests": [
+        "TestCycleRejected",
+        "TestMultiProcessConcurrency"
+      ]
+    },
+    {
+      "id": "PH1-CON-003",
+      "source": "21.3",
+      "text": "Independent additions may commute without unnecessary conflict.",
+      "tests": [
+        "TestAddListAppend"
+      ]
+    },
+    {
+      "id": "PH1-CON-004",
+      "source": "21.5",
+      "text": "Clients can use idempotency keys.",
+      "tests": [
+        "TestIdempotency",
+        "TestOptimisticConflict"
+      ]
+    },
+    {
+      "id": "PH1-DM-001",
+      "source": "18",
+      "text": "Go data model defines every Phase 1 entity and projection type.",
+      "tests": [
+        "TestNewShowSetLifecycle",
+        "TestProjectionRenameMoveRetract"
+      ]
+    },
+    {
+      "id": "PH1-DM-002",
+      "source": "18",
+      "text": "Projection and validation functions have concrete signatures.",
+      "tests": [
+        "TestTicketNumbering"
+      ]
+    },
+    {
+      "id": "PH1-EVT-001",
+      "source": "10.2, 10.4, 20.3-4",
+      "text": "Every accepted event has a unique immutable ID, actor, `recorded_at`, and `effective_at`.",
+      "tests": [
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "PH1-EVT-002",
+      "source": "10.3, 20.2",
+      "text": "Timestamps use unambiguous absolute storage and RFC 3339 output; per-stream sequence is monotonic.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "PH1-EVT-003",
+      "source": "20.3-1",
+      "text": "Accepted historical events are append-only and immutable.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-EVT-004",
+      "source": "10.5, 20.3-6",
+      "text": "Retraction removes current state without erasing historical queryability.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-EVT-005",
+      "source": "10.6",
+      "text": "Corrections identify the events they supersede.",
+      "tests": [
+        "TestSupersession"
+      ]
+    },
+    {
+      "id": "PH1-EVT-006",
+      "source": "10.8, 21.4",
+      "text": "Multi-event batches are atomic by default.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-EVT-007",
+      "source": "19",
+      "text": "Internal event operation vocabulary drives projection and validation without new CLI commands.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-EVT-008",
+      "source": "20.1, 20.2",
+      "text": "Append preconditions and postconditions are enforced before durability success.",
+      "tests": [
+        "TestShowHealth",
+        "TestValidateAppendRejectsCycleAndCollision"
+      ]
+    },
+    {
+      "id": "PH1-PART-001",
+      "source": "6.1, 6.2, 20.3-13",
+      "text": "There is one recursive `Part` entity; no separate `Subpart` entity.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestProjectionRenameMoveRetract"
+      ]
+    },
+    {
+      "id": "PH1-PART-002",
+      "source": "6.1",
+      "text": "A part may have a value only, children only, or both.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-PART-003",
+      "source": "6.5, 7.3",
+      "text": "Every part has a stable canonical ID independent of its human-readable path.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestProjectionRenameMoveRetract"
+      ]
+    },
+    {
+      "id": "PH1-PART-004",
+      "source": "6.5, 6.6",
+      "text": "Rename and move preserve canonical identity and historical paths.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestProjectionRenameMoveRetract"
+      ]
+    },
+    {
+      "id": "PH1-PART-005",
+      "source": "6.6, 6.12-1",
+      "text": "A part has zero or one current structural parent.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestProjectionRenameMoveRetract"
+      ]
+    },
+    {
+      "id": "PH1-PART-006",
+      "source": "6.6, 6.12-3",
+      "text": "Structural containment is temporal, provenance-bearing, and acyclic.",
+      "tests": [
+        "TestCycleRejected",
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestProjectionRenameMoveRetract",
+        "TestValidateAppendRejectsCycleAndCollision"
+      ]
+    },
+    {
+      "id": "PH1-PART-007",
+      "source": "6.12-9, 7.4",
+      "text": "Paths are unique within one ticket and selected time projection.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestValidateAppendRejectsCycleAndCollision"
+      ]
+    },
+    {
+      "id": "PH1-PART-008",
+      "source": "6.7, 6.12-7",
+      "text": "No value, type, status, or permission cascades by default without explicit ontology/policy.",
+      "tests": [
+        "TestParentValueRetractionPreservesChild"
+      ]
+    },
+    {
+      "id": "PH1-PART-009",
+      "source": "6.11",
+      "text": "Parent value retraction does not retract descendants; recursive removal is explicit and atomic.",
+      "tests": [
+        "TestParentValueRetractionPreservesChild",
+        "TestRecursiveRetractionRemovesSubtree"
+      ]
+    },
+    {
+      "id": "PH1-PART-010",
+      "source": "6.8, 6.12-8",
+      "text": "Work decomposition uses linked tickets, not hidden subpart workflows.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-PART-011",
+      "source": "7.4",
+      "text": "Part path segments use the recommended syntax and resolve under the selected projection.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestResolvePartPath",
+        "TestValidatePathSegmentsRejectsInvalid"
+      ]
+    },
+    {
+      "id": "PH1-PART-012",
+      "source": "6.3",
+      "text": "Conventional part names are recognized but remain open-world.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-PART-013",
+      "source": "6.9",
+      "text": "Stored values retain a declared media type or value kind.",
+      "tests": [
+        "TestAddListAppend"
+      ]
+    },
+    {
+      "id": "PH1-PRJ-001",
+      "source": "4.4, 20.3-7",
+      "text": "Current ticket state is a derived projection; the event ledger is authoritative.",
+      "tests": [
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "PH1-PRJ-002",
+      "source": "4.4, 10.2",
+      "text": "Valid-time projection is supported.",
+      "tests": [
+        "TestBitemporalProjection",
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-PRJ-003",
+      "source": "4.4, 10.2",
+      "text": "Bitemporal projection is supported.",
+      "tests": [
+        "TestBitemporalProjection",
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-PRJ-004",
+      "source": "6.6, 7.4",
+      "text": "Part path resolution is temporal and projection-scoped.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-PRJ-005",
+      "source": "20.3-2",
+      "text": "Same events, ontology versions, and projection rules produce the same state.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestProjectionRenameMoveRetract",
+        "TestReproducibleProjection"
+      ]
+    },
+    {
+      "id": "PH1-PRV-001",
+      "source": "11.2",
+      "text": "Events support actor, sources, inputs, causes, effects, supersedes, ontology versions, and batch ID.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-PRV-002",
+      "source": "11.3",
+      "text": "Intention, action, effect, observation, and verification are distinct provenance facts.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-PRV-003",
+      "source": "11.4",
+      "text": "Agent and process runs have stable references.",
+      "tests": [
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "PH1-PRV-004",
+      "source": "11.6",
+      "text": "Expected external effects are recorded when policy requires them.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-REF-001",
+      "source": "7.1, 18.1",
+      "text": "`Ref` covers ticket, part, event, project, group, run, code, git, and artifact.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "PH1-REF-002",
+      "source": "7.2, 7.3",
+      "text": "Human-readable references are aliases; logical and exact event references remain distinct.",
+      "tests": [
+        "TestTicketNumbering"
+      ]
+    },
+    {
+      "id": "PH1-REF-003",
+      "source": "7.4",
+      "text": "Stale paths must not silently retarget to a different part.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestStalePathDoesNotRetarget"
+      ]
+    },
+    {
+      "id": "PH1-REF-004",
+      "source": "7.4",
+      "text": "Stored links and provenance target canonical `PartID` values.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestResolvePartPath"
+      ]
+    }
+  ],
+  "norms": [
+    {
+      "id": "N001",
+      "source": "5.1",
+      "strength": "MUST NOT",
+      "status": "phase-1",
+      "text": "Only `new`, `show`, and `set` are top-level domain subcommands; global operational flags are allowed separately.",
+      "tests": []
+    },
+    {
+      "id": "N002",
+      "source": "5.2",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Commands support common JSON, format, actor, and time options.",
+      "tests": [
+        "TestGlobalVersionAndHelp",
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "N003",
+      "source": "5.2",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "System assigns `recorded_at`; caller cannot forge transaction time.",
+      "tests": []
+    },
+    {
+      "id": "N004",
+      "source": "5.7",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Keep coordination status small.",
+      "tests": [
+        "TestBlockedRequiresReason"
+      ]
+    },
+    {
+      "id": "N005",
+      "source": "5.7",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Blocked ticket has reason or dependency.",
+      "tests": [
+        "TestBlockedRequiresReason"
+      ]
+    },
+    {
+      "id": "N006",
+      "source": "5.7",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Avoid dozens of workflow-specific statuses.",
+      "tests": [
+        "TestBlockedRequiresReason"
+      ]
+    },
+    {
+      "id": "N007",
+      "source": "6.2",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Use one recursive entity type.",
+      "tests": []
+    },
+    {
+      "id": "N008",
+      "source": "6.2",
+      "strength": "MUST NOT",
+      "status": "phase-1",
+      "text": "No separate `Subpart` storage type.",
+      "tests": []
+    },
+    {
+      "id": "N009",
+      "source": "6.3",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Recognize conventional part names.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "N010",
+      "source": "6.5",
+      "strength": "MUST NOT",
+      "status": "phase-1",
+      "text": "Path is not canonical identity.",
+      "tests": []
+    },
+    {
+      "id": "N011",
+      "source": "6.5",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Move or rename appends provenance events and does not rewrite history.",
+      "tests": []
+    },
+    {
+      "id": "N012",
+      "source": "6.6",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Part has zero or one current structural parent.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "N013",
+      "source": "6.6",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Containment changes use events.",
+      "tests": []
+    },
+    {
+      "id": "N014",
+      "source": "6.8",
+      "strength": "SHOULD NOT",
+      "status": "phase-1-should",
+      "text": "Do not assign workflow status to every subpart.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestParentValueRetractionPreservesChild"
+      ]
+    },
+    {
+      "id": "N015",
+      "source": "6.9",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Stored value retains declared media type or value kind.",
+      "tests": [
+        "TestAddListAppend"
+      ]
+    },
+    {
+      "id": "N016",
+      "source": "6.10",
+      "strength": "MUST NOT",
+      "status": "deferred-phase-3",
+      "text": "Do not discard unrecognized headings, fields, or descendants.",
+      "tests": []
+    },
+    {
+      "id": "N017",
+      "source": "6.11",
+      "strength": "MUST NOT",
+      "status": "phase-1",
+      "text": "Retracting parent value does not destroy children.",
+      "tests": []
+    },
+    {
+      "id": "N018",
+      "source": "6.11",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Recursive removal appends retraction or containment events.",
+      "tests": []
+    },
+    {
+      "id": "N019",
+      "source": "6.11",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Recursive request represented as one atomic event batch.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestRecursiveRetractionRemovesSubtree"
+      ]
+    },
+    {
+      "id": "N020",
+      "source": "6.12",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Recursive part model preserves all listed hierarchy invariants.",
+      "tests": []
+    },
+    {
+      "id": "N021",
+      "source": "6.12",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Reject containment cycles.",
+      "tests": []
+    },
+    {
+      "id": "N022",
+      "source": "7.3",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Internally use globally unique immutable identifiers.",
+      "tests": [
+        "TestNewShowSetLifecycle",
+        "TestTicketNumbering"
+      ]
+    },
+    {
+      "id": "N023",
+      "source": "7.3",
+      "strength": "MUST NOT",
+      "status": "phase-1",
+      "text": "Rename or move does not change canonical identity.",
+      "tests": []
+    },
+    {
+      "id": "N024",
+      "source": "7.3",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Canonical reference resolves independently of current path.",
+      "tests": [
+        "TestTicketNumbering"
+      ]
+    },
+    {
+      "id": "N025",
+      "source": "7.4",
+      "strength": "SHOULD",
+      "status": "deferred-phase-3",
+      "text": "Explicit Markdown IDs override generated slugs.",
+      "tests": []
+    },
+    {
+      "id": "N026",
+      "source": "7.4",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Current path resolves to at most one current part in one projection.",
+      "tests": []
+    },
+    {
+      "id": "N027",
+      "source": "7.4",
+      "strength": "MUST NOT",
+      "status": "phase-1",
+      "text": "Stale path does not silently retarget.",
+      "tests": []
+    },
+    {
+      "id": "N028",
+      "source": "7.4",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Resolver reports historical path, current moved path, or ambiguity.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestStalePathDoesNotRetarget"
+      ]
+    },
+    {
+      "id": "N029",
+      "source": "7.4",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Stored links and provenance target canonical part IDs.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "N030",
+      "source": "8.1",
+      "strength": "SHOULD",
+      "status": "deferred-phase-2",
+      "text": "Source reference pinned to immutable repository state.",
+      "tests": []
+    },
+    {
+      "id": "N031",
+      "source": "8.2",
+      "strength": "SHOULD",
+      "status": "deferred-phase-2",
+      "text": "Parser supports canonical structured code-ref form.",
+      "tests": []
+    },
+    {
+      "id": "N032",
+      "source": "8.3",
+      "strength": "SHOULD",
+      "status": "deferred-phase-2",
+      "text": "Prefer symbol or syntax-node identities while retaining range.",
+      "tests": []
+    },
+    {
+      "id": "N033",
+      "source": "8.4",
+      "strength": "SHOULD",
+      "status": "deferred-phase-2",
+      "text": "Branch reference records resolved commit.",
+      "tests": []
+    },
+    {
+      "id": "N034",
+      "source": "8.5",
+      "strength": "SHOULD",
+      "status": "deferred-phase-2",
+      "text": "Code-reference structure is extensible.",
+      "tests": []
+    },
+    {
+      "id": "N035",
+      "source": "9.1",
+      "strength": "SHOULD",
+      "status": "deferred-phase-2",
+      "text": "Provide minimal relation vocabulary and allow ontology extensions.",
+      "tests": []
+    },
+    {
+      "id": "N036",
+      "source": "9.3",
+      "strength": "SHOULD",
+      "status": "deferred-phase-2",
+      "text": "Derive declared inverse relations automatically.",
+      "tests": []
+    },
+    {
+      "id": "N037",
+      "source": "9.4",
+      "strength": "MUST",
+      "status": "deferred-phase-2",
+      "text": "Link projection indicates origin.",
+      "tests": []
+    },
+    {
+      "id": "N038",
+      "source": "9.5",
+      "strength": "MUST",
+      "status": "deferred-phase-2",
+      "text": "Derived links retain source events and processor invocation.",
+      "tests": []
+    },
+    {
+      "id": "N039",
+      "source": "9.7",
+      "strength": "SHOULD",
+      "status": "deferred-phase-2",
+      "text": "Lineage queries support selected relation and time policies.",
+      "tests": []
+    },
+    {
+      "id": "N040",
+      "source": "10.2",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Every event contains `recorded_at`.",
+      "tests": []
+    },
+    {
+      "id": "N041",
+      "source": "10.2",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Every event contains or defaults `effective_at`.",
+      "tests": []
+    },
+    {
+      "id": "N042",
+      "source": "10.2",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Expose `--effective-at` and `--known-at` separately.",
+      "tests": [
+        "TestBitemporalProjection",
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "N043",
+      "source": "10.3",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Timestamps stored in UTC or unambiguous absolute representation.",
+      "tests": []
+    },
+    {
+      "id": "N044",
+      "source": "10.3",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Human output renders selected timezone.",
+      "tests": []
+    },
+    {
+      "id": "N045",
+      "source": "10.3",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Text and JSON output uses RFC 3339-compatible timestamps.",
+      "tests": []
+    },
+    {
+      "id": "N046",
+      "source": "10.3",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Event ordering within stream is deterministic.",
+      "tests": []
+    },
+    {
+      "id": "N047",
+      "source": "10.3",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Use per-stream sequence number.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "N048",
+      "source": "10.4",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Every event has globally unique immutable ID.",
+      "tests": []
+    },
+    {
+      "id": "N049",
+      "source": "10.5",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Use retraction events for removals.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "N050",
+      "source": "10.5",
+      "strength": "MUST",
+      "status": "deferred-phase-8",
+      "text": "Legal/privacy erasure leaves auditable tombstone where permitted.",
+      "tests": []
+    },
+    {
+      "id": "N051",
+      "source": "10.6",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Correction identifies superseded events and reason.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestSupersession"
+      ]
+    },
+    {
+      "id": "N052",
+      "source": "10.7",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Semantic temporal diff shows domain changes, not only raw events.",
+      "tests": []
+    },
+    {
+      "id": "N053",
+      "source": "10.8",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Multi-event import or processor output shares batch ID.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "N054",
+      "source": "10.8",
+      "strength": "SHOULD",
+      "status": "deferred-phase-3",
+      "text": "Default import behavior is atomic.",
+      "tests": []
+    },
+    {
+      "id": "N055",
+      "source": "11.2",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Events support actor, sources, inputs, causes, effects, supersedes, processor invocation, ontologies, and batch.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory"
+      ]
+    },
+    {
+      "id": "N056",
+      "source": "11.3",
+      "strength": "MUST NOT",
+      "status": "phase-1",
+      "text": "Intention, action, effect, observation, and verification are not collapsed.",
+      "tests": []
+    },
+    {
+      "id": "N057",
+      "source": "11.4",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Runs have stable references.",
+      "tests": [
+        "TestNewShowSetLifecycle"
+      ]
+    },
+    {
+      "id": "N058",
+      "source": "11.6",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Expected external effects are recorded when policy requires.",
+      "tests": []
+    },
+    {
+      "id": "N059",
+      "source": "12.1",
+      "strength": "SHOULD",
+      "status": "deferred-phase-5",
+      "text": "Ontologies may validate hierarchy shape and descendants.",
+      "tests": []
+    },
+    {
+      "id": "N060",
+      "source": "12.1",
+      "strength": "MUST",
+      "status": "deferred-phase-5",
+      "text": "Ontology-defined cascades are deterministic, versioned, explainable, and provenance-bearing.",
+      "tests": []
+    },
+    {
+      "id": "N061",
+      "source": "12.4",
+      "strength": "SHOULD",
+      "status": "deferred-phase-5",
+      "text": "Ontologies produce explicit obligations.",
+      "tests": []
+    },
+    {
+      "id": "N062",
+      "source": "12.7",
+      "strength": "SHOULD",
+      "status": "deferred-phase-5",
+      "text": "Verification results are more expressive than Boolean.",
+      "tests": []
+    },
+    {
+      "id": "N063",
+      "source": "12.8",
+      "strength": "SHOULD",
+      "status": "deferred-phase-5",
+      "text": "Composition is monotonic by default.",
+      "tests": []
+    },
+    {
+      "id": "N064",
+      "source": "12.8",
+      "strength": "MUST",
+      "status": "deferred-phase-5",
+      "text": "Exemption or override is explicit, scoped, versioned, and provenance-bearing.",
+      "tests": []
+    },
+    {
+      "id": "N065",
+      "source": "13.1",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Expose deterministic lifecycle.",
+      "tests": []
+    },
+    {
+      "id": "N066",
+      "source": "13.3",
+      "strength": "MUST NOT",
+      "status": "deferred-phase-6",
+      "text": "Processor does not silently mutate authoritative storage.",
+      "tests": []
+    },
+    {
+      "id": "N067",
+      "source": "13.3",
+      "strength": "MUST",
+      "status": "deferred-phase-6",
+      "text": "Subtree processing records root, revisions, policy, limits, and outputs.",
+      "tests": []
+    },
+    {
+      "id": "N068",
+      "source": "13.3",
+      "strength": "MUST NOT",
+      "status": "deferred-phase-6",
+      "text": "Processor does not secretly rewrite descendants.",
+      "tests": []
+    },
+    {
+      "id": "N069",
+      "source": "13.5",
+      "strength": "MUST",
+      "status": "deferred-phase-6",
+      "text": "Effectful processors declare capabilities and record effects.",
+      "tests": []
+    },
+    {
+      "id": "N070",
+      "source": "13.5",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Default policy is least privilege and default deny.",
+      "tests": []
+    },
+    {
+      "id": "N071",
+      "source": "13.6",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Each invocation records provenance.",
+      "tests": []
+    },
+    {
+      "id": "N072",
+      "source": "13.7",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Processors form explicit dataflow or DAG.",
+      "tests": []
+    },
+    {
+      "id": "N073",
+      "source": "13.7",
+      "strength": "MUST",
+      "status": "deferred-phase-6",
+      "text": "Ordering is inspectable and not hidden.",
+      "tests": []
+    },
+    {
+      "id": "N074",
+      "source": "13.8",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Processor idempotency key includes stable inputs.",
+      "tests": []
+    },
+    {
+      "id": "N075",
+      "source": "13.8",
+      "strength": "MUST",
+      "status": "deferred-phase-6",
+      "text": "Hook engine prevents infinite recursion.",
+      "tests": []
+    },
+    {
+      "id": "N076",
+      "source": "13.8",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Prevented cycle produces diagnostic event or visible result.",
+      "tests": []
+    },
+    {
+      "id": "N077",
+      "source": "13.9",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Hook failure creates diagnostic and, where required, obligation.",
+      "tests": []
+    },
+    {
+      "id": "N078",
+      "source": "13.9",
+      "strength": "MUST",
+      "status": "deferred-phase-6",
+      "text": "Retrying processor preserves provenance and avoids duplicate facts.",
+      "tests": []
+    },
+    {
+      "id": "N079",
+      "source": "14.1",
+      "strength": "MUST",
+      "status": "deferred-phase-4",
+      "text": "Relations distinguish organization from semantic authority.",
+      "tests": []
+    },
+    {
+      "id": "N080",
+      "source": "14.4",
+      "strength": "SHOULD",
+      "status": "deferred-phase-4",
+      "text": "Ticket has one home project.",
+      "tests": []
+    },
+    {
+      "id": "N081",
+      "source": "14.5",
+      "strength": "MUST",
+      "status": "deferred-phase-4",
+      "text": "Governance conflicts are deterministic.",
+      "tests": []
+    },
+    {
+      "id": "N082",
+      "source": "14.7",
+      "strength": "MUST NOT",
+      "status": "deferred-phase-4",
+      "text": "Membership alone does not define confidentiality or authorization.",
+      "tests": []
+    },
+    {
+      "id": "N083",
+      "source": "15.1",
+      "strength": "MUST",
+      "status": "deferred-phase-3",
+      "text": "CLI and Markdown produce same internal concepts.",
+      "tests": []
+    },
+    {
+      "id": "N084",
+      "source": "15.2",
+      "strength": "MUST",
+      "status": "deferred-phase-3",
+      "text": "Plain Markdown works.",
+      "tests": []
+    },
+    {
+      "id": "N085",
+      "source": "15.4",
+      "strength": "SHOULD",
+      "status": "deferred-phase-3",
+      "text": "Imported parts retain origin.",
+      "tests": []
+    },
+    {
+      "id": "N086",
+      "source": "15.5",
+      "strength": "SHOULD",
+      "status": "deferred-phase-3",
+      "text": "One Markdown import is one atomic batch by default.",
+      "tests": []
+    },
+    {
+      "id": "N087",
+      "source": "15.6",
+      "strength": "SHOULD",
+      "status": "deferred-phase-3",
+      "text": "Export preserves hierarchy, canonical identities where configured, and references.",
+      "tests": []
+    },
+    {
+      "id": "N088",
+      "source": "15.6",
+      "strength": "SHOULD",
+      "status": "deferred-phase-3",
+      "text": "Round-trip preserves relevant fields without exact whitespace.",
+      "tests": []
+    },
+    {
+      "id": "N089",
+      "source": "15.6",
+      "strength": "SHOULD",
+      "status": "deferred-phase-3",
+      "text": "Importer preserves explicit part IDs across export and re-import.",
+      "tests": []
+    },
+    {
+      "id": "N090",
+      "source": "15.6",
+      "strength": "MUST",
+      "status": "deferred-phase-3",
+      "text": "Heuristic matches are explainable and require confirmation when ambiguous.",
+      "tests": []
+    },
+    {
+      "id": "N091",
+      "source": "15.7",
+      "strength": "SHOULD",
+      "status": "deferred-phase-3",
+      "text": "Hierarchy changes from import are one atomic batch.",
+      "tests": []
+    },
+    {
+      "id": "N092",
+      "source": "16.1",
+      "strength": "SHOULD",
+      "status": "deferred-phase-7",
+      "text": "Primary search unit is part revision.",
+      "tests": []
+    },
+    {
+      "id": "N093",
+      "source": "16.1",
+      "strength": "SHOULD",
+      "status": "deferred-phase-7",
+      "text": "Nested parts are independently retrievable with breadcrumb.",
+      "tests": []
+    },
+    {
+      "id": "N094",
+      "source": "16.1",
+      "strength": "MUST NOT",
+      "status": "deferred-phase-7",
+      "text": "Aggregate search documents do not replace authoritative child values.",
+      "tests": []
+    },
+    {
+      "id": "N095",
+      "source": "16.2",
+      "strength": "SHOULD",
+      "status": "deferred-phase-7",
+      "text": "Search architecture is friendly to embedded and remote backends.",
+      "tests": []
+    },
+    {
+      "id": "N096",
+      "source": "16.4",
+      "strength": "SHOULD",
+      "status": "deferred-phase-7",
+      "text": "Embedding provenance is recorded.",
+      "tests": []
+    },
+    {
+      "id": "N097",
+      "source": "16.6",
+      "strength": "SHOULD",
+      "status": "deferred-phase-7",
+      "text": "Bitemporal search supports effective and known times.",
+      "tests": []
+    },
+    {
+      "id": "N098",
+      "source": "16.6",
+      "strength": "MUST",
+      "status": "deferred-phase-7",
+      "text": "Search result respects retraction and supersession.",
+      "tests": []
+    },
+    {
+      "id": "N099",
+      "source": "16.10",
+      "strength": "SHOULD",
+      "status": "deferred-phase-7",
+      "text": "`--explain` shows candidate sources and reranking.",
+      "tests": []
+    },
+    {
+      "id": "N100",
+      "source": "16.11",
+      "strength": "SHOULD",
+      "status": "deferred-phase-7",
+      "text": "Search supports hierarchy-aware constraints and expansion.",
+      "tests": []
+    },
+    {
+      "id": "N101",
+      "source": "16.12",
+      "strength": "SHOULD",
+      "status": "deferred-phase-7",
+      "text": "Asynchronous index exposes watermark or lag.",
+      "tests": []
+    },
+    {
+      "id": "N102",
+      "source": "24.1",
+      "strength": "MUST",
+      "status": "implementation",
+      "text": "Avoid duplicating authoritative data across views; projections are caches.",
+      "tests": []
+    },
+    {
+      "id": "N103",
+      "source": "24.4",
+      "strength": "SHOULD",
+      "status": "implementation",
+      "text": "Post-commit work uses durable outbox in same transaction.",
+      "tests": []
+    },
+    {
+      "id": "N104",
+      "source": "24.5",
+      "strength": "SHOULD",
+      "status": "implementation",
+      "text": "Large artifacts are content-addressed.",
+      "tests": []
+    },
+    {
+      "id": "N105",
+      "source": "18.3",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Current `ParentID` is reconstructable from containment events.",
+      "tests": []
+    },
+    {
+      "id": "N106",
+      "source": "20.4",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Use defensive validation at trust boundaries.",
+      "tests": [
+        "TestCycleRejected",
+        "TestMultiProcessConcurrency"
+      ]
+    },
+    {
+      "id": "N107",
+      "source": "21.1",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "`set` supports expected revision for scalar updates.",
+      "tests": [
+        "TestMultiProcessConcurrency",
+        "TestOptimisticConflict"
+      ]
+    },
+    {
+      "id": "N108",
+      "source": "21.2",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Hierarchy mutations support expected revisions.",
+      "tests": [
+        "TestMultiProcessConcurrency"
+      ]
+    },
+    {
+      "id": "N109",
+      "source": "21.2",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Subtree move or recursive retraction commits atomically.",
+      "tests": [
+        "TestMultiProcessConcurrency",
+        "TestRecursiveRetractionRemovesSubtree"
+      ]
+    },
+    {
+      "id": "N110",
+      "source": "21.3",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Independent additions avoid unnecessary conflicts.",
+      "tests": [
+        "TestAddListAppend"
+      ]
+    },
+    {
+      "id": "N111",
+      "source": "21.4",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "Batch containing parts, links, and metadata commits atomically.",
+      "tests": [
+        "TestNestedPartRenameMoveRetractHistory",
+        "TestRecursiveRetractionRemovesSubtree"
+      ]
+    },
+    {
+      "id": "N112",
+      "source": "21.5",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "`new` and `set` accept idempotency keys.",
+      "tests": [
+        "TestIdempotency"
+      ]
+    },
+    {
+      "id": "N113",
+      "source": "22",
+      "strength": "SHOULD",
+      "status": "phase-1-should",
+      "text": "JSON errors are structured.",
+      "tests": [
+        "TestBlockedRequiresReason",
+        "TestStructuredJSONErrorShape"
+      ]
+    },
+    {
+      "id": "N114",
+      "source": "23.1",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Plugins, agents, and hooks receive explicit capabilities.",
+      "tests": []
+    },
+    {
+      "id": "N115",
+      "source": "23.2",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Effectful capabilities are denied by default.",
+      "tests": []
+    },
+    {
+      "id": "N116",
+      "source": "23.3",
+      "strength": "SHOULD",
+      "status": "deferred-phase-6",
+      "text": "Invocation record states granted capabilities.",
+      "tests": []
+    },
+    {
+      "id": "N117",
+      "source": "23.4",
+      "strength": "MUST",
+      "status": "deferred-phase-6",
+      "text": "Plugin output is validated as untrusted input.",
+      "tests": []
+    },
+    {
+      "id": "N118",
+      "source": "23.5",
+      "strength": "SHOULD",
+      "status": "deferred-phase-8",
+      "text": "Secret values are referenced by opaque credential IDs.",
+      "tests": []
+    },
+    {
+      "id": "N119",
+      "source": "23.6",
+      "strength": "MUST NOT",
+      "status": "deferred-phase-8",
+      "text": "Containment alone does not imply authorization inheritance.",
+      "tests": []
+    },
+    {
+      "id": "N120",
+      "source": "23.6",
+      "strength": "MUST",
+      "status": "deferred-phase-8",
+      "text": "Recursive search and subtree export check authorization for every returned part.",
+      "tests": []
+    },
+    {
+      "id": "N121",
+      "source": "23.7",
+      "strength": "MUST",
+      "status": "deferred-phase-8",
+      "text": "Search candidate generation and reranking apply authorization filters.",
+      "tests": []
+    }
+  ]
+}

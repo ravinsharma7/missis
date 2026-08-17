@@ -65,6 +65,43 @@ missis show --version
 missis show --health
 ```
 
+## Getting started
+
+The fastest path is the CLI's own guide:
+
+```bash
+missis --get-started
+```
+
+Or, step by step:
+
+```bash
+# Initialize in your project (creates the .missis marker + .missis.d/ metadata)
+cd /path/to/your/project
+missis --init
+missis show --health
+
+# First ticket and everyday workflow
+missis new "First ticket" --json
+missis show #1 --format markdown
+missis set #1/status doing
+missis set '#1/notes' "some context"
+
+# Correct and remove (append-only; no destructive delete)
+missis set '#1/notes' "revised text"            # overwrites current value
+missis set '#1/notes' --retract --reason "moved elsewhere"
+
+# Backup, manifest, health, repair
+MISSIS_STORE="$PWD/.missis-store/missis.db" \
+  go run ./tools/store-backup "$PWD/backups/missis.db"
+go run ./tools/store-manifest
+go run ./tools/store-gaps .missis-store/missis.db
+go run ./tools/repair-store --dry-run .missis-store/missis.db
+```
+
+For how tickets, parts, tags, links, projects, and groups relate, see
+[docs/projects-groups-and-scopes.md](docs/projects-groups-and-scopes.md).
+
 ## Deletion and retraction
 
 `missis` does not support destructive delete. The event ledger is append-only.

@@ -2,6 +2,7 @@ package blackbox
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -71,6 +72,18 @@ func TestShowVersion(t *testing.T) {
 	body := mustJSON(t, result)
 	if body["version"] == nil {
 		t.Fatalf("version missing from %s", result.stdout)
+	}
+}
+
+func TestGetStarted(t *testing.T) {
+	result := runMissis(t, "", "--get-started")
+	if result.code != 0 {
+		t.Fatalf("--get-started failed: %d stderr=%s", result.code, result.stderr)
+	}
+	for _, want := range []string{"missis --init", "missis new", "missis set", "store-backup", "repair-store"} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("--get-started output missing %q:\n%s", want, result.stdout)
+		}
 	}
 }
 

@@ -299,6 +299,46 @@ func runAgentBrief(args []string) int {
 	return exitSuccess
 }
 
+func runGetStarted() int {
+	fmt.Print(getStartedText)
+	return exitSuccess
+}
+
+const getStartedText = `missis getting started
+
+1. Install (from a checkout, or pin a commit for reproducibility):
+     go install ./cmd/missis
+     # or: go install github.com/ravinsharma7/missis/cmd/missis@<commit-sha>
+     export PATH="$(go env GOPATH)/bin:$PATH"
+
+2. Initialize in your project:
+     cd /path/to/your/project
+     missis --init
+     missis show --health
+
+3. First ticket and everyday workflow:
+     missis new "First ticket" --json
+     missis show #1 --format markdown
+     missis set #1/status doing
+     missis set '#1/notes' "some context"
+
+4. Correct and remove (append-only; no destructive delete):
+     missis set '#1/notes' "revised text"            # overwrites current value
+     missis set '#1/notes' --retract --reason "moved elsewhere"
+
+5. Backup, manifest, health, repair:
+     MISSIS_STORE="$PWD/.missis-store/missis.db" \
+       go run ./tools/store-backup "$PWD/backups/missis.db"
+     go run ./tools/store-manifest
+     go run ./tools/store-gaps .missis-store/missis.db
+     go run ./tools/repair-store --dry-run .missis-store/missis.db
+
+6. Optional: consume via the Go SDK:
+     import "github.com/ravinsharma7/missis/pkg/missis"
+
+See README.md and docs/projects-groups-and-scopes.md for details.
+`
+
 func runPointer() int {
 	fmt.Println(agentPointerSnippet)
 	return exitSuccess
@@ -540,6 +580,9 @@ func main() {
 	if os.Args[1] == "--ag-brief" {
 		os.Exit(runAgentBrief(os.Args[2:]))
 	}
+	if os.Args[1] == "--get-started" {
+		os.Exit(runGetStarted())
+	}
 	if os.Args[1] == "--ag-pointer" {
 		os.Exit(runPointer())
 	}
@@ -580,7 +623,7 @@ func usage() {
 
 func usageText() string {
 	return "usage:\n" +
-		"  missis [--version|--help] [--init|--start] [--self-update-check|--self-update] [--ag-brief [--json]] [--ag-pointer] [--ag-install-skill [--from DIR] [--dest DIR] [--force]]\n" +
+		"  missis [--version|--help] [--init|--start] [--self-update-check|--self-update] [--ag-brief [--json]] [--get-started] [--ag-pointer] [--ag-install-skill [--from DIR] [--dest DIR] [--force]]\n" +
 		"  missis new|show|set ...\n"
 }
 
