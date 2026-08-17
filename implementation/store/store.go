@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"embed"
@@ -45,6 +46,11 @@ type TicketSummary struct {
 type Store struct {
 	writer *sql.DB
 	reader *sql.DB
+
+	// appendCommitHook is test-only fault injection. When non-nil it runs just
+	// before the append transaction commits, and its error is returned in place
+	// of a commit failure. Production code never sets it.
+	appendCommitHook func() error
 }
 
 //go:embed migrations/*.sql
@@ -261,11 +267,17 @@ func computeEventHash(event model.Event, previousHash string) string {
 }
 
 func ensureStoreIdentityAndHashes(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	var storeID string
-	err := db.QueryRow(`SELECT store_id FROM store_meta WHERE singleton = 1`).Scan(&storeID)
+	err = tx.QueryRow(`SELECT store_id FROM store_meta WHERE singleton = 1`).Scan(&storeID)
 	if err == sql.ErrNoRows {
 		storeID = newULID("store")
-		if _, err := db.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO store_meta (singleton, store_id, head_hash, updated_at) VALUES (1, ?, '', ?)`,
 			storeID, time.Now().UTC().Format(time.RFC3339Nano),
 		); err != nil {
@@ -275,19 +287,17 @@ func ensureStoreIdentityAndHashes(db *sql.DB) error {
 		return err
 	}
 
-	events, err := loadEventsTx(db)
+	// Read the snapshot inside the same write transaction as the hash rebuild
+	// so a concurrent append cannot commit between the read and the rebuild,
+	// which would leave a stale head hash and a spurious consistency failure.
+	events, err := loadEventsTx(tx)
 	if err != nil {
 		return err
 	}
-	return rebuildHashes(db, events)
+	return rebuildHashesTx(tx, events)
 }
 
-func rebuildHashes(db *sql.DB, events []model.Event) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+func rebuildHashesTx(tx *sql.Tx, events []model.Event) error {
 	if _, err := tx.Exec(`DELETE FROM event_hashes`); err != nil {
 		return err
 	}
@@ -345,7 +355,15 @@ func aliasForTicketTx(tx *sql.Tx, ticketID model.TicketID) (uint64, error) {
 }
 
 func (s *Store) CheckConsistency() error {
-	events, err := s.LoadEvents()
+	// Run the whole check against one read snapshot so a concurrent append
+	// committing between statements cannot produce a spurious mismatch.
+	tx, err := s.reader.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	events, err := loadEventsTx(tx)
 	if err != nil {
 		return err
 	}
@@ -365,7 +383,7 @@ func (s *Store) CheckConsistency() error {
 			}
 		}
 	}
-	rows, err := s.reader.Query(`SELECT key, event_ids_json FROM idempotency`)
+	rows, err := tx.Query(`SELECT key, event_ids_json FROM idempotency`)
 	if err != nil {
 		return err
 	}
@@ -384,7 +402,7 @@ func (s *Store) CheckConsistency() error {
 		return err
 	}
 	var hashCount int64
-	if err := s.reader.QueryRow(`SELECT COUNT(*) FROM event_hashes`).Scan(&hashCount); err != nil {
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM event_hashes`).Scan(&hashCount); err != nil {
 		return err
 	}
 	if hashCount != int64(len(events)) {
@@ -395,7 +413,7 @@ func (s *Store) CheckConsistency() error {
 		previous = computeEventHash(event, previous)
 	}
 	var storedHead string
-	if err := s.reader.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&storedHead); err != nil {
+	if err := tx.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&storedHead); err != nil {
 		return err
 	}
 	if previous != storedHead {
@@ -462,7 +480,15 @@ func (s *Store) SequenceGaps() ([]SequenceGap, error) {
 }
 
 func (s *Store) RepairSequenceGaps() error {
-	events, err := s.LoadEvents()
+	tx, err := s.writer.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Read the snapshot inside the write transaction so a concurrent append
+	// cannot commit between this read and the renumber/next_sequence updates.
+	events, err := loadEventsTx(tx)
 	if err != nil {
 		return err
 	}
@@ -490,12 +516,6 @@ func (s *Store) RepairSequenceGaps() error {
 	for _, event := range events {
 		byID[event.ID] = event
 	}
-
-	tx, err := s.writer.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 
 	for _, key := range streams {
 		streamEvents := byStream[key]
@@ -526,7 +546,11 @@ func (s *Store) RepairSequenceGaps() error {
 		}
 		if _, execErr := tx.Exec(
 			`UPDATE streams SET next_sequence = ? WHERE stream_kind = ? AND stream_entity = ?`,
-			uint64(len(streamEvents)+1), key.kind, key.entity,
+			// allocateSequenceTx stores the last allocated sequence number, so
+			// after renumbering a stream to 1..n the stored value must be n
+			// (the next append then receives sequence n+1). Storing n+1 burns
+			// sequence n+1 on the next append and leaves a hole.
+			uint64(len(streamEvents)), key.kind, key.entity,
 		); execErr != nil {
 			return execErr
 		}
@@ -675,9 +699,14 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		if event.ID == "" {
 			event.ID = model.EventID(newULID("event"))
 		}
-		if event.Sequence == 0 {
-			event.Sequence = nextSequence + uint64(i)
+		allocated := nextSequence + uint64(i)
+		if event.Sequence != 0 && event.Sequence != allocated {
+			return AppendOutcome{}, 0, fmt.Errorf(
+				"event %d: explicit sequence %d does not match allocated sequence %d",
+				i, event.Sequence, allocated,
+			)
 		}
+		event.Sequence = allocated
 		if event.RecordedAt.IsZero() {
 			event.RecordedAt = now
 		}
@@ -749,6 +778,11 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		}
 	}
 
+	if s.appendCommitHook != nil {
+		if err := s.appendCommitHook(); err != nil {
+			return AppendOutcome{}, 0, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return AppendOutcome{}, 0, err
 	}

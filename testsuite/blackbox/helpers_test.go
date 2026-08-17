@@ -10,10 +10,12 @@ import (
 )
 
 var missisBin string
+var repairBin string
 
 func TestMain(m *testing.M) {
 	if env := os.Getenv("MISSIS_BIN"); env != "" {
 		missisBin = env
+		repairBin = os.Getenv("MISSIS_REPAIR_BIN")
 		os.Exit(m.Run())
 	}
 
@@ -28,6 +30,18 @@ func TestMain(m *testing.M) {
 	if err := build.Run(); err != nil {
 		os.RemoveAll(tmp)
 		panic(err)
+	}
+	if env := os.Getenv("MISSIS_REPAIR_BIN"); env != "" {
+		repairBin = env
+	} else {
+		repairBin = filepath.Join(tmp, "repair-store")
+		buildRepair := exec.Command("go", "build", "-o", repairBin, "github.com/ravinsharma7/missis/tools/repair-store")
+		buildRepair.Stdout = os.Stdout
+		buildRepair.Stderr = os.Stderr
+		if err := buildRepair.Run(); err != nil {
+			os.RemoveAll(tmp)
+			panic(err)
+		}
 	}
 	code := m.Run()
 	os.RemoveAll(tmp)

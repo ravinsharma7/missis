@@ -2,7 +2,9 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -266,6 +268,316 @@ func TestRepairSequenceGaps(t *testing.T) {
 	}
 	if len(repaired) != 2 || repaired[1].Sequence != 2 {
 		t.Fatalf("unexpected repaired events: %+v", repaired)
+	}
+	// The next append must receive sequence len+1; a repair that stores
+	// next_sequence = len+1 instead of len would burn that sequence and leave
+	// a hole on the very next append.
+	if _, err := s.AppendBatch([]model.Event{
+		{ID: model.EventID("event:3"), Stream: stream, Operation: model.OpSetValue, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "after-repair"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}, "", nil, nil); err != nil {
+		t.Fatalf("append after repair: %v", err)
+	}
+	if err := s.CheckConsistency(); err != nil {
+		t.Fatalf("consistency after post-repair append: %v", err)
+	}
+	after, err := s.LoadTicketEvents(ticketID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 3 || after[2].Sequence != 3 {
+		t.Fatalf("post-repair append did not continue the stream: %+v", after)
+	}
+}
+
+func TestAppendRetryFaultInjection(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	s, err := Open(filepath.Join(tmp, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	failures := 2
+	attempts := 0
+	s.appendCommitHook = func() error {
+		attempts++
+		if failures > 0 {
+			failures--
+			return fmt.Errorf("database is locked")
+		}
+		return nil
+	}
+
+	ticketID := model.TicketID("ticket:retry")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	now := time.Now().UTC()
+	events := []model.Event{
+		{ID: model.EventID("event:r1"), Stream: stream, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: model.EventID("event:r2"), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "retry"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	outcome, err := s.AppendBatch(events, "", nil, nil)
+	if err != nil {
+		t.Fatalf("append with retryable commit failures: %v", err)
+	}
+	if outcome.Replayed {
+		t.Fatal("append was replayed unexpectedly")
+	}
+	if attempts != 3 {
+		t.Fatalf("expected 3 commit attempts (2 failures + 1 success), got %d", attempts)
+	}
+	if err := s.CheckConsistency(); err != nil {
+		t.Fatalf("consistency after retried append: %v", err)
+	}
+	loaded, err := s.LoadTicketEvents(ticketID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(loaded))
+	}
+	for i, event := range loaded {
+		want := uint64(i + 1)
+		if event.Sequence != want {
+			t.Fatalf("event %d has sequence %d, want %d", i, event.Sequence, want)
+		}
+	}
+
+	// A subsequent append must continue the same contiguous stream.
+	s.appendCommitHook = nil
+	if _, err := s.AppendBatch([]model.Event{
+		{ID: model.EventID("event:r3"), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:p2", Path: []string{"p2"}}, Value: model.Value{Kind: model.ValueKindText, Text: "next"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}, "", nil, nil); err != nil {
+		t.Fatalf("subsequent append: %v", err)
+	}
+	if err := s.CheckConsistency(); err != nil {
+		t.Fatalf("consistency after subsequent append: %v", err)
+	}
+	loaded, err = s.LoadTicketEvents(ticketID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(loaded))
+	}
+	for i, event := range loaded {
+		want := uint64(i + 1)
+		if event.Sequence != want {
+			t.Fatalf("event %d has sequence %d, want %d", i, event.Sequence, want)
+		}
+	}
+}
+
+func TestRepairSequenceGapsConcurrentAppendStress(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "missis.db")
+
+	repairer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repairer.Close()
+	appender, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appender.Close()
+
+	now := time.Now().UTC()
+	const tickets = 3
+	const seedEvents = 3
+	for ticket := 0; ticket < tickets; ticket++ {
+		ticketID := model.TicketID(fmt.Sprintf("ticket:stress-%d", ticket))
+		stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+		events := []model.Event{
+			{ID: model.EventID(fmt.Sprintf("event:s%dt0", ticket)), Stream: stream, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+			{ID: model.EventID(fmt.Sprintf("event:s%dt1", ticket)), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "stress"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+			{ID: model.EventID(fmt.Sprintf("event:s%dt2", ticket)), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:status", Path: []string{"status"}}, Value: model.Value{Kind: model.ValueKindStatus, Text: "open"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		}
+		if _, err := appender.AppendBatch(events, "", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const iterations = 30
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	appendErrs := make(chan error, iterations)
+	repairErrs := make(chan error, iterations)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			if err := repairer.RepairSequenceGaps(); err != nil {
+				repairErrs <- err
+				return
+			}
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			ticket := i % tickets
+			ticketID := model.TicketID(fmt.Sprintf("ticket:stress-%d", ticket))
+			stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+			part := fmt.Sprintf("part:p%d", i)
+			if _, err := appender.AppendBatch([]model.Event{
+				{ID: model.EventID(fmt.Sprintf("event:a%d", i)), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: part, Path: []string{fmt.Sprintf("p%d", i)}}, Value: model.Value{Kind: model.ValueKindText, Text: "x"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+			}, "", nil, nil); err != nil {
+				appendErrs <- err
+				return
+			}
+		}
+	}()
+	close(start)
+	wg.Wait()
+	close(appendErrs)
+	close(repairErrs)
+	for err := range appendErrs {
+		t.Fatalf("concurrent append failed: %v", err)
+	}
+	for err := range repairErrs {
+		t.Fatalf("concurrent repair failed: %v", err)
+	}
+
+	if err := repairer.CheckConsistency(); err != nil {
+		t.Fatalf("consistency after concurrent repair/append stress: %v", err)
+	}
+	gaps, err := repairer.SequenceGaps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("sequence gaps after concurrent repair/append stress: %+v", gaps)
+	}
+
+	// Every stream must still accept appends after the storm without opening a
+	// hole (a repair that stores next_sequence = len+1 would burn the next
+	// sequence per stream and show up here).
+	for ticket := 0; ticket < tickets; ticket++ {
+		ticketID := model.TicketID(fmt.Sprintf("ticket:stress-%d", ticket))
+		stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+		if _, err := appender.AppendBatch([]model.Event{
+			{ID: model.EventID(fmt.Sprintf("event:after-%d", ticket)), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: fmt.Sprintf("part:after%d", ticket), Path: []string{fmt.Sprintf("after%d", ticket)}}, Value: model.Value{Kind: model.ValueKindText, Text: "y"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		}, "", nil, nil); err != nil {
+			t.Fatalf("append after stress (ticket %d): %v", ticket, err)
+		}
+	}
+	gaps, err = repairer.SequenceGaps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("sequence gaps after post-storm appends: %+v", gaps)
+	}
+}
+
+func TestOpenChurnConsistency(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "missis.db")
+
+	s0, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	const tickets = 4
+	for ticket := 0; ticket < tickets; ticket++ {
+		ticketID := model.TicketID(fmt.Sprintf("ticket:churn-%d", ticket))
+		stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+		events := []model.Event{
+			{ID: model.EventID(fmt.Sprintf("event:c%dt0", ticket)), Stream: stream, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+			{ID: model.EventID(fmt.Sprintf("event:c%dt1", ticket)), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "churn"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		}
+		if _, err := s0.AppendBatch(events, "", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s0.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const iterations = 60
+	var wg sync.WaitGroup
+	churnErrs := make(chan error, iterations)
+	appendErrs := make(chan error, iterations)
+
+	// Open/Close churn is what every client process does; each Open rebuilds
+	// the hash chain. Concurrent with appends, that used to leave stale heads
+	// and spurious "head hash mismatch" failures.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			s, err := Open(path)
+			if err != nil {
+				churnErrs <- fmt.Errorf("open churn %d: %w", i, err)
+				return
+			}
+			if err := s.CheckConsistency(); err != nil {
+				churnErrs <- fmt.Errorf("consistency during open churn %d: %w", i, err)
+				s.Close()
+				return
+			}
+			if err := s.Close(); err != nil {
+				churnErrs <- err
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s, err := Open(path)
+		if err != nil {
+			appendErrs <- err
+			return
+		}
+		defer s.Close()
+		for i := 0; i < iterations; i++ {
+			ticket := i % tickets
+			ticketID := model.TicketID(fmt.Sprintf("ticket:churn-%d", ticket))
+			stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+			if _, err := s.AppendBatch([]model.Event{
+				{ID: model.EventID(fmt.Sprintf("event:churn-a%d", i)), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: fmt.Sprintf("part:a%d", i), Path: []string{fmt.Sprintf("a%d", i)}}, Value: model.Value{Kind: model.ValueKindText, Text: "x"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+			}, "", nil, nil); err != nil {
+				appendErrs <- fmt.Errorf("append during churn %d: %w", i, err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(churnErrs)
+	close(appendErrs)
+	for err := range churnErrs {
+		t.Fatal(err)
+	}
+	for err := range appendErrs {
+		t.Fatal(err)
+	}
+
+	final, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer final.Close()
+	if err := final.CheckConsistency(); err != nil {
+		t.Fatalf("final consistency after open churn: %v", err)
+	}
+	gaps, err := final.SequenceGaps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("gaps after open churn: %+v", gaps)
 	}
 }
 
