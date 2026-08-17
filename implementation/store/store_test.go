@@ -357,6 +357,25 @@ func TestCheckConsistencyDetectsColumnPayloadMismatch(t *testing.T) {
 	}
 }
 
+func TestAppendRejectsUnknownOperation(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	s, err := Open(filepath.Join(tmp, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ticketID := model.TicketID("ticket:unknown")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	now := time.Now().UTC()
+	events := []model.Event{
+		{ID: model.EventID("event:1"), Stream: stream, Sequence: 1, Operation: model.Operation("unknown-op"), Target: model.Ref{Kind: model.KindPart, Entity: "part:p", Path: []string{"p"}}, Value: model.Value{Kind: model.ValueKindText, Text: "x"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, err := s.AppendBatch(events, "", nil, nil); err == nil {
+		t.Fatal("expected append of unknown operation to be rejected")
+	}
+}
+
 func TestSequenceGapIsIncidentNotAutoRepaired(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()

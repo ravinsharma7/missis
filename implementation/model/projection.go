@@ -118,6 +118,11 @@ func sortEventsByValidTime(events []Event) {
 }
 
 func applyEvent(proj *Projection, event Event) error {
+	// Projection-neutral markers are accepted, validated, and recorded, but
+	// deliberately change no projection state. See the operation registry.
+	if descriptor, ok := LookupOperation(event.Operation); ok && descriptor.ProjectionNeutral {
+		return nil
+	}
 	if event.Operation == OpAssertLink || event.Operation == OpRetractLink {
 		return applyLinkEvent(proj, event)
 	}

@@ -25,8 +25,14 @@ func ValidateAppend(existing []Event, proposed Event) error {
 	if proposed.Target.Kind == "" || proposed.Target.Entity == "" {
 		return fmt.Errorf("target reference is required")
 	}
-	if !validOperation(proposed.Operation) {
+	descriptor, ok := LookupOperation(proposed.Operation)
+	if !ok {
 		return fmt.Errorf("unsupported operation: %s", proposed.Operation)
+	}
+	if descriptor.Validate != nil {
+		if err := descriptor.Validate(proposed); err != nil {
+			return err
+		}
 	}
 
 	all := append(append([]Event(nil), existing...), proposed)
@@ -41,32 +47,8 @@ func ValidateAppend(existing []Event, proposed Event) error {
 }
 
 func validOperation(operation Operation) bool {
-	switch operation {
-	case OpCreateEntity,
-		OpCreatePart,
-		OpSetValue,
-		OpAddValue,
-		OpRetractValue,
-		OpRenamePart,
-		OpMovePart,
-		OpAttachChild,
-		OpDetachChild,
-		OpRetractSubtree,
-		OpRestorePart,
-		OpAssertLink,
-		OpRetractLink,
-		OpAssignOntology,
-		OpRemoveOntology,
-		OpJoinScope,
-		OpLeaveScope,
-		OpObserveEffect,
-		OpAttachEvidence,
-		OpRecordVerification,
-		OpSupersedeEvent:
-		return true
-	default:
-		return false
-	}
+	_, ok := LookupOperation(operation)
+	return ok
 }
 
 // ValidatePathSegments validates the recommended part path syntax.

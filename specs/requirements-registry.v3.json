@@ -472,6 +472,49 @@
         "TestCanonicalEventBytesV1Vector",
         "TestComputeEventHashV1Vector"
       ]
+    },
+    {
+      "id": "PH1-REG-001",
+      "source": "19",
+      "text": "Every declared operation has a registered descriptor with a validator; the registry is complete against the Op constants.",
+      "tests": [
+        "TestRegistryCompleteness"
+      ]
+    },
+    {
+      "id": "PH1-REG-002",
+      "source": "19",
+      "text": "Projection-neutral marker operations are declared explicitly, never silent no-ops.",
+      "tests": [
+        "TestRegistryMarkersAreExplicit"
+      ]
+    },
+    {
+      "id": "PH1-REG-003",
+      "source": "19",
+      "text": "Each operation validates its target kinds and required fields, and each CLI flag combination maps to exactly the expected operation.",
+      "tests": [
+        "TestOperationValidation",
+        "TestCLIFlagsMapToOperations"
+      ]
+    },
+    {
+      "id": "PH1-REG-004",
+      "source": "19",
+      "text": "Unknown operations are rejected deterministically on append.",
+      "tests": [
+        "TestLookupOperationUnknown",
+        "TestAppendRejectsUnknownOperation"
+      ]
+    },
+    {
+      "id": "PH1-REG-005",
+      "source": "19",
+      "text": "Marker operations change no projection state and remain visible in history/provenance output.",
+      "tests": [
+        "TestMarkerOperationsAreProjectionNeutral",
+        "TestMarkerVisibleInHistory"
+      ]
     }
   ],
   "norms": [
