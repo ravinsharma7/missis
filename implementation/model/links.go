@@ -8,28 +8,28 @@ import (
 )
 
 var relationInverses = map[string]string{
-	"blocks":        "blocked-by",
-	"blocked-by":    "blocks",
-	"caused-by":     "causes",
-	"causes":        "caused-by",
-	"duplicates":    "duplicated-by",
-	"duplicated-by": "duplicates",
-	"supports":      "supported-by",
-	"supported-by":  "supports",
-	"contradicts":   "contradicted-by",
+	"blocks":          "blocked-by",
+	"blocked-by":      "blocks",
+	"caused-by":       "causes",
+	"causes":          "caused-by",
+	"duplicates":      "duplicated-by",
+	"duplicated-by":   "duplicates",
+	"supports":        "supported-by",
+	"supported-by":    "supports",
+	"contradicts":     "contradicted-by",
 	"contradicted-by": "contradicts",
-	"implements":     "implemented-by",
-	"implemented-by": "implements",
-	"tracks":         "tracked-by",
-	"tracked-by":     "tracks",
-	"documents":      "documented-by",
-	"documented-by":  "documents",
-	"contains":       "contained-by",
-	"contained-by":   "contains",
-	"governs":        "governed-by",
-	"governed-by":    "governs",
-	"home-project":   "home-of",
-	"home-of":        "home-project",
+	"implements":      "implemented-by",
+	"implemented-by":  "implements",
+	"tracks":          "tracked-by",
+	"tracked-by":      "tracks",
+	"documents":       "documented-by",
+	"documented-by":   "documents",
+	"contains":        "contained-by",
+	"contained-by":    "contains",
+	"governs":         "governed-by",
+	"governed-by":     "governs",
+	"home-project":    "home-of",
+	"home-of":         "home-project",
 }
 
 type LinkView struct {
@@ -86,12 +86,12 @@ func applyLinkEvent(proj *Projection, event Event) error {
 			}
 		}
 		proj.Links[linkID] = &Link{
-			ID:         linkID,
-			From:       event.Target,
-			Relation:   event.Value.Text,
-			To:         *event.Value.Ref,
-			Origin:     "asserted",
-			CreatedBy:  event.ID,
+			ID:          linkID,
+			From:        event.Target,
+			Relation:    event.Value.Text,
+			To:          *event.Value.Ref,
+			Origin:      "asserted",
+			CreatedBy:   event.ID,
 			RetractedBy: nil,
 		}
 	case OpRetractLink:
@@ -136,7 +136,7 @@ func LinksForRef(events []Event, ref Ref, effectiveAt, knownAt time.Time) ([]Lin
 		}
 		filtered = append(filtered, event)
 	}
-	sortEvents(filtered)
+	sortEventsByValidTime(filtered)
 
 	links := make(map[linkKey]currentLink)
 	for _, event := range filtered {
@@ -332,7 +332,7 @@ func currentLinkViews(events []Event, effectiveAt, knownAt time.Time) ([]LinkVie
 		}
 		filtered = append(filtered, event)
 	}
-	sortEvents(filtered)
+	sortEventsByValidTime(filtered)
 
 	links := make(map[linkKey]currentLink)
 	for _, event := range filtered {

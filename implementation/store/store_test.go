@@ -1,9 +1,10 @@
 package store
 
 import (
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -209,7 +210,125 @@ func TestCheckConsistencyHealthy(t *testing.T) {
 	}
 }
 
-func TestRepairSequenceGaps(t *testing.T) {
+func TestOpenDetectsTamperedEvent(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "missis.db")
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketID := model.TicketID("ticket:tamper")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	now := time.Now().UTC()
+	events := []model.Event{
+		{ID: model.EventID("event:1"), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: model.EventID("event:2"), Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "Original"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, err := s.AppendBatch(events, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawDB.Close()
+	var raw string
+	if err := rawDB.QueryRow(`SELECT event_json FROM events WHERE id = 'event:2'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, "Original") {
+		t.Fatalf("expected Original in event json: %s", raw)
+	}
+	tampered := strings.Replace(raw, "Original", "Tampered", 1)
+	if _, err := rawDB.Exec(`UPDATE events SET event_json = ? WHERE id = 'event:2'`, tampered); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(path); err == nil {
+		t.Fatal("expected Open to fail after event tampering")
+	}
+}
+
+func TestCheckConsistencyDetectsTamperedHashRow(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "missis.db")
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ticketID := model.TicketID("ticket:hashrow")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	now := time.Now().UTC()
+	events := []model.Event{
+		{ID: model.EventID("event:1"), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: model.EventID("event:2"), Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "Row"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, err := s.AppendBatch(events, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawDB.Close()
+	if _, err := rawDB.Exec(`UPDATE event_hashes SET hash = 'deadbeef' WHERE event_id = 'event:2'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CheckConsistency(); err == nil {
+		t.Fatal("expected consistency failure after hash row tampering")
+	}
+}
+
+func TestCheckConsistencyDetectsColumnPayloadMismatch(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "missis.db")
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ticketID := model.TicketID("ticket:column")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	now := time.Now().UTC()
+	events := []model.Event{
+		{ID: model.EventID("event:1"), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: model.EventID("event:2"), Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "Column"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, err := s.AppendBatch(events, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper only the denormalized sequence column, leaving the authoritative
+	// event_json payload untouched. The payload must remain the source of
+	// truth, so the mismatch must be reported.
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawDB.Close()
+	if _, err := rawDB.Exec(`UPDATE events SET sequence = 99 WHERE id = 'event:2'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CheckConsistency(); err == nil {
+		t.Fatal("expected consistency failure after column/payload mismatch")
+	}
+}
+
+func TestSequenceGapIsIncidentNotAutoRepaired(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	s, err := Open(filepath.Join(tmp, "missis.db"))
@@ -229,63 +348,61 @@ func TestRepairSequenceGaps(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events[1].Sequence = 3
-	raw, err := json.Marshal(events[1])
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Simulate the historical allocation bug: next_sequence skips a number
+	// without any event being written for it. The hash chain stays valid
+	// because it is built over the events actually accepted.
 	tx, err := s.writer.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE events SET sequence = 3, event_json = ? WHERE id = ?`, string(raw), "event:2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(`UPDATE streams SET next_sequence = 4 WHERE stream_kind = ? AND stream_entity = ?`, string(model.KindTicket), string(ticketID)); err != nil {
+	if _, err := tx.Exec(`UPDATE streams SET next_sequence = 3 WHERE stream_kind = ? AND stream_entity = ?`, string(model.KindTicket), string(ticketID)); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 
+	// The next append crosses the skipped number: events 1, 2, 4.
+	if _, err := s.AppendBatch([]model.Event{
+		{ID: model.EventID("event:3"), Stream: stream, Operation: model.OpSetValue, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "after-gap"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}, "", nil, nil); err != nil {
+		t.Fatalf("append across skipped sequence: %v", err)
+	}
+
+	// The gap is detected and reported, not hidden.
 	gaps, err := s.SequenceGaps()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(gaps) != 1 || len(gaps[0].Missing) != 1 || gaps[0].Missing[0] != 2 {
+	if len(gaps) != 1 || len(gaps[0].Missing) != 1 || gaps[0].Missing[0] != 3 {
 		t.Fatalf("unexpected gaps: %+v", gaps)
 	}
-	if err := s.RepairSequenceGaps(); err != nil {
-		t.Fatal(err)
+	// In-place repair refuses to rewrite accepted events.
+	if err := s.RepairSequenceGaps(); err == nil {
+		t.Fatal("expected RepairSequenceGaps to refuse in-place repair")
 	}
+
+	// The store remains otherwise consistent: sequences are unique and
+	// strictly increasing (1, 2, 4), and no event bytes were rewritten.
 	if err := s.CheckConsistency(); err != nil {
-		t.Fatalf("consistency after repair: %v", err)
+		t.Fatalf("consistency with gap: %v", err)
 	}
-	repaired, err := s.LoadTicketEvents(ticketID)
+	loaded, err := s.LoadTicketEvents(ticketID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(repaired) != 2 || repaired[1].Sequence != 2 {
-		t.Fatalf("unexpected repaired events: %+v", repaired)
+	if len(loaded) != 3 || loaded[0].Sequence != 1 || loaded[1].Sequence != 2 || loaded[2].Sequence != 4 {
+		t.Fatalf("event bytes must not be rewritten: %+v", loaded)
 	}
-	// The next append must receive sequence len+1; a repair that stores
-	// next_sequence = len+1 instead of len would burn that sequence and leave
-	// a hole on the very next append.
-	if _, err := s.AppendBatch([]model.Event{
-		{ID: model.EventID("event:3"), Stream: stream, Operation: model.OpSetValue, Target: model.Ref{Kind: model.KindPart, Entity: "part:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "after-repair"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
-	}, "", nil, nil); err != nil {
-		t.Fatalf("append after repair: %v", err)
-	}
-	if err := s.CheckConsistency(); err != nil {
-		t.Fatalf("consistency after post-repair append: %v", err)
-	}
-	after, err := s.LoadTicketEvents(ticketID)
+
+	// The gap remains visible; nothing erased it.
+	gaps, err = s.SequenceGaps()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after) != 3 || after[2].Sequence != 3 {
-		t.Fatalf("post-repair append did not continue the stream: %+v", after)
+	if len(gaps) != 1 || gaps[0].Missing[0] != 3 {
+		t.Fatalf("gap must remain visible: %+v", gaps)
 	}
 }
 
@@ -368,16 +485,11 @@ func TestAppendRetryFaultInjection(t *testing.T) {
 	}
 }
 
-func TestRepairSequenceGapsConcurrentAppendStress(t *testing.T) {
+func TestConcurrentAppendNeverCreatesGaps(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "missis.db")
 
-	repairer, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer repairer.Close()
 	appender, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -403,62 +515,47 @@ func TestRepairSequenceGapsConcurrentAppendStress(t *testing.T) {
 	const iterations = 30
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	appendErrs := make(chan error, iterations)
-	repairErrs := make(chan error, iterations)
+	appendErrs := make(chan error, iterations*3)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		<-start
-		for i := 0; i < iterations; i++ {
-			if err := repairer.RepairSequenceGaps(); err != nil {
-				repairErrs <- err
-				return
+	for w := 0; w < 3; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < iterations; i++ {
+				ticket := i % tickets
+				ticketID := model.TicketID(fmt.Sprintf("ticket:stress-%d", ticket))
+				stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+				part := fmt.Sprintf("part:p%d-%d", w, i)
+				if _, err := appender.AppendBatch([]model.Event{
+					{ID: model.EventID(fmt.Sprintf("event:a%d-%d", w, i)), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: part, Path: []string{fmt.Sprintf("p%d-%d", w, i)}}, Value: model.Value{Kind: model.ValueKindText, Text: "x"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+				}, "", nil, nil); err != nil {
+					appendErrs <- err
+					return
+				}
 			}
-		}
-	}()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		<-start
-		for i := 0; i < iterations; i++ {
-			ticket := i % tickets
-			ticketID := model.TicketID(fmt.Sprintf("ticket:stress-%d", ticket))
-			stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
-			part := fmt.Sprintf("part:p%d", i)
-			if _, err := appender.AppendBatch([]model.Event{
-				{ID: model.EventID(fmt.Sprintf("event:a%d", i)), Stream: stream, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: part, Path: []string{fmt.Sprintf("p%d", i)}}, Value: model.Value{Kind: model.ValueKindText, Text: "x"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
-			}, "", nil, nil); err != nil {
-				appendErrs <- err
-				return
-			}
-		}
-	}()
+		}(w)
+	}
 	close(start)
 	wg.Wait()
 	close(appendErrs)
-	close(repairErrs)
 	for err := range appendErrs {
 		t.Fatalf("concurrent append failed: %v", err)
 	}
-	for err := range repairErrs {
-		t.Fatalf("concurrent repair failed: %v", err)
-	}
 
-	if err := repairer.CheckConsistency(); err != nil {
-		t.Fatalf("consistency after concurrent repair/append stress: %v", err)
+	if err := appender.CheckConsistency(); err != nil {
+		t.Fatalf("consistency after concurrent append stress: %v", err)
 	}
-	gaps, err := repairer.SequenceGaps()
+	gaps, err := appender.SequenceGaps()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(gaps) != 0 {
-		t.Fatalf("sequence gaps after concurrent repair/append stress: %+v", gaps)
+		t.Fatalf("concurrent appends created sequence gaps: %+v", gaps)
 	}
 
-	// Every stream must still accept appends after the storm without opening a
-	// hole (a repair that stores next_sequence = len+1 would burn the next
-	// sequence per stream and show up here).
+	// Every stream must still accept appends after the storm without opening
+	// a hole.
 	for ticket := 0; ticket < tickets; ticket++ {
 		ticketID := model.TicketID(fmt.Sprintf("ticket:stress-%d", ticket))
 		stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
@@ -468,7 +565,7 @@ func TestRepairSequenceGapsConcurrentAppendStress(t *testing.T) {
 			t.Fatalf("append after stress (ticket %d): %v", ticket, err)
 		}
 	}
-	gaps, err = repairer.SequenceGaps()
+	gaps, err = appender.SequenceGaps()
 	if err != nil {
 		t.Fatal(err)
 	}

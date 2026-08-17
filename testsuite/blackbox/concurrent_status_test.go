@@ -1,12 +1,15 @@
 package blackbox
 
 import (
+	"bytes"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -60,20 +63,6 @@ func TestConcurrentStatusChangesAcrossClients(t *testing.T) {
 		}(w)
 	}
 
-	if repairBin != "" && os.Getenv("MISSIS_STORM_NO_REPAIR") == "" {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < iterations; i++ {
-				cmd := exec.Command(repairBin, storePath)
-				if _, err := cmd.CombinedOutput(); err != nil {
-					errs <- fmt.Errorf("repair %d failed under concurrent sets: %v", i, err)
-					return
-				}
-			}
-		}()
-	}
-
 	wg.Wait()
 	close(errs)
 	for err := range errs {
@@ -90,16 +79,60 @@ func TestConcurrentStatusChangesAcrossClients(t *testing.T) {
 		t.Fatalf("expected %d tickets, got %d", tickets, got)
 	}
 
-	// A sequential repair + health check is the final arbiter: any real
-	// corruption left by the storm must be repairable and then consistent.
-	if repairBin != "" {
-		if out, err := exec.Command(repairBin, storePath).CombinedOutput(); err != nil {
-			t.Fatalf("final sequential repair failed: %v: %s", err, out)
-		}
+	// The append path must never create gaps on its own.
+	s, err := store.Open(storePath)
+	if err != nil {
+		t.Fatalf("open after storm: %v", err)
 	}
-	health = runMissis(t, storePath, "show", "--health", "--json")
-	if health.code != 0 {
-		t.Fatalf("health after final repair: code=%d stdout=%s stderr=%s", health.code, health.stdout, health.stderr)
+	defer s.Close()
+	gaps, err := s.SequenceGaps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("concurrent status sets created sequence gaps: %+v", gaps)
+	}
+}
+
+func TestRepairStoreRefusesInPlaceRepair(t *testing.T) {
+	t.Parallel()
+	storePath := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, storePath, "Gap")
+	ticketID := created["id"].(string)
+
+	rawDB, err := sql.Open("sqlite", storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the historical allocation bug: next_sequence skips a number
+	// without any event being written for it.
+	if _, err := rawDB.Exec(`UPDATE streams SET next_sequence = next_sequence + 1 WHERE stream_kind = ? AND stream_entity = ?`, string(model.KindTicket), ticketID); err != nil {
+		t.Fatal(err)
+	}
+	if err := rawDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A subsequent set lands past the skipped number, leaving a visible gap.
+	if result := runMissis(t, storePath, "set", "--json", created["ref"].(string)+"/status", "doing"); result.code != 0 {
+		t.Fatalf("set after skipped sequence: %d %s", result.code, result.stderr)
+	}
+
+	// Health surfaces the incident instead of hiding it.
+	health := runMissis(t, storePath, "show", "--health", "--json")
+	if health.code == 0 {
+		t.Fatalf("health should fail with sequence gaps: %s", health.stdout)
+	}
+
+	// repair-store refuses to rewrite accepted history.
+	refusal := exec.Command(repairBin, storePath)
+	var stderr bytes.Buffer
+	refusal.Stderr = &stderr
+	if err := refusal.Run(); err == nil {
+		t.Fatalf("repair-store should refuse in-place repair")
+	}
+	if !strings.Contains(stderr.String(), "restore from a backup") {
+		t.Fatalf("unexpected refusal message: %s", stderr.String())
 	}
 }
 

@@ -159,3 +159,44 @@ func TestMarkdownRoundTrip(t *testing.T) {
 		t.Fatalf("reimport changed part count")
 	}
 }
+
+func TestMarkdownDuplicateHeadingsImport(t *testing.T) {
+	t.Parallel()
+	store := filepath.Join(t.TempDir(), "missis.db")
+	file := filepath.Join(t.TempDir(), "issue.md")
+	content := "# Dup\n\n## Evidence\nA\n\n## Evidence\nB\n\n## Evidence\nC\n"
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	created := mustJSON(t, runMissis(t, store, "new", "--json", "--from", file))
+	shown := mustJSON(t, runMissis(t, store, "show", "--json", created["ref"].(string)))
+	parts := shown["parts"].(map[string]any)
+	for _, want := range []string{"evidence", "evidence-2", "evidence-3"} {
+		if _, ok := parts[want]; !ok {
+			t.Fatalf("missing part %s: %v", want, parts)
+		}
+	}
+}
+
+func TestMarkdownPreamblePreserved(t *testing.T) {
+	t.Parallel()
+	store := filepath.Join(t.TempDir(), "missis.db")
+	file := filepath.Join(t.TempDir(), "issue.md")
+	content := "Intro text before any heading.\n\n# Title\n\n## Problem\n\nBody.\n"
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	created := mustJSON(t, runMissis(t, store, "new", "--json", "--from", file))
+	shown := mustJSON(t, runMissis(t, store, "show", "--json", created["ref"].(string)))
+	parts := shown["parts"].(map[string]any)
+	preamble, ok := parts["preamble"]
+	if !ok {
+		t.Fatalf("preamble part missing: %v", parts)
+	}
+	if preamble.(map[string]any)["value"] != "Intro text before any heading." {
+		t.Fatalf("unexpected preamble value: %v", preamble)
+	}
+	if title, ok := parts["title"]; !ok || title.(map[string]any)["value"] != "title" {
+		t.Fatalf("title should come from the H1, not the preamble: %v", parts["title"])
+	}
+}

@@ -23,9 +23,12 @@ func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
 	}
 
 	var (
-		stack []*node
-		parts []*node
-		used  = make(map[string]int)
+		stack       []*node
+		parts       []*node
+		used        = make(map[string]int)  // unsuffixed sibling path key -> occurrence count
+		taken       = make(map[string]bool) // final path key -> occupied
+		preamble    []string
+		firstHeader int // 1-based line number of the first heading; 0 when none
 	)
 
 	flushNode := func(n *node) {
@@ -42,10 +45,17 @@ func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
 	for i, line := range lines {
 		level := headingLevel(line)
 		if level == 0 {
+			if firstHeader == 0 {
+				preamble = append(preamble, line)
+				continue
+			}
 			if len(stack) > 0 {
 				stack[len(stack)-1].body = append(stack[len(stack)-1].body, line)
 			}
 			continue
+		}
+		if firstHeader == 0 {
+			firstHeader = i + 1
 		}
 
 		title := strings.TrimSpace(strings.TrimLeft(line, "#"))
@@ -60,13 +70,27 @@ func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
 		if len(stack) > 0 {
 			parentPath = stack[len(stack)-1].path
 		}
-		path := append(append([]string(nil), parentPath...), segment)
-		pathKey := strings.Join(path, "/")
-		if count := used[pathKey]; count > 0 {
-			path[len(path)-1] = fmt.Sprintf("%s-%d", segment, count+1)
-			pathKey = strings.Join(path, "/")
+
+		// Count occurrences per unsuffixed sibling path so repeated headings
+		// get deterministic suffixes, and re-check the final path for
+		// collisions with headings that naturally contain those suffixes.
+		baseKey := strings.Join(append(append([]string(nil), parentPath...), segment), "/")
+		count := used[baseKey] + 1
+		used[baseKey] = count
+
+		candidate := segment
+		if count > 1 {
+			candidate = fmt.Sprintf("%s-%d", segment, count)
 		}
-		used[pathKey]++
+		candidateKey := strings.Join(append(append([]string(nil), parentPath...), candidate), "/")
+		for taken[candidateKey] {
+			count++
+			used[baseKey] = count
+			candidate = fmt.Sprintf("%s-%d", segment, count)
+			candidateKey = strings.Join(append(append([]string(nil), parentPath...), candidate), "/")
+		}
+		taken[candidateKey] = true
+		path := append(append([]string(nil), parentPath...), candidate)
 
 		n := &node{
 			level:     level,
@@ -78,6 +102,19 @@ func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
 	for len(stack) > 0 {
 		flushNode(stack[len(stack)-1])
 		stack = stack[:len(stack)-1]
+	}
+
+	if len(preamble) > 0 {
+		preambleEnd := len(lines)
+		if firstHeader > 0 {
+			preambleEnd = firstHeader - 1
+		}
+		parts = append([]*node{{
+			path:      []string{"preamble"},
+			body:      preamble,
+			startLine: 1,
+			endLine:   preambleEnd,
+		}}, parts...)
 	}
 
 	result := make([]MarkdownPart, 0, len(parts))

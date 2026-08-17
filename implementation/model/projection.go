@@ -32,27 +32,26 @@ func BitemporalProjection(events []Event, ticketID TicketID, effectiveAt, knownA
 // ProjectTicket folds events for one ticket into a projection.
 func ProjectTicket(events []Event, ticketID TicketID, effectiveAt, knownAt time.Time) (*Projection, error) {
 	filtered := make([]Event, 0, len(events))
+	superseded := make(map[EventID]bool)
 	for _, event := range events {
 		if event.Stream.Kind != KindTicket || event.Stream.Entity != string(ticketID) {
-			continue
-		}
-		if event.EffectiveAt.After(effectiveAt) {
 			continue
 		}
 		if event.RecordedAt.After(knownAt) {
 			continue
 		}
-		filtered = append(filtered, event)
-	}
-
-	sortEvents(filtered)
-
-	superseded := make(map[EventID]bool)
-	for _, event := range filtered {
+		// Supersession is visible as soon as the superseding event is known,
+		// even before the superseder's own effective time (Option A).
 		for _, oldID := range event.Supersedes {
 			superseded[oldID] = true
 		}
+		if event.EffectiveAt.After(effectiveAt) {
+			continue
+		}
+		filtered = append(filtered, event)
 	}
+
+	sortEventsByValidTime(filtered)
 
 	proj := &Projection{
 		TicketID:    ticketID,
@@ -100,13 +99,19 @@ func ResolvePartPath(proj *Projection, ticketID TicketID, path []string) (Resolv
 	}, nil
 }
 
-func sortEvents(events []Event) {
+// sortEventsByValidTime orders events for projection folding. Valid time is
+// primary so backdated corrections reconstruct intervals; recorded time,
+// stream sequence, and event ID are deterministic tie-breakers.
+func sortEventsByValidTime(events []Event) {
 	sort.SliceStable(events, func(i, j int) bool {
-		if events[i].Sequence != events[j].Sequence {
-			return events[i].Sequence < events[j].Sequence
+		if !events[i].EffectiveAt.Equal(events[j].EffectiveAt) {
+			return events[i].EffectiveAt.Before(events[j].EffectiveAt)
 		}
 		if !events[i].RecordedAt.Equal(events[j].RecordedAt) {
 			return events[i].RecordedAt.Before(events[j].RecordedAt)
+		}
+		if events[i].Sequence != events[j].Sequence {
+			return events[i].Sequence < events[j].Sequence
 		}
 		return events[i].ID < events[j].ID
 	})

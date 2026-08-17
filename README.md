@@ -96,7 +96,7 @@ MISSIS_STORE="$PWD/.missis-store/missis.db" \
   go run ./tools/store-backup "$PWD/backups/missis.db"
 go run ./tools/store-manifest
 go run ./tools/store-gaps .missis-store/missis.db
-go run ./tools/repair-store --dry-run .missis-store/missis.db
+go run ./tools/repair-store .missis-store/missis.db
 ```
 
 For how tickets, parts, tags, links, projects, and groups relate, see
@@ -183,16 +183,20 @@ import "github.com/ravinsharma7/missis/pkg/missis"
 ```
 
 It provides store discovery, a `Client` wrapper, event helpers, health,
-backup, and repair methods. `cmd/missis` is intended to stay a thin CLI layer.
+backup, and verification methods. `cmd/missis` is intended to stay a thin CLI
+layer.
 
 ## Maintenance tools
 
 ```bash
 go run ./tools/store-gaps <store.db>
-go run ./tools/repair-store --dry-run <store.db>
 go run ./tools/repair-store <store.db>
 go run ./tools/store-manifest
 ```
+
+`repair-store` verifies store consistency and reports sequence gaps. It never
+repairs in place: accepted events are immutable, so recovery from gaps means
+restoring a backup or creating a new store.
 
 Backup and remote scripts live in `scripts/`.
 

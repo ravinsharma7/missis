@@ -331,7 +331,7 @@ const getStartedText = `missis getting started
        go run ./tools/store-backup "$PWD/backups/missis.db"
      go run ./tools/store-manifest
      go run ./tools/store-gaps .missis-store/missis.db
-     go run ./tools/repair-store --dry-run .missis-store/missis.db
+     go run ./tools/repair-store .missis-store/missis.db
 
 6. Optional: consume via the Go SDK:
      import "github.com/ravinsharma7/missis/pkg/missis"
@@ -779,7 +779,7 @@ func runNew(args []string) int {
 		title := fs.Arg(0)
 		if title == "" {
 			for i, part := range parts {
-				if len(part.Path) == 1 {
+				if len(part.Path) == 1 && part.Path[0] != "preamble" {
 					title = part.Path[0]
 					parts = append(parts[:i], parts[i+1:]...)
 					break
@@ -989,6 +989,24 @@ func runShow(args []string) int {
 				writeJSON(errorResult{Error: "storage_failure", Target: nil, Message: err.Error(), Ontology: nil, MissingObligations: []string{}})
 			} else {
 				fmt.Fprintf(os.Stderr, "missis: consistency failure: %s\n", err.Error())
+			}
+			return exitStorage
+		}
+		gaps, err := db.SequenceGaps()
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
+		if len(gaps) > 0 {
+			var summary []string
+			for _, gap := range gaps {
+				summary = append(summary, fmt.Sprintf("%s:%s missing %v", gap.StreamKind, gap.StreamEntity, gap.Missing))
+			}
+			msg := "sequence gaps detected: " + strings.Join(summary, "; ") + "; accepted events are immutable, restore from a backup or create a new store"
+			if jsonMode {
+				writeJSON(errorResult{Error: "integrity_incident", Target: nil, Message: msg, Ontology: nil, MissingObligations: []string{}})
+			} else {
+				fmt.Fprintf(os.Stderr, "missis: %s\n", msg)
 			}
 			return exitStorage
 		}
@@ -1304,7 +1322,7 @@ func runSet(args []string) int {
 			return exitValidation
 		}
 		for i, part := range parts {
-			if len(part.Path) == 1 {
+			if len(part.Path) == 1 && part.Path[0] != "preamble" {
 				parts = append(parts[:i], parts[i+1:]...)
 				break
 			}

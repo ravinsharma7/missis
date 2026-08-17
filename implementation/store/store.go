@@ -287,14 +287,21 @@ func ensureStoreIdentityAndHashes(db *sql.DB) error {
 		return err
 	}
 
-	// Read the snapshot inside the same write transaction as the hash rebuild
-	// so a concurrent append cannot commit between the read and the rebuild,
-	// which would leave a stale head hash and a spurious consistency failure.
+	// Read the snapshot and verify the existing chain inside one transaction
+	// so a concurrent append cannot commit between the read and the check.
+	// Normal open never rewrites integrity metadata.
+	if err := verifyHashesTx(tx); err != nil {
+		return fmt.Errorf("integrity verification failed: %w", err)
+	}
+	return tx.Commit()
+}
+
+func verifyHashesTx(tx *sql.Tx) error {
 	events, err := loadEventsTx(tx)
 	if err != nil {
 		return err
 	}
-	return rebuildHashesTx(tx, events)
+	return verifyStoredHashChain(tx, events)
 }
 
 func rebuildHashesTx(tx *sql.Tx, events []model.Event) error {
@@ -373,15 +380,20 @@ func (s *Store) CheckConsistency() error {
 		byStream[key] = append(byStream[key], event)
 	}
 	for stream, streamEvents := range byStream {
-		sort.Slice(streamEvents, func(i, j int) bool {
-			return streamEvents[i].Sequence < streamEvents[j].Sequence
-		})
+		// loadEventsTx returns events in acceptance (alias_seq) order, so the
+		// invariant is: sequence values are unique and strictly increasing in
+		// acceptance order. Gaps are allowed and reported separately by
+		// SequenceGaps as integrity incidents; they are not erased.
+		var previous uint64
 		for i, event := range streamEvents {
-			expected := uint64(i + 1)
-			if event.Sequence != expected {
-				return fmt.Errorf("stream %s sequence gap at %d: got %d", stream, expected, event.Sequence)
+			if i > 0 && event.Sequence <= previous {
+				return fmt.Errorf("stream %s sequence out of order or duplicate: got %d after %d", stream, event.Sequence, previous)
 			}
+			previous = event.Sequence
 		}
+	}
+	if err := verifyEventColumnsMatchPayload(tx); err != nil {
+		return err
 	}
 	rows, err := tx.Query(`SELECT key, event_ids_json FROM idempotency`)
 	if err != nil {
@@ -408,9 +420,49 @@ func (s *Store) CheckConsistency() error {
 	if hashCount != int64(len(events)) {
 		return fmt.Errorf("event hash count mismatch: got %d, want %d", hashCount, len(events))
 	}
+	if err := verifyStoredHashChain(tx, events); err != nil {
+		return err
+	}
+	return nil
+}
+
+// verifyStoredHashChain recomputes the chain from the event rows and compares
+// every stored (previous_hash, hash) row plus the final head hash. A mismatch
+// means either the event bytes or the integrity metadata changed outside the
+// append path.
+func verifyStoredHashChain(tx interface {
+	Query(string, ...any) (*sql.Rows, error)
+	QueryRow(string, ...any) *sql.Row
+}, events []model.Event) error {
+	rows, err := tx.Query(`
+		SELECT h.previous_hash, h.hash
+		FROM event_hashes h
+		JOIN events e ON e.id = h.event_id
+		ORDER BY e.alias_seq ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
 	previous := ""
 	for _, event := range events {
-		previous = computeEventHash(event, previous)
+		if !rows.Next() {
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("event hash rows shorter than event ledger")
+		}
+		var storedPrevious, storedHash string
+		if err := rows.Scan(&storedPrevious, &storedHash); err != nil {
+			return err
+		}
+		expected := computeEventHash(event, previous)
+		if storedPrevious != previous || storedHash != expected {
+			return fmt.Errorf("integrity mismatch at event %s: stored chain disagrees with recomputed chain", event.ID)
+		}
+		previous = expected
+	}
+	if err := rows.Err(); err != nil {
+		return err
 	}
 	var storedHead string
 	if err := tx.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&storedHead); err != nil {
@@ -420,6 +472,42 @@ func (s *Store) CheckConsistency() error {
 		return fmt.Errorf("head hash mismatch")
 	}
 	return nil
+}
+
+// verifyEventColumnsMatchPayload ensures the denormalized query columns agree
+// with the authoritative event_json payload. The JSON payload is the single
+// source of truth; columns are indexes only, and any disagreement is an
+// integrity failure.
+func verifyEventColumnsMatchPayload(tx interface {
+	Query(string, ...any) (*sql.Rows, error)
+}) error {
+	rows, err := tx.Query(`
+		SELECT
+			id,
+			stream_kind,
+			stream_entity,
+			sequence,
+			CAST(json_extract(event_json, '$.ID') AS TEXT),
+			CAST(json_extract(event_json, '$.Stream.Kind') AS TEXT),
+			CAST(json_extract(event_json, '$.Stream.Entity') AS TEXT),
+			CAST(json_extract(event_json, '$.Sequence') AS INTEGER)
+		FROM events`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, kind, entity, jsonID, jsonKind, jsonEntity string
+		var sequence, jsonSequence int64
+		if err := rows.Scan(&id, &kind, &entity, &sequence, &jsonID, &jsonKind, &jsonEntity, &jsonSequence); err != nil {
+			return err
+		}
+		if id != jsonID || kind != jsonKind || entity != jsonEntity || sequence != jsonSequence {
+			return fmt.Errorf("event %s: column/payload mismatch (columns id=%s kind=%s entity=%s sequence=%d; payload id=%s kind=%s entity=%s sequence=%d)",
+				id, id, kind, entity, sequence, jsonID, jsonKind, jsonEntity, jsonSequence)
+		}
+	}
+	return rows.Err()
 }
 
 type streamKey struct {
@@ -480,108 +568,12 @@ func (s *Store) SequenceGaps() ([]SequenceGap, error) {
 }
 
 func (s *Store) RepairSequenceGaps() error {
-	tx, err := s.writer.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Read the snapshot inside the write transaction so a concurrent append
-	// cannot commit between this read and the renumber/next_sequence updates.
-	events, err := loadEventsTx(tx)
-	if err != nil {
-		return err
-	}
-	sort.Slice(events, func(i, j int) bool {
-		return events[i].AliasSeq < events[j].AliasSeq
-	})
-
-	byStream := make(map[streamKey][]model.Event)
-	for _, event := range events {
-		key := streamKey{kind: string(event.Stream.Kind), entity: event.Stream.Entity}
-		byStream[key] = append(byStream[key], event)
-	}
-	streams := make([]streamKey, 0, len(byStream))
-	for key := range byStream {
-		streams = append(streams, key)
-	}
-	sort.Slice(streams, func(i, j int) bool {
-		if streams[i].kind != streams[j].kind {
-			return streams[i].kind < streams[j].kind
-		}
-		return streams[i].entity < streams[j].entity
-	})
-
-	byID := make(map[model.EventID]model.Event, len(events))
-	for _, event := range events {
-		byID[event.ID] = event
-	}
-
-	for _, key := range streams {
-		streamEvents := byStream[key]
-		sort.Slice(streamEvents, func(i, j int) bool {
-			return streamEvents[i].AliasSeq < streamEvents[j].AliasSeq
-		})
-		for i := range streamEvents {
-			expected := uint64(i + 1)
-			event := streamEvents[i]
-			if event.Sequence == expected {
-				continue
-			}
-			event.Sequence = expected
-			event.PreviousHash = ""
-			event.Hash = ""
-			raw, marshalErr := json.Marshal(event)
-			if marshalErr != nil {
-				return marshalErr
-			}
-			if _, execErr := tx.Exec(
-				`UPDATE events SET sequence = ?, event_json = ? WHERE id = ?`,
-				expected, string(raw), string(event.ID),
-			); execErr != nil {
-				return execErr
-			}
-			streamEvents[i] = event
-			byID[event.ID] = event
-		}
-		if _, execErr := tx.Exec(
-			`UPDATE streams SET next_sequence = ? WHERE stream_kind = ? AND stream_entity = ?`,
-			// allocateSequenceTx stores the last allocated sequence number, so
-			// after renumbering a stream to 1..n the stored value must be n
-			// (the next append then receives sequence n+1). Storing n+1 burns
-			// sequence n+1 on the next append and leaves a hole.
-			uint64(len(streamEvents)), key.kind, key.entity,
-		); execErr != nil {
-			return execErr
-		}
-	}
-
-	ordered := make([]model.Event, 0, len(events))
-	for _, event := range events {
-		ordered = append(ordered, byID[event.ID])
-	}
-
-	if _, execErr := tx.Exec(`DELETE FROM event_hashes`); execErr != nil {
-		return execErr
-	}
-	previous := ""
-	for _, event := range ordered {
-		hash := computeEventHash(event, previous)
-		if _, execErr := tx.Exec(
-			`INSERT INTO event_hashes (event_id, previous_hash, hash) VALUES (?, ?, ?)`,
-			event.ID, previous, hash,
-		); execErr != nil {
-			return execErr
-		}
-		previous = hash
-	}
-	if _, execErr := tx.Exec(
-		`UPDATE store_meta SET head_hash = ?, updated_at = ? WHERE singleton = 1`,
-		previous, time.Now().UTC().Format(time.RFC3339Nano),
-	); execErr != nil {
-		return execErr
-	}
-	return tx.Commit()
+	// Intentionally refuses to rewrite accepted events. In-place renumbering
+	// would change event_json and sequence bytes, invalidate the hash chain
+	// and any external reference, and erase the evidence that data was lost.
+	// Recovery is restore-from-backup; new-store-with-receipt (Strategy B)
+	// is a deferred, opt-in tool.
+	return fmt.Errorf("in-place sequence repair is disabled: accepted events are immutable; restore from a backup or create a new store with a repair receipt")
 }
 
 func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, preconditions []Precondition, result any) (AppendOutcome, error) {

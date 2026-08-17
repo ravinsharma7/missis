@@ -57,6 +57,12 @@ go run ./tools/store-gaps .missis-store/missis.db
 - SQLite store remains ignored under `.missis-store/`.
 - Global operational flags are allowlisted, not open-ended.
 - No destructive delete; use retraction.
+- Sequence gaps are integrity incidents: sequences are immutable, unique,
+  strictly increasing; no in-place repair; recovery = restore from backup
+  (ticket #41).
+- Bitemporal winner rule: latest effective time wins, recorded time breaks
+  ties (subspec `specs/bitemporal-winner.subspec.md`, ticket #42).
+- Timestamp canonical form: 9-digit nanoseconds UTC (ticket #45).
 
 ## Known open areas
 
