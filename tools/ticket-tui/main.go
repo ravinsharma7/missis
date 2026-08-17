@@ -26,8 +26,12 @@ var (
 )
 
 const (
-	defaultWidth  = 80
-	defaultHeight = 24
+	defaultWidth       = 80
+	defaultHeight      = 24
+	refreshInterval    = 2 * time.Second
+	listReservedRows   = 4
+	detailReservedRows = 4
+	statsReservedRows  = 4
 )
 
 type detailState struct {
@@ -37,23 +41,26 @@ type detailState struct {
 	showRefs bool
 }
 
+type refreshMsg struct{}
+
 type tuiModel struct {
-	client     *missis.Client
-	summaries  []store.TicketSummary
-	selected   int
-	view       string
-	detail     *detailState
-	compareA   *store.TicketSummary
-	compareB   *store.TicketSummary
-	message    string
-	err        error
-	width      int
-	height     int
-	listOffset int
-	editing    bool
-	input      string
-	projectCtx string
-	groupCtx   string
+	client      *missis.Client
+	summaries   []store.TicketSummary
+	selected    int
+	view        string
+	detail      *detailState
+	compareA    *store.TicketSummary
+	compareB    *store.TicketSummary
+	message     string
+	err         error
+	width       int
+	height      int
+	listOffset  int
+	statsOffset int
+	editing     bool
+	input       string
+	projectCtx  string
+	groupCtx    string
 }
 
 func newModel() (*tuiModel, error) {
@@ -93,19 +100,34 @@ func newModel() (*tuiModel, error) {
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return nil
+	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshMsg{} })
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case refreshMsg:
+		m.refresh()
+		return m, tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshMsg{} })
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.clampListOffset()
+		if m.view == "detail" && m.detail != nil && m.client != nil {
+			if !m.detail.showRefs {
+				if lines, err := ticketLines(m.client, m.detail.summary, m.renderWidth()); err == nil {
+					m.detail.lines = lines
+				}
+			}
+			m.clampDetailOffset()
+		}
+		if m.view == "stats" {
+			m.clampStatsOffset()
+		}
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if m.view == "list" || m.view == "detail" || m.view == "compare" || m.view == "input" {
+			if m.view == "list" || m.view == "detail" || m.view == "compare" || m.view == "input" || m.view == "stats" {
 				if m.view != "list" {
 					m.view = "list"
 					m.detail = nil
@@ -126,6 +148,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDetail(msg)
 	case "compare":
 		return m.updateCompare(msg)
+	case "stats":
+		return m.updateStats(msg)
 	case "input":
 		return m.updateInput(msg)
 	default:
@@ -199,6 +223,12 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.message = "exported " + summary.Ref + " -> " + dst
 		}
+	case "r":
+		m.refresh()
+	case "s":
+		m.view = "stats"
+		m.statsOffset = 0
+		m.message = ""
 	}
 	return m, nil
 }
@@ -254,6 +284,8 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input = m.detail.summary.Title
 		m.view = "input"
 	case "r":
+		m.refresh()
+	case "R":
 		m.detail.showRefs = !m.detail.showRefs
 		var err error
 		if m.detail.showRefs {
@@ -300,6 +332,7 @@ func (m tuiModel) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = err
 		} else {
 			m.detail.lines = lines
+			m.clampDetailOffset()
 		}
 		m.view = "detail"
 		m.editing = false
@@ -334,6 +367,44 @@ func (m tuiModel) updateCompare(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m tuiModel) updateStats(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	lines := m.statsLines()
+	switch key.String() {
+	case "up", "k":
+		if m.statsOffset > 0 {
+			m.statsOffset--
+		}
+	case "down", "j":
+		if m.statsOffset < len(lines)-1 {
+			m.statsOffset++
+		}
+	case "pgup":
+		if m.height > 0 {
+			m.statsOffset -= maxInt(1, m.height-statsReservedRows)
+		}
+		m.clampStatsOffset()
+	case "pgdown":
+		if m.height > 0 {
+			m.statsOffset += maxInt(1, m.height-statsReservedRows)
+		}
+		m.clampStatsOffset()
+	case "g", "home":
+		m.statsOffset = 0
+	case "G", "end":
+		if len(lines) > 0 {
+			m.statsOffset = len(lines) - 1
+		}
+	case "b", "esc":
+		m.view = "list"
+		m.message = ""
+	}
+	return m, nil
+}
+
 func (m tuiModel) View() string {
 	if m.err != nil {
 		return errorStyle.Render(m.err.Error()) + "\npress q to quit"
@@ -346,6 +417,8 @@ func (m tuiModel) View() string {
 		body = m.viewDetail()
 	case "compare":
 		body = m.viewCompare()
+	case "stats":
+		body = m.viewStats()
 	case "input":
 		body = "Edit title: " + m.input + "▌"
 	default:
@@ -361,11 +434,13 @@ func (m tuiModel) View() string {
 func (m tuiModel) helpForView() string {
 	switch m.view {
 	case "list":
-		return "j/k move | enter open | c compare A | v compare B | e export | pgup/pgdn page | q quit"
+		return "j/k move | enter open | c/v compare | e export | r refresh | s stats | q quit"
 	case "detail":
-		return "j/k scroll | pgup/pgdn page | g/G top/end | r refs | t edit title | e export | b back | q back"
+		return "j/k scroll | pgup/pgdn page | g/G top/end | r refresh | R refs | t edit title | e export | b back | q back"
 	case "compare":
 		return "b back | q quit"
+	case "stats":
+		return "j/k scroll | pgup/pgdn page | g/G top/end | b back | q back"
 	case "input":
 		return "enter save | esc cancel | backspace delete"
 	default:
@@ -445,11 +520,38 @@ func (m tuiModel) effectiveSize() (width, height int) {
 // and the help bar rendered by View().
 func (m tuiModel) listVisibleRows() int {
 	_, height := m.effectiveSize()
-	visible := height - 4
+	visible := height - listReservedRows
 	if visible < 1 {
 		visible = 1
 	}
 	return visible
+}
+
+// visibleRange returns the half-open [start, end) window into content of
+// length `length` that fits in `available` rows, anchored at `offset`. The
+// result always satisfies 0 <= start <= end <= length, regardless of inputs.
+func visibleRange(offset, length, available int) (start, end int) {
+	if available < 1 {
+		available = 1
+	}
+	if length < 0 {
+		length = 0
+	}
+	start = offset
+	if start < 0 {
+		start = 0
+	}
+	if start > length {
+		start = length
+	}
+	end = start + available
+	if end > length {
+		end = length
+	}
+	if end < start {
+		end = start
+	}
+	return start, end
 }
 
 func truncateCell(text string, width int) string {
@@ -485,19 +587,26 @@ func (m tuiModel) viewDetail() string {
 		b.WriteString("<no parts>\n")
 	}
 	rendered := m.renderedDetailLines()
-	start := m.detail.offset
-	end := start + m.height - 6
-	if end < start {
-		end = start
-	}
-	if end > len(rendered) {
-		end = len(rendered)
-	}
+	_, height := m.effectiveSize()
+	start, end := visibleRange(m.detail.offset, len(rendered), height-detailReservedRows)
 	for _, line := range rendered[start:end] {
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+func (m *tuiModel) clampDetailOffset() {
+	if m.detail == nil {
+		return
+	}
+	if m.detail.offset < 0 {
+		m.detail.offset = 0
+	}
+	rendered := m.renderedDetailLines()
+	if len(rendered) > 0 && m.detail.offset >= len(rendered) {
+		m.detail.offset = len(rendered) - 1
+	}
 }
 
 func (m tuiModel) renderedDetailLines() []string {
@@ -555,6 +664,160 @@ func (m tuiModel) viewCompare() string {
 		b.WriteString(fmt.Sprintf("%s\n  A: %s\n  B: %s\n", path, renderMarkdownValue(a[path]), renderMarkdownValue(bb[path])))
 	}
 	return b.String()
+}
+
+func (m *tuiModel) refresh() {
+	now := time.Now().UTC()
+	summaries, err := m.client.ListTickets(context.Background(), now)
+	if err != nil {
+		m.message = "refresh failed: " + err.Error()
+		return
+	}
+	selectedID := ""
+	if m.selected >= 0 && m.selected < len(m.summaries) {
+		selectedID = string(m.summaries[m.selected].ID)
+	}
+	m.summaries = summaries
+	m.selected = 0
+	for i := range m.summaries {
+		if string(m.summaries[i].ID) == selectedID {
+			m.selected = i
+			break
+		}
+	}
+	if m.selected >= len(m.summaries) {
+		m.selected = len(m.summaries) - 1
+	}
+	if m.selected < 0 {
+		m.selected = 0
+	}
+	m.clampListOffset()
+	// compareA/compareB hold pointers into the old slice; re-point them by ID
+	// so a reload cannot leave them dangling.
+	m.compareA = findSummary(m.summaries, m.compareA)
+	m.compareB = findSummary(m.summaries, m.compareB)
+	// Keep an open detail view live for the same ticket.
+	if m.view == "detail" && m.detail != nil {
+		if updated := findSummary(m.summaries, &m.detail.summary); updated != nil {
+			m.detail.summary = *updated
+			var lines []string
+			var err error
+			if m.detail.showRefs {
+				lines, err = referenceLines(m.client, m.detail.summary)
+			} else {
+				lines, err = ticketLines(m.client, m.detail.summary, m.renderWidth())
+			}
+			if err == nil {
+				m.detail.lines = lines
+			}
+			m.clampDetailOffset()
+		} else {
+			m.view = "list"
+			m.detail = nil
+		}
+	}
+}
+
+func findSummary(summaries []store.TicketSummary, want *store.TicketSummary) *store.TicketSummary {
+	if want == nil {
+		return nil
+	}
+	for i := range summaries {
+		if summaries[i].ID == want.ID {
+			return &summaries[i]
+		}
+	}
+	return nil
+}
+
+func (m tuiModel) statsLines() []string {
+	var lines []string
+	lines = append(lines, titleStyle.Render("missis stats"))
+	lines = append(lines, "")
+	if len(m.summaries) == 0 {
+		lines = append(lines, "no tickets")
+		return lines
+	}
+	lines = append(lines, "status")
+	statusOrder := []string{"open", "doing", "blocked", "done"}
+	counts := make(map[string]int)
+	for _, s := range m.summaries {
+		st := s.Status
+		if st == "" {
+			st = "(none)"
+		}
+		counts[st]++
+	}
+	seen := make(map[string]bool)
+	for _, st := range statusOrder {
+		if counts[st] > 0 {
+			lines = append(lines, fmt.Sprintf("  %-8s %d", st, counts[st]))
+			seen[st] = true
+		}
+	}
+	var rest []string
+	for st := range counts {
+		if !seen[st] {
+			rest = append(rest, st)
+		}
+	}
+	sort.Strings(rest)
+	for _, st := range rest {
+		lines = append(lines, fmt.Sprintf("  %-8s %d", st, counts[st]))
+	}
+	lines = append(lines, "")
+	lines = append(lines, "age (since created)")
+	type ageBucket struct {
+		name string
+		max  time.Duration
+	}
+	buckets := []ageBucket{
+		{"<1d", 24 * time.Hour},
+		{"1-7d", 7 * 24 * time.Hour},
+		{"7-30d", 30 * 24 * time.Hour},
+		{">30d", 0},
+	}
+	now := time.Now()
+	ageCounts := make(map[string]int)
+	for _, s := range m.summaries {
+		age := now.Sub(s.RecordedAt)
+		bucket := buckets[len(buckets)-1].name
+		for _, bkt := range buckets {
+			if bkt.max > 0 && age <= bkt.max {
+				bucket = bkt.name
+				break
+			}
+		}
+		ageCounts[bucket]++
+	}
+	for _, bkt := range buckets {
+		lines = append(lines, fmt.Sprintf("  %-8s %d", bkt.name, ageCounts[bkt.name]))
+	}
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("total: %d", len(m.summaries)))
+	return lines
+}
+
+func (m tuiModel) viewStats() string {
+	lines := m.statsLines()
+	_, height := m.effectiveSize()
+	start, end := visibleRange(m.statsOffset, len(lines), height-statsReservedRows)
+	var b strings.Builder
+	for _, line := range lines[start:end] {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func (m *tuiModel) clampStatsOffset() {
+	if m.statsOffset < 0 {
+		m.statsOffset = 0
+	}
+	lines := m.statsLines()
+	if len(lines) > 0 && m.statsOffset >= len(lines) {
+		m.statsOffset = len(lines) - 1
+	}
 }
 
 func ticketLines(client *missis.Client, summary store.TicketSummary, width int) ([]string, error) {

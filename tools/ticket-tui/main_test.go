@@ -1,10 +1,17 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ravinsharma7/missis/implementation/model"
 	"github.com/ravinsharma7/missis/implementation/store"
+	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
 func TestTruncateCell(t *testing.T) {
@@ -24,6 +31,241 @@ func TestTruncateCell(t *testing.T) {
 		if got := truncateCell(tc.text, tc.width); got != tc.want {
 			t.Errorf("truncateCell(%q, %d) = %q, want %q", tc.text, tc.width, got, tc.want)
 		}
+	}
+}
+
+func TestVisibleRange(t *testing.T) {
+	cases := []struct {
+		name            string
+		offset, length  int
+		available       int
+		wantStart, want int
+	}{
+		{"basic window", 0, 10, 5, 0, 5},
+		{"offset past end", 87, 78, 5, 78, 78},
+		{"offset past end tiny available", 87, 78, 0, 78, 78},
+		{"negative offset", -1, 10, 5, 0, 5},
+		{"zero available becomes one", 5, 10, 0, 5, 6},
+		{"empty content", 0, 0, 5, 0, 0},
+		{"window wider than content", 3, 10, 20, 3, 10},
+		{"negative length", 0, -3, 5, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start, end := visibleRange(tc.offset, tc.length, tc.available)
+			if start != tc.wantStart || end != tc.want {
+				t.Errorf("visibleRange(%d, %d, %d) = (%d, %d), want (%d, %d)",
+					tc.offset, tc.length, tc.available, start, end, tc.wantStart, tc.want)
+			}
+			length := tc.length
+			if length < 0 {
+				length = 0
+			}
+			if start < 0 || end < start || end > length {
+				t.Errorf("invariant broken: start=%d end=%d length=%d", start, end, length)
+			}
+		})
+	}
+}
+
+func TestInitSchedulesRefresh(t *testing.T) {
+	m := tuiModel{}
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("Init() returned nil, expected a tick command")
+	}
+}
+
+func TestViewDetailResizeDoesNotPanic(t *testing.T) {
+	m := tuiModel{
+		view:   "detail",
+		width:  80,
+		height: 24,
+		detail: &detailState{
+			summary: store.TicketSummary{Ref: "#1", Title: "long ticket"},
+			offset:  87,
+		},
+	}
+	for i := 0; i < 100; i++ {
+		m.detail.lines = append(m.detail.lines, strings.Repeat("line ", 20))
+	}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 5})
+	m = updated.(tuiModel)
+	rendered := strings.Split(m.viewDetail(), "\n")
+	if len(rendered) > m.height {
+		t.Errorf("viewDetail rendered %d lines, terminal height %d", len(rendered), m.height)
+	}
+
+	// Shrinking content after a deep scroll must clamp, not panic.
+	m.detail.lines = make([]string, 50)
+	for i := range m.detail.lines {
+		m.detail.lines[i] = "x"
+	}
+	m.detail.offset = 87
+	m.clampDetailOffset()
+	if m.detail.offset != 49 {
+		t.Errorf("clampDetailOffset = %d, want 49", m.detail.offset)
+	}
+	if got := m.viewDetail(); got == "" {
+		t.Error("viewDetail returned empty after clamp")
+	}
+}
+
+func TestRefreshPicksUpExternalChanges(t *testing.T) {
+	dir := t.TempDir()
+	client, err := missis.OpenPath(filepath.Join(dir, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	now := time.Now().UTC()
+	t1, err := client.NewTicket(context.Background(), missis.NewTicketOptions{Title: "one", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t2, err := client.NewTicket(context.Background(), missis.NewTicketOptions{Title: "two", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaries, err := client.ListTickets(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &tuiModel{client: client, summaries: summaries, view: "detail"}
+	for i := range m.summaries {
+		if m.summaries[i].ID == model.TicketID(t2.ID) {
+			m.selected = i
+		}
+		if m.summaries[i].ID == model.TicketID(t1.ID) {
+			m.detail = &detailState{summary: m.summaries[i]}
+		}
+	}
+	m.compareA = &m.summaries[0]
+
+	if err := client.SetPart(context.Background(), missis.SetPartOptions{
+		Ref:   t1.Ref + "/title",
+		Value: "one-updated",
+		Actor: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	m.refresh()
+
+	if m.selected < 0 || m.selected >= len(m.summaries) || m.summaries[m.selected].ID != model.TicketID(t2.ID) {
+		t.Fatalf("selection not preserved: selected=%d summaries=%d", m.selected, len(m.summaries))
+	}
+	if m.compareA == nil || m.compareA.ID != model.TicketID(t1.ID) || m.compareA.Title != "one-updated" {
+		t.Fatalf("compare A not re-pointed/refreshed: %+v", m.compareA)
+	}
+	if m.detail == nil || m.detail.summary.ID != model.TicketID(t1.ID) || m.detail.summary.Title != "one-updated" {
+		t.Fatalf("detail not refreshed: %+v", m.detail)
+	}
+}
+
+func TestRefreshFailureKeepsOldData(t *testing.T) {
+	dir := t.TempDir()
+	client, err := missis.OpenPath(filepath.Join(dir, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	summary, err := client.NewTicket(context.Background(), missis.NewTicketOptions{Title: "keep", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := []store.TicketSummary{{ID: model.TicketID(summary.ID), Ref: summary.Ref, Title: "keep", Status: "open"}}
+	m := &tuiModel{client: client, summaries: old}
+	// A closed store makes the next read fail.
+	client.Close()
+	m.refresh()
+	if len(m.summaries) != 1 || m.summaries[0].Title != "keep" {
+		t.Fatalf("refresh failure replaced data: %+v", m.summaries)
+	}
+	if !strings.Contains(m.message, "refresh failed") {
+		t.Errorf("expected failure message, got %q", m.message)
+	}
+}
+
+func TestDetailKeysExplicit(t *testing.T) {
+	dir := t.TempDir()
+	client, err := missis.OpenPath(filepath.Join(dir, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	t1, err := client.NewTicket(context.Background(), missis.NewTicketOptions{Title: "one", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaries, err := client.ListTickets(context.Background(), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := tuiModel{client: client, summaries: summaries, view: "detail", width: 80, height: 24}
+	for i := range m.summaries {
+		if m.summaries[i].ID == model.TicketID(t1.ID) {
+			m.detail = &detailState{summary: m.summaries[i]}
+		}
+	}
+
+	// R toggles refs; r refreshes without leaving detail or touching refs.
+	updated, _ := m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	m = updated.(tuiModel)
+	if m.detail == nil || !m.detail.showRefs {
+		t.Fatal("R did not toggle refs on")
+	}
+	updated, _ = m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = updated.(tuiModel)
+	if m.view != "detail" {
+		t.Fatalf("r changed view to %q", m.view)
+	}
+	if m.detail == nil || !m.detail.showRefs {
+		t.Fatal("r toggled refs off")
+	}
+}
+
+func TestViewStatsCounts(t *testing.T) {
+	now := time.Now()
+	m := tuiModel{summaries: []store.TicketSummary{
+		{Ref: "#1", Status: "open", RecordedAt: now.Add(-10 * time.Hour)},
+		{Ref: "#2", Status: "open", RecordedAt: now.Add(-3 * 24 * time.Hour)},
+		{Ref: "#3", Status: "doing", RecordedAt: now.Add(-20 * 24 * time.Hour)},
+		{Ref: "#4", Status: "done", RecordedAt: now.Add(-60 * 24 * time.Hour)},
+		{Ref: "#5", Status: "doing", RecordedAt: now.Add(-5 * 24 * time.Hour)},
+	}}
+	out := m.viewStats()
+	wants := []string{
+		fmt.Sprintf("  %-8s %d", "open", 2),
+		fmt.Sprintf("  %-8s %d", "doing", 2),
+		fmt.Sprintf("  %-8s %d", "done", 1),
+		fmt.Sprintf("  %-8s %d", "<1d", 1),
+		fmt.Sprintf("  %-8s %d", "1-7d", 2),
+		fmt.Sprintf("  %-8s %d", "7-30d", 1),
+		fmt.Sprintf("  %-8s %d", ">30d", 1),
+		"total: 5",
+	}
+	for _, want := range wants {
+		if !strings.Contains(out, want) {
+			t.Errorf("stats missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestViewStatsTinyTerminal(t *testing.T) {
+	m := tuiModel{
+		width:  40,
+		height: 3,
+		summaries: []store.TicketSummary{
+			{Ref: "#1", Status: "open", RecordedAt: time.Now().Add(-time.Hour)},
+		},
+	}
+	rendered := strings.Split(m.viewStats(), "\n")
+	if len(rendered) > m.height {
+		t.Errorf("viewStats rendered %d lines, terminal height %d", len(rendered), m.height)
 	}
 }
 
