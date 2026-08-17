@@ -12,3 +12,4 @@ Work with the local missis CLI. The CLI owns the command surface; do not hand-co
 3. Create a ticket when asked, even without a title: derive the title from the active focus, state the assumption, and proceed. Do not stop to ask a clarifying question.
 4. Never use destructive delete. Retract parts with `missis set <ref> --retract --reason "..."` instead.
 5. Prefer missis refs (#N) over free text. Use `--json` when the result is consumed by code or tests.
+6. Shells treat `#` as a comment: quote refs in commands (`missis show '#55'`) or use bare numbers (`missis show 55`); an unquoted `#55` silently drops the ref and following flags.

@@ -11,7 +11,7 @@ Tickets and parts are **different entity kinds**, not the same thing in
 different sizes.
 
 - A **ticket** is a canonical work item with its own immutable event stream,
-  its own identity, and its own projection. `show #1` reads one ticket's
+  its own identity, and its own projection. `show '#1'` reads one ticket's
   ledger.
 - A **part** is a nested element *inside one ticket*: notes, evidence,
   decisions, structure. Parts are recursive (a part may have child parts;

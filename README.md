@@ -83,8 +83,8 @@ missis show --health
 
 # First ticket and everyday workflow
 missis new "First ticket" --json
-missis show #1 --format markdown
-missis set #1/status doing
+missis show 1 --format markdown
+missis set 1/status doing
 missis set '#1/notes' "some context"
 
 # Correct and remove (append-only; no destructive delete)

@@ -31,6 +31,7 @@ func TestAgentBrief(t *testing.T) {
 		"missis set",
 		"No destructive delete",
 		"do not block on a question",
+		"Shells treat",
 		"missis show --context",
 	} {
 		if !strings.Contains(result.stdout, want) {

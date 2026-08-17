@@ -98,12 +98,13 @@ type errorResult struct {
 const modulePath = "github.com/ravinsharma7/missis"
 
 const agentBriefCommands = `missis new "Title" [--priority X] [--type T]... [--tag T]... [--from FILE|--stdin] [--json]
-missis show [#REF] [--json|--format markdown] [--search S] [--status S] [--type T] [--tag T]
+missis show [REF] [--json|--format markdown] [--search S] [--status S] [--type T] [--tag T]
 missis set <REF> <VALUE> [--add] [--retract [--recursive] [--reason R]] [--json]`
 
 const agentBriefRules = `- No destructive delete; use --retract --reason instead.
 - If a ticket is requested without a title, derive it from the session focus in .missis.d/active.local.md (or active.example.md) and state the assumption; do not block on a question.
 - Prefer missis refs (#N) over free text.
+- Shells treat "#" as a comment: in commands, quote refs (missis show '#55') or use bare numbers (missis show 55); an unquoted #55 silently drops the ref and following flags.
 - Use --json for machine-readable output.
 - For the active project/group/focus, run: missis show --context`
 
@@ -112,6 +113,10 @@ const agentPointerSnippet = `## missis quick reference
 Run ` + "`missis --ag-brief`" + ` once before ticket work. It prints the exact
 new/show/set syntax and the rules from the CLI itself; do not copy that syntax
 into this file. For the active session focus, run ` + "`missis show --context`" + `.
+
+In shell commands, quote ticket refs (` + "`missis show '#55'`" + `) or use the
+bare number (` + "`missis show 55`" + `); an unquoted ` + "`#55`" + ` is a shell
+comment and silently runs the command without the ref or its flags.
 
 When asked to create a ticket without a title, derive one from the active
 focus and state the assumption; do not block on a clarifying question.`
@@ -318,8 +323,8 @@ const getStartedText = `missis getting started
 
 3. First ticket and everyday workflow:
      missis new "First ticket" --json
-     missis show #1 --format markdown
-     missis set #1/status doing
+     missis show 1 --format markdown
+     missis set 1/status doing
      missis set '#1/notes' "some context"
 
 4. Correct and remove (append-only; no destructive delete):
