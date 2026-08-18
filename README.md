@@ -163,6 +163,12 @@ Store permissions are private-by-default on POSIX (0700 directory, 0600 file).
 On Windows this is scoped to user-profile ACLs; POSIX mode bits are not
 emulated (ticket #55).
 
+## Storage compatibility
+
+See [docs/storage-compatibility.md](docs/storage-compatibility.md) for the
+on-disk format contract: forward-only schema migrations, the integrity
+guarantees, derived-table behavior, and the no-downgrade policy (ticket #53).
+
 Store discovery order:
 
 1. `--store <path>`
