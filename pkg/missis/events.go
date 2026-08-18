@@ -5,7 +5,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/ravinsharma7/missis/implementation/model"
+	"github.com/ravinsharma7/missis/internal/model"
 )
 
 func NewID(prefix string) string {

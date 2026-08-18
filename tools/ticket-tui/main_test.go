@@ -9,8 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ravinsharma7/missis/implementation/model"
-	"github.com/ravinsharma7/missis/implementation/store"
+	"github.com/ravinsharma7/missis/internal/application"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -81,7 +80,7 @@ func TestViewDetailResizeDoesNotPanic(t *testing.T) {
 		width:  80,
 		height: 24,
 		detail: &detailState{
-			summary: store.TicketSummary{Ref: "#1", Title: "long ticket"},
+			summary: missis.TicketSummary{Ref: "#1", Title: "long ticket"},
 			offset:  87,
 		},
 	}
@@ -113,70 +112,68 @@ func TestViewDetailResizeDoesNotPanic(t *testing.T) {
 
 func TestRefreshPicksUpExternalChanges(t *testing.T) {
 	dir := t.TempDir()
-	client, err := missis.OpenPath(filepath.Join(dir, "missis.db"))
+	svc, err := application.OpenPath(filepath.Join(dir, "missis.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
 
 	now := time.Now().UTC()
-	t1, err := client.NewTicket(context.Background(), missis.NewTicketOptions{Title: "one", Actor: "test"})
+	t1, err := client.NewTicket(context.Background(), missis.RequestContext{Actor: "test"}, missis.NewTicketOptions{Title: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t2, err := client.NewTicket(context.Background(), missis.NewTicketOptions{Title: "two", Actor: "test"})
+	t2, err := client.NewTicket(context.Background(), missis.RequestContext{Actor: "test"}, missis.NewTicketOptions{Title: "two"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	summaries, err := client.ListTickets(context.Background(), now)
+	summaries, err := client.ListTicketSummaries(context.Background(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := &tuiModel{client: client, summaries: summaries, view: "detail"}
 	for i := range m.summaries {
-		if m.summaries[i].ID == model.TicketID(t2.ID) {
+		if m.summaries[i].ID == t2.ID {
 			m.selected = i
 		}
-		if m.summaries[i].ID == model.TicketID(t1.ID) {
+		if m.summaries[i].ID == t1.ID {
 			m.detail = &detailState{summary: m.summaries[i]}
 		}
 	}
 	m.compareA = &m.summaries[0]
 
-	if err := client.SetPart(context.Background(), missis.SetPartOptions{
-		Ref:   t1.Ref + "/title",
-		Value: "one-updated",
-		Actor: "test",
-	}); err != nil {
+	if _, err := client.Set(context.Background(), missis.RequestContext{Actor: "test"}, missis.SetValue{Target: t1.Ref + "/title", Value: "one-updated"}); err != nil {
 		t.Fatal(err)
 	}
 
 	m.refresh()
 
-	if m.selected < 0 || m.selected >= len(m.summaries) || m.summaries[m.selected].ID != model.TicketID(t2.ID) {
+	if m.selected < 0 || m.selected >= len(m.summaries) || m.summaries[m.selected].ID != t2.ID {
 		t.Fatalf("selection not preserved: selected=%d summaries=%d", m.selected, len(m.summaries))
 	}
-	if m.compareA == nil || m.compareA.ID != model.TicketID(t1.ID) || m.compareA.Title != "one-updated" {
+	if m.compareA == nil || m.compareA.ID != t1.ID || m.compareA.Title != "one-updated" {
 		t.Fatalf("compare A not re-pointed/refreshed: %+v", m.compareA)
 	}
-	if m.detail == nil || m.detail.summary.ID != model.TicketID(t1.ID) || m.detail.summary.Title != "one-updated" {
+	if m.detail == nil || m.detail.summary.ID != t1.ID || m.detail.summary.Title != "one-updated" {
 		t.Fatalf("detail not refreshed: %+v", m.detail)
 	}
 }
 
 func TestRefreshFailureKeepsOldData(t *testing.T) {
 	dir := t.TempDir()
-	client, err := missis.OpenPath(filepath.Join(dir, "missis.db"))
+	svc, err := application.OpenPath(filepath.Join(dir, "missis.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
 
-	summary, err := client.NewTicket(context.Background(), missis.NewTicketOptions{Title: "keep", Actor: "test"})
+	summary, err := client.NewTicket(context.Background(), missis.RequestContext{Actor: "test"}, missis.NewTicketOptions{Title: "keep"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := []store.TicketSummary{{ID: model.TicketID(summary.ID), Ref: summary.Ref, Title: "keep", Status: "open"}}
+	old := []missis.TicketSummary{{ID: summary.ID, Ref: summary.Ref, Title: "keep", Status: "open"}}
 	m := &tuiModel{client: client, summaries: old}
 	// A closed store makes the next read fail.
 	client.Close()
@@ -191,23 +188,24 @@ func TestRefreshFailureKeepsOldData(t *testing.T) {
 
 func TestDetailKeysExplicit(t *testing.T) {
 	dir := t.TempDir()
-	client, err := missis.OpenPath(filepath.Join(dir, "missis.db"))
+	svc, err := application.OpenPath(filepath.Join(dir, "missis.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
 
-	t1, err := client.NewTicket(context.Background(), missis.NewTicketOptions{Title: "one", Actor: "test"})
+	t1, err := client.NewTicket(context.Background(), missis.RequestContext{Actor: "test"}, missis.NewTicketOptions{Title: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	summaries, err := client.ListTickets(context.Background(), time.Now().UTC())
+	summaries, err := client.ListTicketSummaries(context.Background(), time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := tuiModel{client: client, summaries: summaries, view: "detail", width: 80, height: 24}
 	for i := range m.summaries {
-		if m.summaries[i].ID == model.TicketID(t1.ID) {
+		if m.summaries[i].ID == t1.ID {
 			m.detail = &detailState{summary: m.summaries[i]}
 		}
 	}
@@ -230,7 +228,7 @@ func TestDetailKeysExplicit(t *testing.T) {
 
 func TestViewStatsCounts(t *testing.T) {
 	now := time.Now()
-	m := tuiModel{summaries: []store.TicketSummary{
+	m := tuiModel{summaries: []missis.TicketSummary{
 		{Ref: "#1", Status: "open", RecordedAt: now.Add(-10 * time.Hour)},
 		{Ref: "#2", Status: "open", RecordedAt: now.Add(-3 * 24 * time.Hour)},
 		{Ref: "#3", Status: "doing", RecordedAt: now.Add(-20 * 24 * time.Hour)},
@@ -259,7 +257,7 @@ func TestViewStatsTinyTerminal(t *testing.T) {
 	m := tuiModel{
 		width:  40,
 		height: 3,
-		summaries: []store.TicketSummary{
+		summaries: []missis.TicketSummary{
 			{Ref: "#1", Status: "open", RecordedAt: time.Now().Add(-time.Hour)},
 		},
 	}
@@ -287,7 +285,7 @@ func TestListVisibleRows(t *testing.T) {
 func TestViewListRowsFitTerminal(t *testing.T) {
 	m := tuiModel{width: 40, height: 10}
 	for i := 1; i <= 12; i++ {
-		m.summaries = append(m.summaries, store.TicketSummary{
+		m.summaries = append(m.summaries, missis.TicketSummary{
 			Ref:    "#" + strings.Repeat("1", i),
 			Status: "open",
 			Title:  "ticket with a deliberately long title that must be truncated",

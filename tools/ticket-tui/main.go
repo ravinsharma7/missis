@@ -14,8 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/ravinsharma7/missis/implementation/model"
-	"github.com/ravinsharma7/missis/implementation/store"
+	"github.com/ravinsharma7/missis/internal/application"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -35,7 +34,7 @@ const (
 )
 
 type detailState struct {
-	summary  store.TicketSummary
+	summary  missis.TicketSummary
 	lines    []string
 	offset   int
 	showRefs bool
@@ -45,12 +44,12 @@ type refreshMsg struct{}
 
 type tuiModel struct {
 	client      *missis.Client
-	summaries   []store.TicketSummary
+	summaries   []missis.TicketSummary
 	selected    int
 	view        string
 	detail      *detailState
-	compareA    *store.TicketSummary
-	compareB    *store.TicketSummary
+	compareA    *missis.TicketSummary
+	compareB    *missis.TicketSummary
 	message     string
 	err         error
 	width       int
@@ -64,12 +63,13 @@ type tuiModel struct {
 }
 
 func newModel() (*tuiModel, error) {
-	client, err := missis.Open("")
+	svc, err := application.Open("")
 	if err != nil {
 		return nil, err
 	}
+	client := missis.NewClient(svc)
 	now := time.Now().UTC()
-	summaries, err := client.ListTickets(context.Background(), now)
+	summaries, err := client.ListTicketSummaries(context.Background(), now)
 	if err != nil {
 		client.Close()
 		return nil, err
@@ -668,19 +668,19 @@ func (m tuiModel) viewCompare() string {
 
 func (m *tuiModel) refresh() {
 	now := time.Now().UTC()
-	summaries, err := m.client.ListTickets(context.Background(), now)
+	summaries, err := m.client.ListTicketSummaries(context.Background(), now)
 	if err != nil {
 		m.message = "refresh failed: " + err.Error()
 		return
 	}
 	selectedID := ""
 	if m.selected >= 0 && m.selected < len(m.summaries) {
-		selectedID = string(m.summaries[m.selected].ID)
+		selectedID = m.summaries[m.selected].ID
 	}
 	m.summaries = summaries
 	m.selected = 0
 	for i := range m.summaries {
-		if string(m.summaries[i].ID) == selectedID {
+		if m.summaries[i].ID == selectedID {
 			m.selected = i
 			break
 		}
@@ -718,7 +718,7 @@ func (m *tuiModel) refresh() {
 	}
 }
 
-func findSummary(summaries []store.TicketSummary, want *store.TicketSummary) *store.TicketSummary {
+func findSummary(summaries []missis.TicketSummary, want *missis.TicketSummary) *missis.TicketSummary {
 	if want == nil {
 		return nil
 	}
@@ -820,46 +820,35 @@ func (m *tuiModel) clampStatsOffset() {
 	}
 }
 
-func ticketLines(client *missis.Client, summary store.TicketSummary, width int) ([]string, error) {
+func ticketLines(client *missis.Client, summary missis.TicketSummary, width int) ([]string, error) {
 	now := time.Now().UTC()
-	proj, err := client.BitemporalProjection(context.Background(), summary.ID, now, now)
+	proj, err := client.ShowTicket(context.Background(), summary.Ref, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		return nil, err
 	}
 	lines := []string{
 		"status: " + summary.Status,
 	}
-	pathByID := make(map[model.PartID]string)
-	for path, id := range proj.Paths {
-		pathByID[id] = path
-	}
-	var roots []model.PartID
-	for id, part := range proj.Parts {
-		if part.ParentID != nil {
+	var roots []string
+	for path := range proj.Parts {
+		if path == "title" || path == "status" {
 			continue
 		}
-		if pathByID[id] == "title" || pathByID[id] == "status" {
+		if strings.Contains(path, "/") {
 			continue
 		}
-		roots = append(roots, id)
+		roots = append(roots, path)
 	}
-	sort.Slice(roots, func(i, j int) bool {
-		return pathByID[roots[i]] < pathByID[roots[j]]
-	})
-	for _, id := range roots {
-		lines = append(lines, partSubtree(proj, id, 0, pathByID, width)...)
+	sort.Strings(roots)
+	for _, path := range roots {
+		lines = append(lines, partSubtree(proj, path, 0, width)...)
 	}
 	return lines, nil
 }
 
-func referenceLines(client *missis.Client, summary store.TicketSummary) ([]string, error) {
+func referenceLines(client *missis.Client, summary missis.TicketSummary) ([]string, error) {
 	now := time.Now().UTC()
-	events, err := client.LoadLinkEvents(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	ref := model.Ref{Kind: model.KindTicket, Entity: string(summary.ID)}
-	links, err := model.LinksForRef(events, ref, now, now)
+	links, err := client.ShowReferences(context.Background(), summary.Ref, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		return nil, err
 	}
@@ -868,35 +857,37 @@ func referenceLines(client *missis.Client, summary store.TicketSummary) ([]strin
 	}
 	lines := make([]string, 0, len(links))
 	for _, link := range links {
-		lines = append(lines, fmt.Sprintf("%s %s %s", link.Direction, link.Relation, targetText(link.To)))
+		lines = append(lines, fmt.Sprintf("%s %s %s", link.Direction, link.Relation, link.To))
 	}
 	return lines, nil
 }
 
-func partSubtree(proj *model.Projection, id model.PartID, depth int, pathByID map[model.PartID]string, width int) []string {
-	part := proj.Parts[id]
-	if part == nil {
+func partSubtree(proj missis.TicketProjection, path string, depth int, width int) []string {
+	part, ok := proj.Parts[path]
+	if !ok {
 		return nil
-	}
-	path := pathByID[id]
-	if path == "" {
-		path = part.Name
 	}
 	name := part.DisplayName
 	if name == "" {
 		name = part.Name
 	}
-	if part.Value != nil && part.Value.Kind == model.ValueKindMarkdown {
+	if part.ValueKind == "markdown" {
 		name = part.Name
 		if name == "" {
 			name = part.DisplayName
 		}
 	}
+	if name == "" {
+		name = path
+		if idx := strings.LastIndex(path, "/"); idx >= 0 {
+			name = path[idx+1:]
+		}
+	}
 	indent := strings.Repeat("  ", depth)
 	lines := []string{indent + "▸ " + name}
 	if part.Value != nil {
-		value := valueText(*part.Value)
-		if part.Value.Kind == model.ValueKindMarkdown {
+		value := valueText(part.Value)
+		if part.ValueKind == "markdown" {
 			available := width - depth*2 - 3
 			if available < 20 {
 				available = 20
@@ -909,17 +900,20 @@ func partSubtree(proj *model.Projection, id model.PartID, depth int, pathByID ma
 			lines = append(lines, indent+"   "+valueLine)
 		}
 	}
-	var children []model.PartID
-	for childID, child := range proj.Parts {
-		if child.ParentID != nil && *child.ParentID == id {
-			children = append(children, childID)
+	var children []string
+	prefix := path + "/"
+	for candidate := range proj.Parts {
+		if !strings.HasPrefix(candidate, prefix) {
+			continue
 		}
+		if strings.Contains(candidate[len(prefix):], "/") {
+			continue
+		}
+		children = append(children, candidate)
 	}
-	sort.Slice(children, func(i, j int) bool {
-		return pathByID[children[i]] < pathByID[children[j]]
-	})
-	for _, childID := range children {
-		lines = append(lines, partSubtree(proj, childID, depth+1, pathByID, width)...)
+	sort.Strings(children)
+	for _, childPath := range children {
+		lines = append(lines, partSubtree(proj, childPath, depth+1, width)...)
 	}
 	return lines
 }
@@ -1033,50 +1027,39 @@ func alignTableRows(lines []string) []string {
 	return out
 }
 
-func ticketSummaryParts(client *missis.Client, summary store.TicketSummary) map[string]string {
+func ticketSummaryParts(client *missis.Client, summary missis.TicketSummary) map[string]string {
 	now := time.Now().UTC()
-	proj, err := client.BitemporalProjection(context.Background(), summary.ID, now, now)
+	proj, err := client.ShowTicket(context.Background(), summary.Ref, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		return map[string]string{"error": err.Error()}
 	}
 	out := make(map[string]string)
-	for path, partID := range proj.Paths {
+	for path, part := range proj.Parts {
 		if path == "title" || path == "status" {
 			continue
 		}
-		part := proj.Parts[partID]
-		if part == nil || part.Value == nil {
+		if part.Value == nil {
 			continue
 		}
-		out[path] = valueText(*part.Value)
+		out[path] = valueText(part.Value)
 	}
 	return out
 }
 
-func valueText(value model.Value) string {
-	if value.Text != "" {
-		return value.Text
+func valueText(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []string:
+		return strings.Join(v, ", ")
+	case nil:
+		return ""
+	default:
+		return fmt.Sprint(v)
 	}
-	if len(value.List) > 0 {
-		return strings.Join(value.List, ", ")
-	}
-	if value.Data != nil {
-		return fmt.Sprint(value.Data)
-	}
-	if value.Ref != nil {
-		return targetText(*value.Ref)
-	}
-	return ""
 }
 
-func targetText(ref model.Ref) string {
-	if ref.Entity == "" {
-		return string(ref.Kind)
-	}
-	return string(ref.Kind) + ":" + ref.Entity
-}
-
-func exportTicket(client *missis.Client, summary store.TicketSummary) (string, error) {
+func exportTicket(client *missis.Client, summary missis.TicketSummary) (string, error) {
 	dir := filepath.Join(".", ".missis.d", "exports")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
@@ -1098,28 +1081,8 @@ func exportTicket(client *missis.Client, summary store.TicketSummary) (string, e
 	return dst, os.WriteFile(dst, []byte(b.String()), 0o644)
 }
 
-func setTicketTitle(client *missis.Client, summary store.TicketSummary, title string) error {
-	now := time.Now().UTC()
-	proj, err := client.BitemporalProjection(context.Background(), summary.ID, now, now)
-	if err != nil {
-		return err
-	}
-	partID, ok := proj.Paths["title"]
-	if !ok {
-		return fmt.Errorf("title part not found")
-	}
-	stream := model.Ref{Kind: model.KindTicket, Entity: string(summary.ID)}
-	event := model.Event{
-		ID:          model.EventID(missis.NewID("event")),
-		Stream:      stream,
-		Operation:   model.OpSetValue,
-		Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: []string{"title"}},
-		Value:       model.Value{Kind: model.ValueKindText, Text: title},
-		RecordedAt:  now,
-		EffectiveAt: now,
-		Actor:       model.ActorRef{Kind: "human", ID: "tui", Name: "tui"},
-	}
-	_, err = client.AppendBatch(context.Background(), []model.Event{event}, "", nil, nil)
+func setTicketTitle(client *missis.Client, summary missis.TicketSummary, title string) error {
+	_, err := client.Set(context.Background(), missis.RequestContext{Actor: "tui"}, missis.SetValue{Target: summary.Ref + "/title", Value: title})
 	return err
 }
 

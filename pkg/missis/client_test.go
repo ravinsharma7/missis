@@ -1,4 +1,4 @@
-package missis
+package missis_test
 
 import (
 	"context"
@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ravinsharma7/missis/implementation/model"
+	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
 func TestClientOpenHealthBackupAndSequenceGaps(t *testing.T) {
@@ -15,10 +17,11 @@ func TestClientOpenHealthBackupAndSequenceGaps(t *testing.T) {
 	path := filepath.Join(tmp, "missis.db")
 	backup := filepath.Join(tmp, "backup.db")
 
-	client, err := OpenPath(path)
+	svc, err := application.OpenPath(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
 
 	storeID, err := client.StoreID()
@@ -46,10 +49,11 @@ func TestClientOpenHealthBackupAndSequenceGaps(t *testing.T) {
 func TestClientAppendListProjection(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	client, err := OpenPath(filepath.Join(tmp, "missis.db"))
+	svc, err := application.OpenPath(filepath.Join(tmp, "missis.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
 
 	ticketID := model.TicketID("ticket:test")

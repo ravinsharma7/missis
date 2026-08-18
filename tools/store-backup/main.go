@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/ravinsharma7/missis/implementation/store"
+	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
 func main() {
@@ -13,24 +14,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: store-backup <destination>")
 		os.Exit(1)
 	}
-	src := resolveSource()
-	dst := os.Args[1]
-	s, err := store.Open(src)
+	svc, err := application.Open("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer s.Close()
-	if err := s.Backup(dst); err != nil {
+	client := missis.NewClient(svc)
+	defer client.Close()
+	if err := client.BackupTo(context.Background(), os.Args[1]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-}
-
-func resolveSource() string {
-	if env := os.Getenv("MISSIS_STORE"); env != "" {
-		return env
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "missis", "missis.db")
 }

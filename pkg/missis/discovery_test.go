@@ -201,3 +201,29 @@ func TestResolveStoreEnvBeatsMarkerErrorText(t *testing.T) {
 		t.Fatalf("error should point to the explicit alternatives: %v", err)
 	}
 }
+
+func TestDefaultStorePathVariants(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, goos, local, config, home, want string
+	}{
+		{"windows localappdata", "windows", `C:\Users\u\AppData\Local`, "", "", `C:\Users\u\AppData\Local\missis\missis.db`},
+		{"windows userconfigdir fallback", "windows", "", `C:\Users\u\AppData\Roaming`, "", `C:\Users\u\AppData\Roaming\missis\missis.db`},
+		{"windows legacy xdg fallback", "windows", "", "", `/home/u`, `/home/u/.local/share/missis/missis.db`},
+		{"linux xdg", "linux", "", "", `/home/u`, `/home/u/.local/share/missis/missis.db`},
+		{"darwin xdg", "darwin", "", "", `/Users/u`, `/Users/u/.local/share/missis/missis.db`},
+		{"missing home", "linux", "", "", "", filepath.Join(".", ".missis", "missis.db")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			normalize := func(p string) string {
+				return strings.ReplaceAll(p, "\\", "/")
+			}
+			got := normalize(filepath.Clean(defaultStorePath(tc.goos, tc.local, tc.config, tc.home)))
+			want := normalize(tc.want)
+			if got != want {
+				t.Fatalf("defaultStorePath(%q) = %q, want %q", tc.goos, got, want)
+			}
+		})
+	}
+}

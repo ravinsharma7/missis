@@ -1,49 +1,33 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/ravinsharma7/missis/implementation/store"
+	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
 func main() {
-	path := resolvePath()
-	s, err := store.Open(path)
+	var svc *application.Service
+	var err error
+	if len(os.Args) > 1 {
+		svc, err = application.OpenPath(os.Args[1])
+	} else {
+		svc, err = application.Open("")
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer s.Close()
-
-	storeID, err := s.StoreID()
+	client := missis.NewClient(svc)
+	defer client.Close()
+	manifest, err := client.Manifest(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
-	}
-	headHash, err := s.HeadHash()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	eventCount, err := s.EventCount()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	schemaVersion, err := s.SchemaVersion()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	manifest := map[string]any{
-		"schema_version": schemaVersion,
-		"store_id":       storeID,
-		"head_hash":      headHash,
-		"event_count":    eventCount,
 	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
@@ -51,15 +35,4 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-}
-
-func resolvePath() string {
-	if len(os.Args) > 1 {
-		return os.Args[1]
-	}
-	if env := os.Getenv("MISSIS_STORE"); env != "" {
-		return env
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "missis", "missis.db")
 }

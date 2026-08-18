@@ -1,0 +1,1170 @@
+package application
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/store"
+	"github.com/ravinsharma7/missis/pkg/missis"
+)
+
+// ----- creation workflows -----
+
+func (s *Service) NewTicket(ctx context.Context, req missis.RequestContext, opts missis.NewTicketOptions) (missis.NewTicketResult, error) {
+	req, now := s.normalize(req)
+	ticketID := model.TicketID(missis.NewID("ticket"))
+	result := &missis.NewTicketResult{}
+	if req.IdempotencyKey != "" {
+		replayed, lookupErr := s.LookupIdempotency(req.IdempotencyKey, result)
+		if lookupErr == nil && replayed && result.ID != "" {
+			ticketID = model.TicketID(result.ID)
+		}
+	}
+	batchID := model.BatchID(missis.NewID("batch"))
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	actor := parseActor(req.Actor)
+	events := []model.Event{
+		missis.NewEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actor, now, req.EffectiveAt, batchID, ""),
+		missis.PartEvent(stream, "title", opts.Title, model.ValueKindText, actor, now, req.EffectiveAt, batchID),
+		missis.PartEvent(stream, "status", "open", model.ValueKindStatus, actor, now, req.EffectiveAt, batchID),
+	}
+	if opts.Priority != "" {
+		events = append(events, missis.PartEvent(stream, "priority", opts.Priority, model.ValueKindPriority, actor, now, req.EffectiveAt, batchID))
+	}
+	if len(opts.Types) > 0 {
+		events = append(events, missis.PartEvent(stream, "type", opts.Types, model.ValueKindList, actor, now, req.EffectiveAt, batchID))
+	}
+	if len(opts.Tags) > 0 {
+		events = append(events, missis.PartEvent(stream, "tag", opts.Tags, model.ValueKindList, actor, now, req.EffectiveAt, batchID))
+	}
+	outcome, alias, err := s.AppendTicketBatch(ctx, events, req.IdempotencyKey, result)
+	if err != nil {
+		return missis.NewTicketResult{}, keepStorage(err)
+	}
+	if outcome.Replayed {
+		return *result, nil
+	}
+	if result.Ref == "" {
+		result = &missis.NewTicketResult{
+			Ref:        "#" + strconv.FormatUint(alias, 10),
+			ID:         string(ticketID),
+			Title:      opts.Title,
+			Status:     "open",
+			Project:    stringPtrOrNil(opts.Project),
+			RecordedAt: now.Format(time.RFC3339),
+		}
+	}
+	if req.IdempotencyKey != "" {
+		if err := s.UpdateIdempotencyResult(req.IdempotencyKey, result); err != nil {
+			return missis.NewTicketResult{}, keepStorage(err)
+		}
+	}
+	return *result, nil
+}
+
+func (s *Service) NewEntity(ctx context.Context, req missis.RequestContext, opts missis.EntityOptions) (missis.EntityResult, error) {
+	req, now := s.normalize(req)
+	if opts.Kind != "project" && opts.Kind != "group" {
+		return missis.EntityResult{}, invalidInput("invalid kind: %s", opts.Kind)
+	}
+	if opts.ID == "" {
+		return missis.EntityResult{}, invalidInput("--id is required for project or group")
+	}
+	if err := model.ValidatePathSegments([]string{opts.ID}); err != nil {
+		return missis.EntityResult{}, validation("%v", err)
+	}
+	existing, err := s.LoadEvents(ctx)
+	if err != nil {
+		return missis.EntityResult{}, keepStorage(err)
+	}
+	kind := model.Kind(opts.Kind)
+	for _, event := range existing {
+		if event.Target.Kind == kind && event.Target.Entity == opts.ID {
+			return missis.EntityResult{}, validation("%s already exists: %s", opts.Kind, opts.ID)
+		}
+	}
+	stream := model.Ref{Kind: kind, Entity: opts.ID}
+	event := model.Event{
+		ID:          model.EventID(missis.NewID("event")),
+		Stream:      stream,
+		Operation:   model.OpCreateEntity,
+		Target:      model.Ref{Kind: kind, Entity: opts.ID},
+		Value:       model.Value{Kind: model.ValueKindText, Text: opts.Title},
+		RecordedAt:  now,
+		EffectiveAt: req.EffectiveAt,
+		Actor:       parseActor(req.Actor),
+	}
+	result := &missis.EntityResult{
+		Ref:        opts.Kind + ":" + opts.ID,
+		ID:         opts.Kind + ":" + opts.ID,
+		Title:      opts.Title,
+		Status:     "open",
+		RecordedAt: now.Format(time.RFC3339),
+	}
+	if _, err := s.AppendBatch(ctx, []model.Event{event}, req.IdempotencyKey, nil, result); err != nil {
+		return missis.EntityResult{}, keepStorage(err)
+	}
+	return *result, nil
+}
+
+func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext, opts missis.ImportOptions) (missis.NewTicketResult, error) {
+	req, now := s.normalize(req)
+	parts, err := model.ParseMarkdownParts(opts.Content)
+	if err != nil {
+		return missis.NewTicketResult{}, validation("%v", err)
+	}
+	title := opts.Title
+	if title == "" {
+		for i, part := range parts {
+			if len(part.Path) == 1 && part.Path[0] != "preamble" {
+				title = part.Path[0]
+				parts = append(parts[:i], parts[i+1:]...)
+				break
+			}
+		}
+	}
+	if title == "" {
+		title = artifactTitle(opts.Artifact)
+	}
+	ticketID := model.TicketID(missis.NewID("ticket"))
+	result := &missis.NewTicketResult{}
+	if req.IdempotencyKey != "" {
+		replayed, lookupErr := s.LookupIdempotency(req.IdempotencyKey, result)
+		if lookupErr == nil && replayed && result.ID != "" {
+			ticketID = model.TicketID(result.ID)
+		}
+	}
+	batchID := model.BatchID(missis.NewID("batch"))
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	actor := parseActor(req.Actor)
+	events := []model.Event{
+		missis.NewEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actor, now, req.EffectiveAt, batchID, ""),
+		missis.PartEvent(stream, "title", title, model.ValueKindText, actor, now, req.EffectiveAt, batchID),
+		missis.PartEvent(stream, "status", "open", model.ValueKindStatus, actor, now, req.EffectiveAt, batchID),
+	}
+	events = append(events, buildImportEvents(stream, parts, actor, now, req.EffectiveAt, batchID, opts.Artifact)...)
+	outcome, alias, err := s.AppendTicketBatch(ctx, events, req.IdempotencyKey, result)
+	if err != nil {
+		return missis.NewTicketResult{}, keepStorage(err)
+	}
+	if outcome.Replayed {
+		return *result, nil
+	}
+	if result.Ref == "" {
+		result = &missis.NewTicketResult{
+			Ref:        "#" + strconv.FormatUint(alias, 10),
+			ID:         string(ticketID),
+			Title:      title,
+			Status:     "open",
+			Project:    stringPtrOrNil(opts.Project),
+			RecordedAt: now.Format(time.RFC3339),
+		}
+	}
+	if req.IdempotencyKey != "" {
+		if err := s.UpdateIdempotencyResult(req.IdempotencyKey, result); err != nil {
+			return missis.NewTicketResult{}, keepStorage(err)
+		}
+	}
+	return *result, nil
+}
+
+func (s *Service) ReimportMarkdown(ctx context.Context, req missis.RequestContext, opts missis.ImportOptions) (missis.ImportResult, error) {
+	req, now := s.normalize(req)
+	parts, err := model.ParseMarkdownParts(opts.Content)
+	if err != nil {
+		return missis.ImportResult{}, validation("%v", err)
+	}
+	for i, part := range parts {
+		if len(part.Path) == 1 && part.Path[0] != "preamble" {
+			parts = append(parts[:i], parts[i+1:]...)
+			break
+		}
+	}
+	ticketID, partPath, err := s.resolveTicketRef(ctx, opts.Ref, req.EffectiveAt)
+	if err != nil {
+		return missis.ImportResult{}, err
+	}
+	if len(partPath) != 0 {
+		return missis.ImportResult{}, invalidInput("import target must be a ticket reference")
+	}
+	batchID := model.BatchID(missis.NewID("batch"))
+	actor := parseActor(req.Actor)
+	proj, err := s.CurrentProjection(ctx, ticketID, req.EffectiveAt)
+	if err != nil {
+		return missis.ImportResult{}, keepStorage(err)
+	}
+	events, err := buildReimportEvents(proj, ticketID, parts, actor, now, req.EffectiveAt, batchID, opts.Artifact)
+	if err != nil {
+		return missis.ImportResult{}, validation("%v", err)
+	}
+	if len(events) == 0 {
+		return missis.ImportResult{Ref: opts.Ref, Operation: "import", Value: 0}, nil
+	}
+	result := missis.ImportResult{Ref: opts.Ref, Operation: "import", Value: len(events)}
+	outcome, err := s.AppendBatch(ctx, events, req.IdempotencyKey, nil, &result)
+	if err != nil {
+		return missis.ImportResult{}, keepStorage(err)
+	}
+	if len(outcome.Events) > 0 {
+		last := outcome.Events[len(outcome.Events)-1]
+		result.Event = "@e" + strconv.FormatUint(last.AliasSeq, 10)
+	}
+	return result, nil
+}
+
+// ----- read workflows -----
+
+func (s *Service) ListTicketSummaries(ctx context.Context, effectiveAt time.Time) ([]missis.TicketSummary, error) {
+	if effectiveAt.IsZero() {
+		effectiveAt = s.now()
+	}
+	items, err := s.Store().ListTickets(effectiveAt)
+	if err != nil {
+		return nil, keepStorage(err)
+	}
+	out := make([]missis.TicketSummary, 0, len(items))
+	for _, item := range items {
+		out = append(out, missis.TicketSummary{
+			Ref:        item.Ref,
+			ID:         string(item.ID),
+			Title:      item.Title,
+			Status:     item.Status,
+			RecordedAt: item.RecordedAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *Service) ShowTicket(ctx context.Context, ref string, opts missis.ShowOptions) (missis.TicketProjection, error) {
+	summary, err := s.findTicketSummary(ctx, ref)
+	if err != nil {
+		return missis.TicketProjection{}, err
+	}
+	if opts.EffectiveAt.IsZero() {
+		opts.EffectiveAt = s.now()
+	}
+	if opts.KnownAt.IsZero() {
+		opts.KnownAt = opts.EffectiveAt
+	}
+	proj, err := s.BitemporalProjection(ctx, model.TicketID(summary.ID), opts.EffectiveAt, opts.KnownAt)
+	if err != nil {
+		return missis.TicketProjection{}, keepStorage(err)
+	}
+	parts := make(map[string]missis.PartView)
+	for path, partID := range proj.Paths {
+		part := proj.Parts[partID]
+		if part == nil {
+			continue
+		}
+		parts[path] = missis.PartView{
+			ID:          string(part.ID),
+			Path:        path,
+			Value:       valueOrNilFromPart(part),
+			ValueKind:   string(part.ValueKind),
+			ParentID:    parentIDOrNil(part),
+			CreatedBy:   string(part.CreatedBy),
+			Name:        part.Name,
+			DisplayName: part.DisplayName,
+		}
+	}
+	title, status := projectionTitleStatus(proj)
+	return missis.TicketProjection{
+		Ref:        summary.Ref,
+		ID:         summary.ID,
+		Title:      title,
+		Status:     status,
+		RecordedAt: summary.RecordedAt,
+		Parts:      parts,
+	}, nil
+}
+
+func (s *Service) ShowHistory(ctx context.Context, ref string, opts missis.HistoryOptions) ([]missis.EventView, error) {
+	summary, err := s.findTicketSummary(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	events, err := s.LoadTicketEvents(ctx, model.TicketID(summary.ID))
+	if err != nil {
+		return nil, keepStorage(err)
+	}
+	if opts.EffectiveAt.IsZero() {
+		opts.EffectiveAt = s.now()
+	}
+	if opts.KnownAt.IsZero() {
+		opts.KnownAt = opts.EffectiveAt
+	}
+	out := make([]missis.EventView, 0, len(events))
+	for _, event := range events {
+		if event.EffectiveAt.After(opts.EffectiveAt) || event.RecordedAt.After(opts.KnownAt) {
+			continue
+		}
+		if !opts.Since.IsZero() && event.RecordedAt.Before(opts.Since) {
+			continue
+		}
+		if len(opts.PartPath) > 0 {
+			if event.Target.Kind != model.KindPart || !equalPaths(event.Target.Path, opts.PartPath) {
+				continue
+			}
+		}
+		out = append(out, missis.EventView{
+			ID:          string(event.ID),
+			Alias:       "@e" + strconv.FormatUint(event.AliasSeq, 10),
+			Sequence:    event.Sequence,
+			Operation:   string(event.Operation),
+			Target:      targetText(event.Target),
+			Value:       valueText(event.Value),
+			RecordedAt:  event.RecordedAt,
+			EffectiveAt: event.EffectiveAt,
+			Actor:       event.Actor.ID,
+			Reason:      event.Reason,
+		})
+	}
+	return out, nil
+}
+
+func (s *Service) ShowEvent(ctx context.Context, alias string) (missis.EventView, error) {
+	event, err := s.GetEventByAlias(ctx, alias)
+	if err != nil {
+		return missis.EventView{}, notFound("%v", err)
+	}
+	return missis.EventView{
+		ID:          string(event.ID),
+		Alias:       "@e" + strconv.FormatUint(event.AliasSeq, 10),
+		Sequence:    event.Sequence,
+		Operation:   string(event.Operation),
+		Target:      targetText(event.Target),
+		Value:       valueText(event.Value),
+		RecordedAt:  event.RecordedAt,
+		EffectiveAt: event.EffectiveAt,
+		Actor:       event.Actor.ID,
+		Reason:      event.Reason,
+	}, nil
+}
+
+func (s *Service) ShowReferences(ctx context.Context, ref string, opts missis.ShowOptions) ([]missis.LinkView, error) {
+	if opts.EffectiveAt.IsZero() {
+		opts.EffectiveAt = s.now()
+	}
+	if opts.KnownAt.IsZero() {
+		opts.KnownAt = opts.EffectiveAt
+	}
+	target, err := s.resolveAnyRef(ctx, ref, opts.EffectiveAt)
+	if err != nil {
+		return nil, err
+	}
+	events, err := s.LoadLinkEvents(ctx)
+	if err != nil {
+		return nil, keepStorage(err)
+	}
+	links, err := model.LinksForRef(events, target, opts.EffectiveAt, opts.KnownAt)
+	if err != nil {
+		return nil, keepStorage(err)
+	}
+	out := make([]missis.LinkView, 0, len(links))
+	for _, link := range links {
+		out = append(out, missis.LinkView{
+			From:      targetText(link.From),
+			Relation:  link.Relation,
+			To:        targetText(link.To),
+			Direction: link.Direction,
+			Origin:    link.Origin,
+			CreatedBy: string(link.CreatedBy),
+		})
+	}
+	return out, nil
+}
+
+func (s *Service) ShowLineage(ctx context.Context, ref string, opts missis.LineageOptions) ([]missis.LineageEdge, error) {
+	if opts.EffectiveAt.IsZero() {
+		opts.EffectiveAt = s.now()
+	}
+	if opts.KnownAt.IsZero() {
+		opts.KnownAt = opts.EffectiveAt
+	}
+	target, err := s.resolveAnyRef(ctx, ref, opts.EffectiveAt)
+	if err != nil {
+		return nil, err
+	}
+	events, err := s.LoadLinkEvents(ctx)
+	if err != nil {
+		return nil, keepStorage(err)
+	}
+	relationSet := make(map[string]bool)
+	for _, relation := range opts.Relations {
+		relation = strings.TrimSpace(relation)
+		if relation == "" {
+			continue
+		}
+		if !model.ValidRelation(relation) {
+			return nil, validation("unsupported relation: %s", relation)
+		}
+		relationSet[relation] = true
+	}
+	graph, err := model.BuildLineageGraph(events, opts.EffectiveAt, opts.KnownAt)
+	if err != nil {
+		return nil, keepStorage(err)
+	}
+	edges, err := graph.Walk(target, opts.Direction, opts.Depth, relationSet)
+	if err != nil {
+		return nil, invalidInput("%v", err)
+	}
+	out := make([]missis.LineageEdge, 0, len(edges))
+	for _, edge := range edges {
+		out = append(out, missis.LineageEdge{
+			From:      targetText(edge.From),
+			Relation:  edge.Relation,
+			To:        targetText(edge.To),
+			Direction: edge.Direction,
+			Depth:     edge.Depth,
+			Origin:    edge.Origin,
+			CreatedBy: string(edge.CreatedBy),
+		})
+	}
+	return out, nil
+}
+
+func (s *Service) ResolveAnyRef(ctx context.Context, ref string, effectiveAt time.Time) (string, error) {
+	resolved, err := s.resolveAnyRef(ctx, ref, effectiveAt)
+	if err != nil {
+		return "", err
+	}
+	return targetText(resolved), nil
+}
+
+func (s *Service) Search(ctx context.Context, opts missis.SearchOptions) ([]missis.TicketSummary, error) {
+	return s.ListTicketsFiltered(ctx, missis.ListFilter{
+		Project:     opts.Project,
+		Group:       opts.Group,
+		Status:      opts.Status,
+		Type:        opts.Type,
+		Tag:         opts.Tag,
+		Query:       opts.Query,
+		EffectiveAt: opts.EffectiveAt,
+		KnownAt:     opts.KnownAt,
+	})
+}
+
+func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFilter) ([]missis.TicketSummary, error) {
+	if filter.EffectiveAt.IsZero() {
+		filter.EffectiveAt = s.now()
+	}
+	if filter.KnownAt.IsZero() {
+		filter.KnownAt = filter.EffectiveAt
+	}
+	summaries, err := s.ListTicketSummaries(ctx, filter.EffectiveAt)
+	if err != nil {
+		return nil, err
+	}
+	var linkEvents []model.Event
+	if filter.Project != "" || filter.Group != "" {
+		linkEvents, err = s.LoadLinkEvents(ctx)
+		if err != nil {
+			return nil, keepStorage(err)
+		}
+	}
+	projectTicketIDs := make(map[model.TicketID]bool)
+	if filter.Project != "" {
+		for _, projectID := range strings.Split(filter.Project, ",") {
+			links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: strings.TrimSpace(projectID)}, filter.EffectiveAt, filter.KnownAt)
+			if err != nil {
+				return nil, keepStorage(err)
+			}
+			for _, link := range links {
+				if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
+					projectTicketIDs[model.TicketID(link.To.Entity)] = true
+				}
+			}
+		}
+	}
+	if filter.Group != "" {
+		for _, groupID := range strings.Split(filter.Group, ",") {
+			groupRef := model.Ref{Kind: model.KindGroup, Entity: strings.TrimSpace(groupID)}
+			groupLinks, err := model.LinksForRef(linkEvents, groupRef, filter.EffectiveAt, filter.KnownAt)
+			if err != nil {
+				return nil, keepStorage(err)
+			}
+			projectIDs := make(map[string]bool)
+			for _, link := range groupLinks {
+				if link.Direction == "asserted" && (link.Relation == "contains" || link.Relation == "governs") && link.To.Kind == model.KindProject {
+					projectIDs[link.To.Entity] = true
+				}
+			}
+			for projectID := range projectIDs {
+				links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: projectID}, filter.EffectiveAt, filter.KnownAt)
+				if err != nil {
+					return nil, keepStorage(err)
+				}
+				for _, link := range links {
+					if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
+						projectTicketIDs[model.TicketID(link.To.Entity)] = true
+					}
+				}
+			}
+		}
+	}
+	result := make([]missis.TicketSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		if filter.Status != "" && !csvContains(filter.Status, summary.Status) {
+			continue
+		}
+		if (filter.Project != "" || filter.Group != "") && !projectTicketIDs[model.TicketID(summary.ID)] {
+			continue
+		}
+		proj, err := s.BitemporalProjection(ctx, model.TicketID(summary.ID), filter.EffectiveAt, filter.KnownAt)
+		if err != nil {
+			return nil, keepStorage(err)
+		}
+		if filter.Query != "" {
+			text := summary.Title + " " + projectionText(proj)
+			if !matchesAllTokens(text, filter.Query) {
+				continue
+			}
+		}
+		if filter.Type != "" && !partHasValue(proj, "type", filter.Type) {
+			continue
+		}
+		if filter.Tag != "" && !partHasValue(proj, "tag", filter.Tag) {
+			continue
+		}
+		result = append(result, summary)
+	}
+	return result, nil
+}
+
+// ----- mutation workflows -----
+
+type setMode int
+
+const (
+	modeSet setMode = iota
+	modeAdd
+	modeRetract
+	modeRetractSubtree
+	modeRename
+	modeMove
+	modeSupersede
+)
+
+type setSpec struct {
+	mode       setMode
+	target     string
+	value      string
+	name       string
+	parent     string
+	supersedes string
+	reason     string
+}
+
+func (s *Service) Set(ctx context.Context, req missis.RequestContext, mutation missis.Mutation) (missis.SetResult, error) {
+	req, now := s.normalize(req)
+	var spec setSpec
+	switch m := mutation.(type) {
+	case missis.SetValue:
+		spec = setSpec{mode: modeSet, target: m.Target, value: m.Value, reason: m.Reason}
+	case missis.AddValue:
+		spec = setSpec{mode: modeAdd, target: m.Target, value: m.Value, reason: m.Reason}
+	case missis.RetractValue:
+		spec = setSpec{mode: modeRetract, target: m.Target, reason: m.Reason}
+	case missis.RetractSubtree:
+		spec = setSpec{mode: modeRetractSubtree, target: m.Target, reason: m.Reason}
+	case missis.RenamePart:
+		spec = setSpec{mode: modeRename, target: m.Target, name: m.Name, reason: m.Reason}
+	case missis.MovePart:
+		spec = setSpec{mode: modeMove, target: m.Target, parent: m.Parent, reason: m.Reason}
+	case missis.SupersedeEvent:
+		spec = setSpec{mode: modeSupersede, target: m.Target, value: m.Value, supersedes: m.Supersedes, reason: m.Reason}
+	default:
+		return missis.SetResult{}, invalidInput("unsupported mutation")
+	}
+	return s.applySet(ctx, req, now, parseActor(req.Actor), model.BatchID(missis.NewID("batch")), spec)
+}
+
+func (s *Service) applySet(ctx context.Context, req missis.RequestContext, now time.Time, actor model.ActorRef, batchID model.BatchID, spec setSpec) (missis.SetResult, error) {
+	var (
+		ticketID       model.TicketID
+		partID         model.PartID
+		currentPath    []string
+		creationEvents []model.Event
+		partExisted    bool
+		stream         model.Ref
+	)
+	requiresExisting := spec.mode == modeRetract || spec.mode == modeRetractSubtree ||
+		spec.mode == modeRename || spec.mode == modeMove
+	if requiresExisting {
+		var err error
+		ticketID, partID, currentPath, err = s.resolvePartRef(ctx, spec.target, req.EffectiveAt)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		partExisted = true
+		stream = model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	} else {
+		var err error
+		ticketID, currentPath, err = s.resolveTicketRef(ctx, spec.target, req.EffectiveAt)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		if len(currentPath) == 0 {
+			return missis.SetResult{}, invalidInput("part reference required")
+		}
+		stream = model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+		creationEvents, partID, partExisted, err = s.ensurePartPath(ctx, ticketID, currentPath, actor, now, req.EffectiveAt, stream, batchID)
+		if err != nil {
+			return missis.SetResult{}, keepStorage(err)
+		}
+	}
+	target := model.Ref{Kind: model.KindPart, Entity: string(partID), Path: currentPath}
+	event := model.Event{
+		Stream:      stream,
+		Target:      target,
+		RecordedAt:  now,
+		EffectiveAt: req.EffectiveAt,
+		Actor:       actor,
+		Reason:      spec.reason,
+		BatchID:     &batchID,
+	}
+	switch spec.mode {
+	case modeRetractSubtree:
+		event.Operation = model.OpRetractSubtree
+	case modeRetract:
+		event.Operation = model.OpRetractValue
+	case modeRename:
+		if err := model.ValidatePathSegments([]string{spec.name}); err != nil {
+			return missis.SetResult{}, validation("%v", err)
+		}
+		event.Operation = model.OpRenamePart
+		event.Value = model.Value{Kind: model.ValueKindText, Text: spec.name}
+	case modeMove:
+		parentRef, err := s.resolveParentRef(ctx, spec.parent, ticketID, req.EffectiveAt)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		event.Operation = model.OpMovePart
+		event.Value = model.Value{Ref: &parentRef}
+	case modeSupersede:
+		oldEvent, err := s.GetEventByAlias(ctx, spec.supersedes)
+		if err != nil {
+			return missis.SetResult{}, notFound("%v", err)
+		}
+		event.Supersedes = append(event.Supersedes, oldEvent.ID)
+		event.Operation = model.OpSupersedeEvent
+		valueKind := inferValueKind(currentPath, spec.value)
+		event.Value = model.Value{Kind: valueKind, Text: spec.value}
+		if valueKind == model.ValueKindList || valueKind == model.ValueKindJSON {
+			event.Value.Data = spec.value
+		}
+	default:
+		valueKind := inferValueKind(currentPath, spec.value)
+		if spec.mode == modeAdd {
+			event.Operation = model.OpAddValue
+			event.Value = model.Value{Kind: model.ValueKindList, Text: spec.value}
+			event.Value.Data = spec.value
+		} else {
+			event.Operation = model.OpSetValue
+			event.Value = model.Value{Kind: valueKind, Text: spec.value}
+			if valueKind == model.ValueKindList || valueKind == model.ValueKindJSON {
+				event.Value.Data = spec.value
+			}
+		}
+	}
+	if req.Because != "" {
+		causeRef, err := s.parseReference(ctx, req.Because, ticketID, req.EffectiveAt)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		event.Causes = append(event.Causes, causeRef)
+	}
+	if spec.mode != modeRetract && spec.mode != modeRetractSubtree &&
+		spec.mode != modeRename && spec.mode != modeMove {
+		if err := validateStatusSet(currentPath, spec.value, spec.reason); err != nil {
+			return missis.SetResult{}, err
+		}
+	}
+	var preconditions []store.Precondition
+	if req.IfCurrent != "" {
+		currentEvent, err := s.GetEventByAlias(ctx, req.IfCurrent)
+		if err != nil {
+			return missis.SetResult{}, notFound("%v", err)
+		}
+		if !partExisted {
+			return missis.SetResult{}, conflict(fmt.Errorf("expected current event on new part"))
+		}
+		preconditions = append(preconditions, store.Precondition{
+			TargetEntity:         string(partID),
+			ExpectedCurrentEvent: currentEvent.ID,
+		})
+	}
+	result := missis.SetResult{
+		Ref:       spec.target,
+		Operation: string(event.Operation),
+		Value:     valueOrNil(event.Value),
+	}
+	outcome, err := s.AppendBatch(ctx, append(creationEvents, event), req.IdempotencyKey, preconditions, &result)
+	if err != nil {
+		return missis.SetResult{}, keepStorage(err)
+	}
+	if len(outcome.Events) > 0 {
+		last := outcome.Events[len(outcome.Events)-1]
+		result.Event = "@e" + strconv.FormatUint(last.AliasSeq, 10)
+	}
+	return result, nil
+}
+
+func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts missis.LinkOptions) (missis.SetResult, error) {
+	req, now := s.normalize(req)
+	if !opts.Add && !opts.Retract {
+		return missis.SetResult{}, invalidInput("link mutation requires --add or --retract")
+	}
+	if !model.ValidRelation(opts.Relation) {
+		return missis.SetResult{}, validation("unsupported relation: %s", opts.Relation)
+	}
+	scope := strings.HasPrefix(opts.Ref, "project:") || strings.HasPrefix(opts.Ref, "group:")
+	baseRef := strings.TrimSuffix(opts.Ref, "/links")
+	var fromRef, toRef model.Ref
+	var stream model.Ref
+	var err error
+	if scope {
+		fromRef, err = s.resolveAnyRef(ctx, baseRef, req.EffectiveAt)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		stream = model.Ref{Kind: fromRef.Kind, Entity: fromRef.Entity}
+	} else {
+		ticketID, _, resolveErr := s.resolveTicketRef(ctx, opts.Ref, req.EffectiveAt)
+		if resolveErr != nil {
+			return missis.SetResult{}, resolveErr
+		}
+		fromRef, err = s.resolveAnyRef(ctx, baseRef, req.EffectiveAt)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		stream = model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	}
+	toRef, err = s.resolveAnyRef(ctx, opts.Target, req.EffectiveAt)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
+	operation := model.OpAssertLink
+	if opts.Retract {
+		operation = model.OpRetractLink
+	}
+	event := model.Event{
+		Stream:      stream,
+		Operation:   operation,
+		Target:      fromRef,
+		Value:       model.Value{Text: opts.Relation, Ref: &toRef},
+		RecordedAt:  now,
+		EffectiveAt: req.EffectiveAt,
+		Actor:       parseActor(req.Actor),
+		Reason:      opts.Reason,
+	}
+	result := missis.SetResult{
+		Ref:       opts.Ref,
+		Operation: string(operation),
+		Value:     opts.Relation + ":" + opts.Target,
+	}
+	outcome, err := s.AppendBatch(ctx, []model.Event{event}, req.IdempotencyKey, nil, &result)
+	if err != nil {
+		return missis.SetResult{}, keepStorage(err)
+	}
+	if len(outcome.Events) > 0 {
+		last := outcome.Events[len(outcome.Events)-1]
+		result.Event = "@e" + strconv.FormatUint(last.AliasSeq, 10)
+	}
+	return result, nil
+}
+
+// ----- shared helpers -----
+
+func (s *Service) findTicketSummary(ctx context.Context, ref string) (missis.TicketSummary, error) {
+	baseRef := strings.SplitN(ref, "/", 2)[0]
+	summaries, err := s.ListTicketSummaries(ctx, s.now())
+	if err != nil {
+		return missis.TicketSummary{}, err
+	}
+	short := strings.TrimPrefix(baseRef, "#")
+	for _, summary := range summaries {
+		if summary.Ref == baseRef || summary.Ref == "#"+short || summary.ID == short || summary.ID == baseRef {
+			return summary, nil
+		}
+	}
+	return missis.TicketSummary{}, notFound("ticket not found: %s", ref)
+}
+
+func (s *Service) resolveTicketRef(ctx context.Context, ref string, effectiveAt time.Time) (model.TicketID, []string, error) {
+	clean := strings.TrimPrefix(ref, "#")
+	parts := strings.Split(clean, "/")
+	short := parts[0]
+	summaries, err := s.ListTickets(ctx, effectiveAt)
+	if err != nil {
+		return "", nil, keepStorage(err)
+	}
+	var ticketID model.TicketID
+	for _, summary := range summaries {
+		if summary.Ref == "#"+short || strconv.FormatUint(summary.Number, 10) == short || string(summary.ID) == short {
+			ticketID = summary.ID
+			break
+		}
+	}
+	if ticketID == "" {
+		if strings.HasPrefix(short, "ticket:") {
+			ticketID = model.TicketID(short)
+		} else {
+			return "", nil, notFound("ticket not found: %s", short)
+		}
+	}
+	var path []string
+	if len(parts) > 1 {
+		path = parts[1:]
+	}
+	return ticketID, path, nil
+}
+
+func (s *Service) resolvePartRef(ctx context.Context, ref string, effectiveAt time.Time) (model.TicketID, model.PartID, []string, error) {
+	if strings.HasPrefix(ref, "part:") {
+		partID := model.PartID(strings.TrimPrefix(ref, "part:"))
+		ticketID, err := s.findTicketForPart(ctx, partID)
+		if err != nil {
+			return "", "", nil, err
+		}
+		proj, err := s.CurrentProjection(ctx, ticketID, effectiveAt)
+		if err != nil {
+			return "", "", nil, keepStorage(err)
+		}
+		path := currentPathForPart(proj, partID)
+		return ticketID, partID, path, nil
+	}
+	ticketID, path, err := s.resolveTicketRef(ctx, ref, effectiveAt)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if len(path) == 0 {
+		return "", "", nil, notFound("part reference required")
+	}
+	proj, err := s.CurrentProjection(ctx, ticketID, effectiveAt)
+	if err != nil {
+		return "", "", nil, keepStorage(err)
+	}
+	key := strings.Join(path, "/")
+	partID, ok := proj.Paths[key]
+	if !ok {
+		return "", "", nil, notFound("part path not found: %s", key)
+	}
+	return ticketID, partID, path, nil
+}
+
+func (s *Service) ensurePartPath(ctx context.Context, ticketID model.TicketID, path []string, actor model.ActorRef, recordedAt, effectiveAt time.Time, stream model.Ref, batchID model.BatchID) ([]model.Event, model.PartID, bool, error) {
+	proj, err := s.CurrentProjection(ctx, ticketID, effectiveAt)
+	if err != nil {
+		return nil, "", false, keepStorage(err)
+	}
+	var (
+		parentID    *model.PartID
+		events      []model.Event
+		partID      model.PartID
+		existed     = true
+		currentPath []string
+	)
+	for _, segment := range path {
+		currentPath = append(currentPath, segment)
+		key := strings.Join(currentPath, "/")
+		if id, ok := proj.Paths[key]; ok {
+			parentID = &id
+			partID = id
+			continue
+		}
+		existed = false
+		newIDValue := model.PartID(missis.NewID("part"))
+		target := model.Ref{Kind: model.KindPart, Entity: string(newIDValue), Path: append([]string(nil), currentPath...)}
+		var parentRef *model.Ref
+		if parentID != nil {
+			parentRef = &model.Ref{Kind: model.KindPart, Entity: string(*parentID)}
+		}
+		event := model.Event{
+			ID:          model.EventID(missis.NewID("event")),
+			Stream:      stream,
+			Operation:   model.OpCreatePart,
+			Target:      target,
+			RecordedAt:  recordedAt,
+			EffectiveAt: effectiveAt,
+			Actor:       actor,
+			BatchID:     &batchID,
+		}
+		if parentRef != nil {
+			event.Value = model.Value{Ref: parentRef}
+		}
+		events = append(events, event)
+		parentID = &newIDValue
+		partID = newIDValue
+	}
+	return events, partID, existed, nil
+}
+
+func (s *Service) findTicketForPart(ctx context.Context, partID model.PartID) (model.TicketID, error) {
+	events, err := s.LoadEvents(ctx)
+	if err != nil {
+		return "", keepStorage(err)
+	}
+	for _, event := range events {
+		if event.Target.Kind == model.KindPart && event.Target.Entity == string(partID) {
+			return model.TicketID(event.Stream.Entity), nil
+		}
+	}
+	return "", notFound("part not found: %s", partID)
+}
+
+func (s *Service) resolveParentRef(ctx context.Context, ref string, ticketID model.TicketID, effectiveAt time.Time) (model.Ref, error) {
+	if strings.HasPrefix(ref, "part:") {
+		return model.Ref{Kind: model.KindPart, Entity: strings.TrimPrefix(ref, "part:")}, nil
+	}
+	_, partID, _, err := s.resolvePartRef(ctx, ref, effectiveAt)
+	if err != nil {
+		return model.Ref{}, err
+	}
+	return model.Ref{Kind: model.KindPart, Entity: string(partID)}, nil
+}
+
+func (s *Service) parseReference(ctx context.Context, ref string, ticketID model.TicketID, effectiveAt time.Time) (model.Ref, error) {
+	if strings.HasPrefix(ref, "part:") {
+		return model.Ref{Kind: model.KindPart, Entity: strings.TrimPrefix(ref, "part:")}, nil
+	}
+	if strings.HasPrefix(ref, "@") {
+		event, err := s.GetEventByAlias(ctx, ref)
+		if err != nil {
+			return model.Ref{}, notFound("%v", err)
+		}
+		return model.Ref{Kind: model.KindEvent, Entity: string(event.ID)}, nil
+	}
+	_, partID, _, err := s.resolvePartRef(ctx, ref, effectiveAt)
+	if err != nil {
+		return model.Ref{}, err
+	}
+	return model.Ref{Kind: model.KindPart, Entity: string(partID)}, nil
+}
+
+func (s *Service) resolveAnyRef(ctx context.Context, ref string, effectiveAt time.Time) (model.Ref, error) {
+	if strings.HasPrefix(ref, "part:") {
+		return model.Ref{Kind: model.KindPart, Entity: strings.TrimPrefix(ref, "part:")}, nil
+	}
+	if strings.HasPrefix(ref, "ticket:") {
+		return model.Ref{Kind: model.KindTicket, Entity: strings.TrimPrefix(ref, "ticket:")}, nil
+	}
+	if strings.HasPrefix(ref, "project:") {
+		return model.Ref{Kind: model.KindProject, Entity: strings.TrimPrefix(ref, "project:")}, nil
+	}
+	if strings.HasPrefix(ref, "group:") {
+		return model.Ref{Kind: model.KindGroup, Entity: strings.TrimPrefix(ref, "group:")}, nil
+	}
+	if strings.HasPrefix(ref, "@") {
+		event, err := s.GetEventByAlias(ctx, ref)
+		if err != nil {
+			return model.Ref{}, notFound("%v", err)
+		}
+		return model.Ref{Kind: model.KindEvent, Entity: string(event.ID)}, nil
+	}
+	if strings.HasPrefix(ref, "#") {
+		ticket, path, err := s.resolveTicketRef(ctx, ref, effectiveAt)
+		if err != nil {
+			return model.Ref{}, err
+		}
+		if len(path) == 0 {
+			return model.Ref{Kind: model.KindTicket, Entity: string(ticket)}, nil
+		}
+		_, partID, _, err := s.resolvePartRef(ctx, ref, effectiveAt)
+		if err != nil {
+			return model.Ref{}, err
+		}
+		return model.Ref{Kind: model.KindPart, Entity: string(partID), Path: path}, nil
+	}
+	return model.Ref{}, notFound("unsupported reference: %s", ref)
+}
+
+func parseActor(value string) model.ActorRef {
+	kind := "human"
+	if idx := strings.IndexByte(value, '/'); idx > 0 {
+		kind = value[:idx]
+	}
+	return model.ActorRef{Kind: kind, ID: value, Name: value}
+}
+
+func artifactTitle(artifact string) string {
+	if artifact == "artifact:stdin" {
+		return "stdin"
+	}
+	if strings.HasPrefix(artifact, "artifact:") {
+		return filepath.Base(strings.TrimPrefix(artifact, "artifact:"))
+	}
+	return "stdin"
+}
+
+func stringPtrOrNil(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func inferValueKind(path []string, value string) model.ValueKind {
+	if len(path) == 0 {
+		return model.ValueKindText
+	}
+	switch path[len(path)-1] {
+	case "status":
+		return model.ValueKindStatus
+	case "priority":
+		return model.ValueKindPriority
+	default:
+		if strings.HasPrefix(strings.TrimSpace(value), "{") || strings.HasPrefix(strings.TrimSpace(value), "[") {
+			return model.ValueKindJSON
+		}
+		return model.ValueKindText
+	}
+}
+
+func validateStatusSet(path []string, value, reason string) error {
+	if len(path) == 0 || path[len(path)-1] != "status" {
+		return nil
+	}
+	switch value {
+	case "open", "doing", "done":
+		return nil
+	case "blocked":
+		if strings.TrimSpace(reason) == "" {
+			return validation("blocked status requires a reason")
+		}
+		return nil
+	default:
+		return validation("invalid status: %s", value)
+	}
+}
+
+func csvContains(csv, value string) bool {
+	for _, candidate := range strings.Split(csv, ",") {
+		if strings.EqualFold(strings.TrimSpace(candidate), value) {
+			return true
+		}
+	}
+	return false
+}
+
+func projectionText(proj *model.Projection) string {
+	var b strings.Builder
+	for _, part := range proj.Parts {
+		if part == nil || part.Value == nil {
+			continue
+		}
+		b.WriteString(fmt.Sprint(valueText(*part.Value)))
+		b.WriteByte(' ')
+	}
+	return b.String()
+}
+
+func projectionTitleStatus(proj *model.Projection) (string, string) {
+	var title, status string
+	if id, ok := proj.Paths["title"]; ok {
+		if part := proj.Parts[id]; part != nil && part.Value != nil {
+			title = part.Value.Text
+		}
+	}
+	if id, ok := proj.Paths["status"]; ok {
+		if part := proj.Parts[id]; part != nil && part.Value != nil {
+			status = part.Value.Text
+		}
+	}
+	return title, status
+}
+
+func partHasValue(proj *model.Projection, path, want string) bool {
+	if want == "" {
+		return true
+	}
+	partID, ok := proj.Paths[path]
+	if !ok {
+		return false
+	}
+	part := proj.Parts[partID]
+	if part == nil || part.Value == nil {
+		return false
+	}
+	if len(part.Value.List) > 0 {
+		for _, value := range part.Value.List {
+			for _, candidate := range strings.Split(want, ",") {
+				if strings.EqualFold(value, strings.TrimSpace(candidate)) {
+					return true
+				}
+			}
+		}
+	}
+	for _, candidate := range strings.Split(want, ",") {
+		if strings.EqualFold(part.Value.Text, strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAllTokens(text, query string) bool {
+	text = strings.ToLower(text)
+	for _, token := range strings.Fields(strings.ToLower(query)) {
+		if !strings.Contains(text, token) {
+			return false
+		}
+	}
+	return true
+}
+
+func targetText(ref model.Ref) string {
+	if len(ref.Path) > 0 {
+		return strings.Join(ref.Path, "/")
+	}
+	entity := ref.Entity
+	if strings.HasPrefix(entity, string(ref.Kind)+":") {
+		return entity
+	}
+	return string(ref.Kind) + ":" + entity
+}
+
+func valueText(value model.Value) any {
+	if value.Text != "" {
+		return value.Text
+	}
+	if len(value.List) > 0 {
+		return value.List
+	}
+	if value.Data != nil {
+		return value.Data
+	}
+	if value.Ref != nil {
+		return value.Ref
+	}
+	return nil
+}
+
+func valueOrNil(value model.Value) any {
+	if value.Kind == "" && value.Text == "" && value.Data == nil && value.Ref == nil {
+		return nil
+	}
+	return valueText(value)
+}
+
+func valueOrNilFromPart(part *model.Part) any {
+	if part == nil || part.Value == nil {
+		return nil
+	}
+	if part.Value.Text == "" && part.Value.Data == nil && len(part.Value.List) == 0 {
+		return nil
+	}
+	return valueText(*part.Value)
+}
+
+func parentIDOrNil(part *model.Part) any {
+	if part == nil || part.ParentID == nil {
+		return nil
+	}
+	return string(*part.ParentID)
+}

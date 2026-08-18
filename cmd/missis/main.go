@@ -9,15 +9,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/ravinsharma7/missis/implementation/model"
-	"github.com/ravinsharma7/missis/implementation/store"
+	stdctx "context"
+
+	"github.com/ravinsharma7/missis/internal/application"
 	"github.com/ravinsharma7/missis/pkg/missis"
+	"github.com/ravinsharma7/missis/pkg/missis/render"
 )
 
 const (
@@ -147,6 +149,11 @@ func buildVersion() (string, string) {
 // storePermissionWarnings reports observable permission problems on the store
 // file so a redirected or shared store is visible instead of silent.
 func storePermissionWarnings(path string) []string {
+	// Private-by-default is POSIX-scoped; Windows relies on user-profile ACLs
+	// and mode-bit warnings do not apply (ticket #55).
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	var warnings []string
 	if fi, err := os.Stat(path); err == nil {
 		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
@@ -569,11 +576,12 @@ Rules:
 			return exitStorage
 		}
 	}
-	client, err := missis.OpenPath(absTarget)
+	svc, err := application.OpenPath(absTarget)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
 	if jsonMode {
 		writeJSON(map[string]string{"status": "initialized", "store_path": absTarget})
@@ -722,16 +730,14 @@ func runNew(args []string) int {
 		printError(fmt.Errorf("title is required for missis new"), exitInvalid, jsonMode, nil)
 		return exitInvalid
 	}
-	client, err := missis.Open(storeFlag)
+	svc, err := application.Open(storeFlag)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
-	db := client.Store()
-
-	recordedAt := time.Now().UTC()
-	effectiveTime := recordedAt
+	effectiveTime := time.Now().UTC()
 	if effectiveAt != "" {
 		effectiveTime, err = parseTime(effectiveAt)
 		if err != nil {
@@ -739,6 +745,8 @@ func runNew(args []string) int {
 			return exitInvalid
 		}
 	}
+	ctx := stdctx.Background()
+	req := missis.RequestContext{Actor: actor, EffectiveAt: effectiveTime, IdempotencyKey: idemKey}
 
 	if kind != "" {
 		if kind != "project" && kind != "group" {
@@ -749,41 +757,15 @@ func runNew(args []string) int {
 			printError(fmt.Errorf("--id is required for project or group"), exitInvalid, jsonMode, nil)
 			return exitInvalid
 		}
-		if err := model.ValidatePathSegments([]string{id}); err != nil {
-			printError(err, exitInvalid, jsonMode, nil)
-			return exitInvalid
-		}
-		existing, err := db.LoadEvents()
+		result, err := client.NewEntity(ctx, req, missis.EntityOptions{Kind: kind, ID: id, Title: title})
 		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
-		}
-		for _, event := range existing {
-			if event.Target.Kind == model.Kind(kind) && event.Target.Entity == id {
-				printError(fmt.Errorf("%s already exists: %s", kind, id), exitValidation, jsonMode, nil)
-				return exitValidation
-			}
-		}
-		stream := model.Ref{Kind: model.Kind(kind), Entity: id}
-		event := model.Event{
-			ID:          model.EventID(missis.NewID("event")),
-			Stream:      stream,
-			Operation:   model.OpCreateEntity,
-			Target:      model.Ref{Kind: model.Kind(kind), Entity: id},
-			Value:       model.Value{Kind: model.ValueKindText, Text: fs.Arg(0)},
-			RecordedAt:  recordedAt,
-			EffectiveAt: effectiveTime,
-			Actor:       parseActor(actor),
-		}
-		result := newResult{Ref: kind + ":" + id, ID: kind + ":" + id, Title: fs.Arg(0), Status: "open", RecordedAt: recordedAt.Format(time.RFC3339)}
-		if _, err := db.AppendBatch([]model.Event{event}, idemKey, nil, &result); err != nil {
-			printError(err, mapStoreError(err), jsonMode, nil)
-			return mapStoreError(err)
+			printError(err, mapError(err), jsonMode, nil)
+			return mapError(err)
 		}
 		if jsonMode {
 			writeJSON(result)
 		} else {
-			fmt.Printf("%s:%s  %s\n", kind, id, fs.Arg(0))
+			fmt.Printf("%s:%s  %s\n", kind, id, title)
 		}
 		return exitSuccess
 	}
@@ -794,128 +776,27 @@ func runNew(args []string) int {
 			printError(err, exitInvalid, jsonMode, nil)
 			return exitInvalid
 		}
-		parts, err := model.ParseMarkdownParts(content)
+		result, err := client.ImportMarkdown(ctx, req, missis.ImportOptions{Title: title, Content: content, Artifact: artifact, Project: project})
 		if err != nil {
-			printError(err, exitValidation, jsonMode, nil)
-			return exitValidation
+			printError(err, mapError(err), jsonMode, nil)
+			return mapError(err)
 		}
-		title := fs.Arg(0)
-		if title == "" {
-			for i, part := range parts {
-				if len(part.Path) == 1 && part.Path[0] != "preamble" {
-					title = part.Path[0]
-					parts = append(parts[:i], parts[i+1:]...)
-					break
-				}
-			}
-		}
-		if title == "" {
-			if fromFile != "" {
-				title = filepath.Base(fromFile)
-			} else {
-				title = "stdin"
-			}
-		}
-		ticketID := model.TicketID(missis.NewID("ticket"))
-		batchID := model.BatchID(missis.NewID("batch"))
-		stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
-		actorRef := parseActor(actor)
-		events := []model.Event{
-			missis.NewEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actorRef, recordedAt, effectiveTime, batchID, ""),
-			missis.PartEvent(stream, "title", title, model.ValueKindText, actorRef, recordedAt, effectiveTime, batchID),
-			missis.PartEvent(stream, "status", "open", model.ValueKindStatus, actorRef, recordedAt, effectiveTime, batchID),
-		}
-		events = append(events, buildImportEvents(stream, parts, actorRef, recordedAt, effectiveTime, batchID, artifact)...)
-		result := newResult{}
-		outcome, alias, err := db.AppendTicketBatch(events, idemKey, &result)
-		if err != nil {
-			printError(err, mapStoreError(err), jsonMode, nil)
-			return mapStoreError(err)
-		}
-		if outcome.Replayed {
-			writeNewResult(jsonMode, result)
-			return exitSuccess
-		}
-		result = newResult{Ref: "#" + strconv.FormatUint(alias, 10), ID: string(ticketID), Title: title, Status: "open", Project: stringPtrOrNil(project), RecordedAt: recordedAt.Format(time.RFC3339)}
-		if idemKey != "" {
-			_ = db.UpdateIdempotencyResult(idemKey, result)
-		}
-		writeNewResult(jsonMode, result)
+		writeNewResult(jsonMode, newResultFromSDK(result))
 		return exitSuccess
 	}
 
-	ticketID := model.TicketID(missis.NewID("ticket"))
-	batchID := model.BatchID(missis.NewID("batch"))
-	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
-	actorRef := parseActor(actor)
-	events := []model.Event{
-		missis.NewEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actorRef, recordedAt, effectiveTime, batchID, ""),
-		missis.PartEvent(stream, "title", title, model.ValueKindText, actorRef, recordedAt, effectiveTime, batchID),
-		missis.PartEvent(stream, "status", "open", model.ValueKindStatus, actorRef, recordedAt, effectiveTime, batchID),
-	}
-	if priority != "" {
-		events = append(events, missis.PartEvent(stream, "priority", priority, model.ValueKindPriority, actorRef, recordedAt, effectiveTime, batchID))
-	}
-	if len(types) > 0 {
-		events = append(events, missis.PartEvent(stream, "type", []string(types), model.ValueKindList, actorRef, recordedAt, effectiveTime, batchID))
-	}
-	if len(tags) > 0 {
-		events = append(events, missis.PartEvent(stream, "tag", []string(tags), model.ValueKindList, actorRef, recordedAt, effectiveTime, batchID))
-	}
-
-	result := newResult{}
-	outcome, alias, err := db.AppendTicketBatch(events, idemKey, &result)
+	result, err := client.NewTicket(ctx, req, missis.NewTicketOptions{
+		Title:    title,
+		Project:  project,
+		Priority: priority,
+		Types:    []string(types),
+		Tags:     []string(tags),
+	})
 	if err != nil {
-		printError(err, mapStoreError(err), jsonMode, nil)
-		return mapStoreError(err)
+		printError(err, mapError(err), jsonMode, nil)
+		return mapError(err)
 	}
-	if outcome.Replayed {
-		if jsonMode {
-			writeJSON(result)
-		} else {
-			fmt.Printf("%s  %s\n", result.Ref, result.Title)
-			fmt.Printf("status: %s\n", result.Status)
-		}
-		return exitSuccess
-	}
-	result = newResult{
-		Ref:        "#" + strconv.FormatUint(alias, 10),
-		ID:         string(ticketID),
-		Title:      title,
-		Status:     "open",
-		Project:    stringPtrOrNil(project),
-		RecordedAt: recordedAt.Format(time.RFC3339),
-	}
-	if idemKey != "" {
-		if err := db.UpdateIdempotencyResult(idemKey, result); err != nil {
-			printError(err, mapStoreError(err), jsonMode, nil)
-			return mapStoreError(err)
-		}
-	}
-	if result.Ref == "" {
-		result = newResult{
-			Ref:        "#" + strconv.FormatUint(alias, 10),
-			ID:         string(ticketID),
-			Title:      title,
-			Status:     "open",
-			Project:    stringPtrOrNil(project),
-			RecordedAt: recordedAt.Format(time.RFC3339),
-		}
-	}
-
-	if jsonMode {
-		writeJSON(result)
-	} else {
-		projectText := ""
-		if project != "" {
-			projectText = project
-		}
-		fmt.Printf("%s  %s\n", result.Ref, title)
-		fmt.Printf("status: open\n")
-		if projectText != "" {
-			fmt.Printf("project: %s\n", projectText)
-		}
-	}
+	writeNewResult(jsonMode, newResultFromSDK(result))
 	return exitSuccess
 }
 
@@ -998,16 +879,17 @@ func runShow(args []string) int {
 		outputContext(storePath, jsonMode)
 		return exitSuccess
 	}
-	client, err := missis.Open(storeFlag)
+	svc, err := application.Open(storeFlag)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
-	db := client.Store()
+	ctx := stdctx.Background()
 
 	if health {
-		if err := db.CheckConsistency(); err != nil {
+		if err := client.CheckConsistency(ctx); err != nil {
 			if jsonMode {
 				writeJSON(errorResult{Error: "storage_failure", Target: nil, Message: err.Error(), Ontology: nil, MissingObligations: []string{}})
 			} else {
@@ -1015,7 +897,7 @@ func runShow(args []string) int {
 			}
 			return exitStorage
 		}
-		gaps, err := db.SequenceGaps()
+		gaps, err := client.SequenceGaps(ctx)
 		if err != nil {
 			printError(err, exitStorage, jsonMode, nil)
 			return exitStorage
@@ -1036,9 +918,9 @@ func runShow(args []string) int {
 		storePath := client.StorePath()
 		source := string(client.DiscoverySource())
 		warnings := storePermissionWarnings(storePath)
-		storeID, _ := db.StoreID()
-		headHash, _ := db.HeadHash()
-		eventCount, _ := db.EventCount()
+		storeID, _ := client.StoreID()
+		headHash, _ := client.HeadHash()
+		eventCount, _ := client.EventCount()
 		version, commit := buildVersion()
 		if jsonMode {
 			writeJSON(map[string]any{
@@ -1087,181 +969,116 @@ func runShow(args []string) int {
 	}
 
 	if len(project) > 0 || len(group) > 0 || search != "" || len(status) > 0 || len(typeFilter) > 0 || len(tagFilter) > 0 {
-		summaries, err := db.ListTickets(effectiveTime)
+		filtered, err := client.ListTicketsFiltered(ctx, missis.ListFilter{
+			Project:     strings.Join(project, ","),
+			Group:       strings.Join(group, ","),
+			Status:      strings.Join(status, ","),
+			Type:        strings.Join(typeFilter, ","),
+			Tag:         strings.Join(tagFilter, ","),
+			Query:       search,
+			EffectiveAt: effectiveTime,
+			KnownAt:     knownTime,
+		})
 		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
-		}
-		filtered, err := filterTicketSummaries(db, summaries, search, strings.Join(status, ","), strings.Join(project, ","), strings.Join(group, ","), strings.Join(typeFilter, ","), strings.Join(tagFilter, ","), effectiveTime, knownTime)
-		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
+			printError(err, mapError(err), jsonMode, nil)
+			return mapError(err)
 		}
 		outputTicketList(filtered, jsonMode)
 		return exitSuccess
 	}
 
 	if ref == "" {
-		summaries, err := db.ListTickets(effectiveTime)
+		summaries, err := client.ListTicketSummaries(ctx, effectiveTime)
 		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
+			printError(err, mapError(err), jsonMode, nil)
+			return mapError(err)
 		}
 		outputTicketList(summaries, jsonMode)
 		return exitSuccess
 	}
 
 	if strings.HasPrefix(ref, "@") {
-		event, err := db.GetEventByAlias(ref)
+		event, err := client.ShowEvent(ctx, ref)
 		if err != nil {
-			printError(err, exitNotFound, jsonMode, &ref)
-			return exitNotFound
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
 		}
-		outputEvent(event, jsonMode)
+		outputEventView(event, jsonMode)
 		return exitSuccess
 	}
 
-	ticketID, partPath, err := resolveTicketRef(db, ref, effectiveTime)
-	if err != nil {
-		printError(err, exitNotFound, jsonMode, &ref)
-		return exitNotFound
-	}
+	partPath := showRefPath(ref)
 
 	if history {
-		events, err := db.LoadTicketEvents(ticketID)
-		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
+		sinceTime := time.Time{}
+		if since != "" {
+			if parsed, parseErr := parseTime(since); parseErr == nil {
+				sinceTime = parsed
+			}
 		}
-		filtered := filterHistory(events, effectiveTime, knownTime, since, between, partPath)
-		outputHistory(filtered, jsonMode)
+		events, err := client.ShowHistory(ctx, ref, missis.HistoryOptions{EffectiveAt: effectiveTime, KnownAt: knownTime, Since: sinceTime, PartPath: partPath})
+		if err != nil {
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
+		}
+		outputHistoryViews(events, jsonMode)
 		return exitSuccess
 	}
 
 	if lineage {
-		targetRef, err := resolveAnyRef(db, ref, ticketID, effectiveTime)
+		start, err := client.ResolveAnyRef(ctx, ref, effectiveTime)
 		if err != nil {
-			printError(err, exitNotFound, jsonMode, &ref)
-			return exitNotFound
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
 		}
-		events, err := db.LoadLinkEvents()
-		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
-		}
-		graph, err := model.BuildLineageGraph(events, effectiveTime, knownTime)
-		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
-		}
-		relationSet := make(map[string]bool)
-		if len(relations) > 0 {
-			for _, relation := range strings.Split(strings.Join(relations, ","), ",") {
-				relation = strings.TrimSpace(relation)
-				if relation == "" {
-					continue
-				}
-				if !model.ValidRelation(relation) {
-					printError(fmt.Errorf("unsupported relation: %s", relation), exitValidation, jsonMode, &ref)
-					return exitValidation
-				}
-				relationSet[relation] = true
+		var relationList []string
+		for _, relation := range strings.Split(strings.Join(relations, ","), ",") {
+			relation = strings.TrimSpace(relation)
+			if relation != "" {
+				relationList = append(relationList, relation)
 			}
 		}
-		edges, err := graph.Walk(targetRef, direction, depth, relationSet)
+		edges, err := client.ShowLineage(ctx, ref, missis.LineageOptions{Direction: direction, Depth: depth, Relations: relationList, EffectiveAt: effectiveTime, KnownAt: knownTime})
 		if err != nil {
-			printError(err, exitInvalid, jsonMode, &ref)
-			return exitInvalid
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
 		}
-		if jsonMode {
-			items := make([]map[string]any, 0, len(edges))
-			for _, edge := range edges {
-				items = append(items, map[string]any{
-					"from":       targetText(edge.From),
-					"relation":   edge.Relation,
-					"to":         targetText(edge.To),
-					"direction":  edge.Direction,
-					"depth":      edge.Depth,
-					"origin":     edge.Origin,
-					"created_by": string(edge.CreatedBy),
-				})
-			}
-			writeJSON(map[string]any{"start": targetText(targetRef), "edges": items})
-		} else {
-			for _, edge := range edges {
-				fmt.Printf("%d %s %s %s %s\n", edge.Depth, edge.Direction, targetText(edge.From), edge.Relation, targetText(edge.To))
-			}
-		}
+		outputLineage(edges, start, jsonMode)
 		return exitSuccess
 	}
 
 	if references {
-		targetRef, err := resolveAnyRef(db, ref, ticketID, effectiveTime)
+		links, err := client.ShowReferences(ctx, ref, missis.ShowOptions{EffectiveAt: effectiveTime, KnownAt: knownTime})
 		if err != nil {
-			printError(err, exitNotFound, jsonMode, &ref)
-			return exitNotFound
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
 		}
-		events, err := db.LoadLinkEvents()
-		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
-		}
-		links, err := model.LinksForRef(events, targetRef, effectiveTime, knownTime)
-		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
-		}
-		if jsonMode {
-			items := make([]map[string]any, 0, len(links))
-			for _, link := range links {
-				items = append(items, map[string]any{
-					"from":       targetText(link.From),
-					"relation":   link.Relation,
-					"to":         targetText(link.To),
-					"direction":  link.Direction,
-					"origin":     link.Origin,
-					"created_by": string(link.CreatedBy),
-				})
-			}
-			writeJSON(map[string]any{"links": items})
-		} else {
-			for _, link := range links {
-				fmt.Printf("%s %s %s %s\n", link.Direction, link.Relation, targetText(link.From), targetText(link.To))
-			}
-		}
+		outputReferences(links, jsonMode)
 		return exitSuccess
 	}
 
-	proj, err := db.BitemporalProjection(ticketID, effectiveTime, knownTime)
+	proj, err := client.ShowTicket(ctx, ref, missis.ShowOptions{EffectiveAt: effectiveTime, KnownAt: knownTime})
 	if err != nil {
-		printError(err, exitStorage, jsonMode, nil)
-		return exitStorage
+		printError(err, mapError(err), jsonMode, &ref)
+		return mapError(err)
 	}
 	if len(partPath) > 0 {
 		pathKey := strings.Join(partPath, "/")
-		if _, ok := proj.Paths[pathKey]; !ok {
+		if _, ok := proj.Parts[pathKey]; !ok {
 			printError(fmt.Errorf("part path not found: %s", pathKey), exitNotFound, jsonMode, &ref)
 			return exitNotFound
 		}
 	}
-	recordedAtText := ticketRecordedAt(db, ticketID)
-	ticketRef := ticketRefFor(db, ticketID)
 	if format == "markdown" {
-		targetRef, err := resolveAnyRef(db, ref, ticketID, effectiveTime)
+		links, err := client.ShowReferences(ctx, ref, missis.ShowOptions{EffectiveAt: effectiveTime, KnownAt: knownTime})
 		if err != nil {
-			printError(err, exitNotFound, jsonMode, &ref)
-			return exitNotFound
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
 		}
-		linkEvents, err := db.LoadLinkEvents()
-		if err != nil {
-			printError(err, exitStorage, jsonMode, nil)
-			return exitStorage
-		}
-		links, _ := model.LinksForRef(linkEvents, targetRef, effectiveTime, knownTime)
-		outputMarkdownProjection(ticketID, proj, partPath, ticketRef, links)
+		outputMarkdownProjectionSDK(proj, partPath, links)
 		return exitSuccess
 	}
-	outputProjection(ticketID, proj, partPath, jsonMode, recordedAtText, ticketRef)
+	outputProjectionSDK(proj, partPath, jsonMode)
 	return exitSuccess
 }
 
@@ -1319,22 +1136,28 @@ func runSet(args []string) int {
 	ref := fs.Arg(0)
 	value := fs.Arg(1)
 
-	client, err := missis.Open(storeFlag)
+	svc, err := application.Open(storeFlag)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
-	db := client.Store()
-
-	recordedAt := time.Now().UTC()
-	effectiveTime := recordedAt
+	ctx := stdctx.Background()
+	effectiveTime := time.Now().UTC()
 	if effectiveAt != "" {
 		effectiveTime, err = parseTime(effectiveAt)
 		if err != nil {
 			printError(err, exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
+	}
+	req := missis.RequestContext{
+		Actor:          actor,
+		EffectiveAt:    effectiveTime,
+		IdempotencyKey: idemKey,
+		IfCurrent:      ifCurrent,
+		Because:        because,
 	}
 
 	if fromFile != "" || stdin {
@@ -1343,364 +1166,71 @@ func runSet(args []string) int {
 			printError(err, exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
-		parts, err := model.ParseMarkdownParts(content)
+		result, err := client.ReimportMarkdown(ctx, req, missis.ImportOptions{Ref: ref, Content: content, Artifact: artifact})
 		if err != nil {
-			printError(err, exitValidation, jsonMode, &ref)
-			return exitValidation
-		}
-		for i, part := range parts {
-			if len(part.Path) == 1 && part.Path[0] != "preamble" {
-				parts = append(parts[:i], parts[i+1:]...)
-				break
-			}
-		}
-		ticketID, partPath, err := resolveTicketRef(db, ref, effectiveTime)
-		if err != nil {
-			printError(err, exitNotFound, jsonMode, &ref)
-			return exitNotFound
-		}
-		if len(partPath) != 0 {
-			printError(fmt.Errorf("import target must be a ticket reference"), exitInvalid, jsonMode, &ref)
-			return exitInvalid
-		}
-		batchID := model.BatchID(missis.NewID("batch"))
-		actorRef := parseActor(actor)
-		events, err := buildReimportEvents(db, ticketID, parts, actorRef, recordedAt, effectiveTime, batchID, artifact)
-		if err != nil {
-			printError(err, exitValidation, jsonMode, &ref)
-			return exitValidation
-		}
-		if len(events) == 0 {
-			if jsonMode {
-				writeJSON(setResult{Ref: ref, Operation: "import", Value: 0})
-			} else {
-				fmt.Printf("%s import 0 parts\n", ref)
-			}
-			return exitSuccess
-		}
-		result := setResult{Ref: ref, Operation: "import", Value: len(events)}
-		outcome, err := db.AppendBatch(events, idemKey, nil, &result)
-		if err != nil {
-			if errors.Is(err, store.ErrConflict) {
-				printError(err, exitConflict, jsonMode, &ref)
-				return exitConflict
-			}
-			printError(err, mapStoreError(err), jsonMode, &ref)
-			return mapStoreError(err)
-		}
-		if len(outcome.Events) > 0 {
-			result.Event = "@e" + fmt.Sprintf("%d", outcome.Events[len(outcome.Events)-1].AliasSeq)
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
 		}
 		if jsonMode {
 			writeJSON(result)
 		} else {
-			fmt.Printf("%s import %d parts\n", ref, len(events))
+			fmt.Printf("%s import %d parts\n", ref, result.Value)
 		}
 		return exitSuccess
 	}
 
-	if (add || retract) && strings.HasSuffix(ref, "/links") && (strings.HasPrefix(ref, "project:") || strings.HasPrefix(ref, "group:")) {
-		return runSetScopeLink(db, ref, value, actor, reason, effectiveTime, recordedAt, add, retract, idemKey, jsonMode)
-	}
-
-	baseTicketID, basePath, err := resolveTicketRef(db, ref, effectiveTime)
-	if err == nil && len(basePath) > 0 && basePath[len(basePath)-1] == "links" && (add || retract) {
-		return runSetLink(db, ref, baseTicketID, basePath, value, actor, reason, effectiveTime, recordedAt, add, retract, idemKey, jsonMode)
-	}
-
-	actorRef := parseActor(actor)
-	batchID := model.BatchID(missis.NewID("batch"))
-
-	requiresExisting := retract || name != "" || parent != ""
-	var (
-		ticketID       model.TicketID
-		partID         model.PartID
-		currentPath    []string
-		creationEvents []model.Event
-		partExisted    bool
-		stream         model.Ref
-	)
-	if requiresExisting {
-		ticketID, partID, currentPath, err = resolvePartRef(db, ref, effectiveTime)
-		if err != nil {
-			printError(err, exitNotFound, jsonMode, &ref)
-			return exitNotFound
-		}
-		partExisted = true
-		stream = model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
-	} else {
-		ticketID, currentPath, err = resolveTicketRef(db, ref, effectiveTime)
-		if err != nil {
-			printError(err, exitNotFound, jsonMode, &ref)
-			return exitNotFound
-		}
-		if len(currentPath) == 0 {
-			printError(fmt.Errorf("part reference required"), exitInvalid, jsonMode, &ref)
+	if (add || retract) && strings.HasSuffix(ref, "/links") {
+		relation, targetStr, ok := strings.Cut(value, ":")
+		if !ok || relation == "" || targetStr == "" {
+			printError(fmt.Errorf("link value must be relation:ref"), exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
-		stream = model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
-		creationEvents, partID, partExisted, err = ensurePartPath(db, ticketID, currentPath, actorRef, recordedAt, effectiveTime, stream, batchID)
+		result, err := client.SetLink(ctx, req, missis.LinkOptions{Ref: ref, Relation: relation, Target: targetStr, Add: add, Retract: retract, Reason: reason})
 		if err != nil {
-			printError(err, exitStorage, jsonMode, &ref)
-			return exitStorage
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
+		}
+		writeSetResult(result, jsonMode)
+		return exitSuccess
+	}
+
+	mutationCount := 0
+	for _, active := range []bool{retract, add, name != "", parent != "", supersedes != ""} {
+		if active {
+			mutationCount++
 		}
 	}
-
-	target := model.Ref{Kind: model.KindPart, Entity: string(partID), Path: currentPath}
-	event := model.Event{
-		Stream:      stream,
-		Target:      target,
-		RecordedAt:  recordedAt,
-		EffectiveAt: effectiveTime,
-		Actor:       actorRef,
-		Reason:      reason,
-		BatchID:     &batchID,
+	if mutationCount > 1 {
+		printError(fmt.Errorf("conflicting mutation flags: --retract, --add, --name, --parent, and --supersedes are mutually exclusive"), exitInvalid, jsonMode, &ref)
+		return exitInvalid
 	}
-
+	var mutation missis.Mutation
 	switch {
 	case retract && recursive:
-		event.Operation = model.OpRetractSubtree
+		mutation = missis.RetractSubtree{Target: ref, Reason: reason}
 	case retract:
-		event.Operation = model.OpRetractValue
+		mutation = missis.RetractValue{Target: ref, Reason: reason}
 	case name != "":
-		if err := model.ValidatePathSegments([]string{name}); err != nil {
-			printError(err, exitValidation, jsonMode, &ref)
-			return exitValidation
-		}
-		event.Operation = model.OpRenamePart
-		event.Value = model.Value{Kind: model.ValueKindText, Text: name}
+		mutation = missis.RenamePart{Target: ref, Name: name, Reason: reason}
 	case parent != "":
-		parentRef, err := resolveParentRef(db, parent, ticketID, effectiveTime)
-		if err != nil {
-			printError(err, exitNotFound, jsonMode, &parent)
-			return exitNotFound
-		}
-		event.Operation = model.OpMovePart
-		event.Value = model.Value{Ref: &parentRef}
+		mutation = missis.MovePart{Target: ref, Parent: parent, Reason: reason}
+	case supersedes != "":
+		mutation = missis.SupersedeEvent{Target: ref, Value: value, Supersedes: supersedes, Reason: reason}
+	case add:
+		mutation = missis.AddValue{Target: ref, Value: value, Reason: reason}
 	default:
-		valueKind := inferValueKind(currentPath, value)
-		if value != "" || add {
-			event.Operation = model.OpSetValue
-			if add {
-				event.Operation = model.OpAddValue
-			}
-			if add {
-				event.Value = model.Value{Kind: model.ValueKindList, Text: value}
-			} else {
-				event.Value = model.Value{Kind: valueKind, Text: value}
-			}
-			if valueKind == model.ValueKindList || valueKind == model.ValueKindJSON {
-				event.Value.Data = value
-			}
-		} else {
+		if value == "" {
 			printError(fmt.Errorf("value or mutation flag is required"), exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
+		mutation = missis.SetValue{Target: ref, Value: value, Reason: reason}
 	}
-
-	if supersedes != "" {
-		oldEvent, err := db.GetEventByAlias(supersedes)
-		if err != nil {
-			printError(err, exitNotFound, jsonMode, &supersedes)
-			return exitNotFound
-		}
-		event.Supersedes = append(event.Supersedes, oldEvent.ID)
-		event.Operation = model.OpSupersedeEvent
-	}
-
-	if because != "" {
-		causeRef, err := parseReference(db, because, ticketID, effectiveTime)
-		if err != nil {
-			printError(err, exitNotFound, jsonMode, &because)
-			return exitNotFound
-		}
-		event.Causes = append(event.Causes, causeRef)
-	}
-
-	if !retract && name == "" && parent == "" {
-		if err := validateStatusSet(currentPath, value, reason); err != nil {
-			printError(err, exitValidation, jsonMode, &ref)
-			return exitValidation
-		}
-	}
-
-	var preconditions []store.Precondition
-	if ifCurrent != "" {
-		currentEvent, err := db.GetEventByAlias(ifCurrent)
-		if err != nil {
-			printError(err, exitNotFound, jsonMode, &ifCurrent)
-			return exitNotFound
-		}
-		if !partExisted {
-			printError(fmt.Errorf("expected current event on new part"), exitConflict, jsonMode, &ref)
-			return exitConflict
-		}
-		preconditions = append(preconditions, store.Precondition{
-			TargetEntity:         string(partID),
-			ExpectedCurrentEvent: currentEvent.ID,
-		})
-	}
-
-	result := setResult{
-		Ref:       ref,
-		Operation: string(event.Operation),
-		Value:     valueOrNil(event.Value),
-	}
-	batch := append(creationEvents, event)
-	outcome, err := db.AppendBatch(batch, idemKey, preconditions, &result)
+	result, err := client.Set(ctx, req, mutation)
 	if err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			printError(err, exitConflict, jsonMode, &ref)
-			return exitConflict
-		}
-		printError(err, mapStoreError(err), jsonMode, &ref)
-		return mapStoreError(err)
+		printError(err, mapError(err), jsonMode, &ref)
+		return mapError(err)
 	}
-	if len(outcome.Events) > 0 {
-		last := outcome.Events[len(outcome.Events)-1]
-		result.Event = "@e" + fmt.Sprintf("%d", last.AliasSeq)
-	}
-
-	if jsonMode {
-		writeJSON(result)
-	} else {
-		fmt.Printf("%s %s", ref, string(event.Operation))
-		if result.Event != "" {
-			fmt.Printf(" %s", result.Event)
-		}
-		fmt.Println()
-	}
-	return exitSuccess
-}
-
-func runSetLink(db *store.Store, ref string, ticketID model.TicketID, path []string, value, actor, reason string, effectiveTime, recordedAt time.Time, add, retract bool, idemKey string, jsonMode bool) int {
-	if !add && !retract {
-		printError(fmt.Errorf("link mutation requires --add or --retract"), exitInvalid, jsonMode, &ref)
-		return exitInvalid
-	}
-	relation, targetStr, ok := strings.Cut(value, ":")
-	if !ok || relation == "" || targetStr == "" {
-		printError(fmt.Errorf("link value must be relation:ref"), exitInvalid, jsonMode, &ref)
-		return exitInvalid
-	}
-	if !model.ValidRelation(relation) {
-		printError(fmt.Errorf("unsupported relation: %s", relation), exitValidation, jsonMode, &ref)
-		return exitValidation
-	}
-
-	fromRef, err := resolveAnyRef(db, strings.TrimSuffix(ref, "/links"), ticketID, effectiveTime)
-	if err != nil {
-		printError(err, exitNotFound, jsonMode, &ref)
-		return exitNotFound
-	}
-	toRef, err := resolveAnyRef(db, targetStr, ticketID, effectiveTime)
-	if err != nil {
-		printError(err, exitNotFound, jsonMode, &targetStr)
-		return exitNotFound
-	}
-
-	operation := model.OpAssertLink
-	if retract {
-		operation = model.OpRetractLink
-	}
-	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
-	event := model.Event{
-		Stream:      stream,
-		Operation:   operation,
-		Target:      fromRef,
-		Value:       model.Value{Text: relation, Ref: &toRef},
-		RecordedAt:  recordedAt,
-		EffectiveAt: effectiveTime,
-		Actor:       parseActor(actor),
-		Reason:      reason,
-	}
-	if idemKey != "" {
-		batchID := model.BatchID(missis.NewID("batch"))
-		event.BatchID = &batchID
-	}
-
-	result := setResult{
-		Ref:       ref,
-		Operation: string(operation),
-		Value:     relation + ":" + targetStr,
-	}
-	outcome, err := db.AppendBatch([]model.Event{event}, idemKey, nil, &result)
-	if err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			printError(err, exitConflict, jsonMode, &ref)
-			return exitConflict
-		}
-		printError(err, mapStoreError(err), jsonMode, &ref)
-		return mapStoreError(err)
-	}
-	if len(outcome.Events) > 0 {
-		result.Event = "@e" + fmt.Sprintf("%d", outcome.Events[len(outcome.Events)-1].AliasSeq)
-	}
-	if jsonMode {
-		writeJSON(result)
-	} else {
-		fmt.Printf("%s %s %s\n", ref, operation, result.Value)
-	}
-	return exitSuccess
-}
-
-func runSetScopeLink(db *store.Store, ref, value, actor, reason string, effectiveTime, recordedAt time.Time, add, retract bool, idemKey string, jsonMode bool) int {
-	if !add && !retract {
-		printError(fmt.Errorf("link mutation requires --add or --retract"), exitInvalid, jsonMode, &ref)
-		return exitInvalid
-	}
-	relation, targetStr, ok := strings.Cut(value, ":")
-	if !ok || relation == "" || targetStr == "" {
-		printError(fmt.Errorf("link value must be relation:ref"), exitInvalid, jsonMode, &ref)
-		return exitInvalid
-	}
-	if !model.ValidRelation(relation) {
-		printError(fmt.Errorf("unsupported relation: %s", relation), exitValidation, jsonMode, &ref)
-		return exitValidation
-	}
-	fromRef, err := resolveAnyRef(db, strings.TrimSuffix(ref, "/links"), "", effectiveTime)
-	if err != nil {
-		printError(err, exitNotFound, jsonMode, &ref)
-		return exitNotFound
-	}
-	toRef, err := resolveAnyRef(db, targetStr, "", effectiveTime)
-	if err != nil {
-		printError(err, exitNotFound, jsonMode, &targetStr)
-		return exitNotFound
-	}
-	operation := model.OpAssertLink
-	if retract {
-		operation = model.OpRetractLink
-	}
-	stream := model.Ref{Kind: fromRef.Kind, Entity: fromRef.Entity}
-	event := model.Event{
-		Stream:      stream,
-		Operation:   operation,
-		Target:      fromRef,
-		Value:       model.Value{Text: relation, Ref: &toRef},
-		RecordedAt:  recordedAt,
-		EffectiveAt: effectiveTime,
-		Actor:       parseActor(actor),
-		Reason:      reason,
-	}
-	result := setResult{Ref: ref, Operation: string(operation), Value: relation + ":" + targetStr}
-	outcome, err := db.AppendBatch([]model.Event{event}, idemKey, nil, &result)
-	if err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			printError(err, exitConflict, jsonMode, &ref)
-			return exitConflict
-		}
-		printError(err, mapStoreError(err), jsonMode, &ref)
-		return mapStoreError(err)
-	}
-	if len(outcome.Events) > 0 {
-		result.Event = "@e" + fmt.Sprintf("%d", outcome.Events[len(outcome.Events)-1].AliasSeq)
-	}
-	if jsonMode {
-		writeJSON(result)
-	} else {
-		fmt.Printf("%s %s %s\n", ref, operation, result.Value)
-	}
+	writeSetResult(result, jsonMode)
 	return exitSuccess
 }
 
@@ -1710,37 +1240,6 @@ func parseTime(value string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return parsed.UTC(), nil
-}
-
-func parseActor(value string) model.ActorRef {
-	kind := "human"
-	if idx := strings.IndexByte(value, '/'); idx > 0 {
-		kind = value[:idx]
-	}
-	return model.ActorRef{Kind: kind, ID: value, Name: value}
-}
-
-func shortID(id model.TicketID) string {
-	raw := strings.TrimPrefix(string(id), "ticket:")
-	if len(raw) > 8 {
-		return raw[:8]
-	}
-	return raw
-}
-
-func ticketRefFor(db *store.Store, ticketID model.TicketID) string {
-	number, err := db.LookupTicketAlias(ticketID)
-	if err == nil && number > 0 {
-		return "#" + strconv.FormatUint(number, 10)
-	}
-	return "#" + shortID(ticketID)
-}
-
-func stringPtrOrNil(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
 }
 
 func readImportSource(from string, stdin bool) (string, string, error) {
@@ -1764,220 +1263,6 @@ func readImportSource(from string, stdin bool) (string, string, error) {
 	return "", "", fmt.Errorf("no Markdown import source")
 }
 
-func buildImportEvents(stream model.Ref, parts []model.MarkdownPart, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, artifact string) []model.Event {
-	events := make([]model.Event, 0, len(parts))
-	partIDs := make(map[string]model.PartID)
-	sort.Slice(parts, func(i, j int) bool {
-		if len(parts[i].Path) != len(parts[j].Path) {
-			return len(parts[i].Path) < len(parts[j].Path)
-		}
-		return strings.Join(parts[i].Path, "/") < strings.Join(parts[j].Path, "/")
-	})
-	for _, part := range parts {
-		partIDs[strings.Join(part.Path, "/")] = model.PartID(missis.NewID("part"))
-	}
-	for _, part := range parts {
-		start, end := part.StartLine, part.EndLine
-		source := model.SourceRef{
-			Ref:       model.Ref{Kind: model.KindArtifact, Entity: artifact},
-			MediaType: "text/markdown",
-			Span:      &model.Span{StartLine: &start, EndLine: &end},
-		}
-		value := model.Value{}
-		var parentRef *model.Ref
-		if len(part.Path) > 1 {
-			parentKey := strings.Join(part.Path[:len(part.Path)-1], "/")
-			if parentID, ok := partIDs[parentKey]; ok {
-				parentRef = &model.Ref{Kind: model.KindPart, Entity: string(parentID)}
-			}
-		}
-		if part.Body != "" {
-			value = model.Value{Kind: model.ValueKindMarkdown, Text: part.Body}
-		}
-		value.Ref = parentRef
-		partID := partIDs[strings.Join(part.Path, "/")]
-		events = append(events, model.Event{
-			ID:          model.EventID(missis.NewID("event")),
-			Stream:      stream,
-			Operation:   model.OpCreatePart,
-			Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: part.Path},
-			Value:       value,
-			RecordedAt:  recordedAt,
-			EffectiveAt: effectiveAt,
-			Actor:       actor,
-			BatchID:     &batchID,
-			Sources:     []model.SourceRef{source},
-		})
-	}
-	return events
-}
-
-func buildReimportEvents(db *store.Store, ticketID model.TicketID, parts []model.MarkdownPart, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, artifact string) ([]model.Event, error) {
-	proj, err := db.CurrentProjection(ticketID, effectiveAt)
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(parts, func(i, j int) bool {
-		if len(parts[i].Path) != len(parts[j].Path) {
-			return len(parts[i].Path) < len(parts[j].Path)
-		}
-		return strings.Join(parts[i].Path, "/") < strings.Join(parts[j].Path, "/")
-	})
-
-	pathToID := make(map[string]model.PartID, len(proj.Paths))
-	for path, id := range proj.Paths {
-		pathToID[path] = id
-	}
-	matched := make(map[model.PartID]bool)
-	events := make([]model.Event, 0, len(parts))
-
-	for _, part := range parts {
-		pathKey := strings.Join(part.Path, "/")
-		partID, ok := pathToID[pathKey]
-		if !ok {
-			for id, existing := range proj.Parts {
-				if sourceMatchesArtifact(existing, artifact, part.StartLine, part.EndLine) {
-					partID = id
-					break
-				}
-			}
-		}
-
-		if partID == "" {
-			partID = model.PartID(missis.NewID("part"))
-			parentRef := parentRefForPath(part.Path, pathToID)
-			events = append(events, importPartEvent(proj.TicketID, partID, part, parentRef, actor, recordedAt, effectiveAt, batchID, artifact, model.OpCreatePart, model.ValueKindMarkdown))
-			pathToID[pathKey] = partID
-			continue
-		}
-
-		matched[partID] = true
-		existing := proj.Parts[partID]
-		existingPath := currentPathForPart(proj, partID)
-		if !equalPaths(existingPath, part.Path) {
-			if parentPathsDiffer(existingPath, part.Path) {
-				parentRef := parentRefForPath(part.Path, pathToID)
-				events = append(events, importPartEvent(proj.TicketID, partID, part, parentRef, actor, recordedAt, effectiveAt, batchID, artifact, model.OpMovePart, ""))
-			}
-			if len(existingPath) == 0 || existingPath[len(existingPath)-1] != part.Path[len(part.Path)-1] {
-				events = append(events, importPartEvent(proj.TicketID, partID, part, nil, actor, recordedAt, effectiveAt, batchID, artifact, model.OpRenamePart, model.ValueKindText))
-			}
-			pathToID[pathKey] = partID
-		}
-
-		currentBody := ""
-		if existing.Value != nil {
-			currentBody = existing.Value.Text
-		}
-		if part.Body != currentBody {
-			events = append(events, importPartEvent(proj.TicketID, partID, part, nil, actor, recordedAt, effectiveAt, batchID, artifact, model.OpSetValue, model.ValueKindMarkdown))
-		}
-	}
-
-	for id, existing := range proj.Parts {
-		if !matched[id] && sourceHasArtifact(existing, artifact) {
-			path := currentPathForPart(proj, id)
-			return nil, fmt.Errorf("existing imported part missing from source: %s", strings.Join(path, "/"))
-		}
-	}
-	return events, nil
-}
-
-func importPartEvent(ticketID model.TicketID, partID model.PartID, part model.MarkdownPart, parentRef *model.Ref, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, artifact string, operation model.Operation, valueKind model.ValueKind) model.Event {
-	start, end := part.StartLine, part.EndLine
-	source := model.SourceRef{
-		Ref:       model.Ref{Kind: model.KindArtifact, Entity: artifact},
-		MediaType: "text/markdown",
-		Span:      &model.Span{StartLine: &start, EndLine: &end},
-	}
-	value := model.Value{}
-	switch operation {
-	case model.OpCreatePart:
-		if part.Body != "" {
-			value = model.Value{Kind: valueKind, Text: part.Body}
-		}
-		value.Ref = parentRef
-	case model.OpSetValue:
-		value = model.Value{Kind: valueKind, Text: part.Body}
-	case model.OpRenamePart:
-		value = model.Value{Kind: valueKind, Text: part.Path[len(part.Path)-1]}
-	case model.OpMovePart:
-		value = model.Value{Ref: parentRef}
-	}
-	return model.Event{
-		ID:          model.EventID(missis.NewID("event")),
-		Stream:      model.Ref{Kind: model.KindTicket, Entity: string(ticketID)},
-		Operation:   operation,
-		Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: part.Path},
-		Value:       value,
-		RecordedAt:  recordedAt,
-		EffectiveAt: effectiveAt,
-		Actor:       actor,
-		BatchID:     &batchID,
-		Sources:     []model.SourceRef{source},
-	}
-}
-
-func sourceMatchesArtifact(part *model.Part, artifact string, startLine, endLine int) bool {
-	for _, source := range part.Sources {
-		if source.Ref.Entity != artifact || source.Span == nil {
-			continue
-		}
-		sourceStart := 0
-		sourceEnd := 0
-		if source.Span.StartLine != nil {
-			sourceStart = *source.Span.StartLine
-		}
-		if source.Span.EndLine != nil {
-			sourceEnd = *source.Span.EndLine
-		}
-		if startLine <= sourceEnd && endLine >= sourceStart {
-			return true
-		}
-	}
-	return false
-}
-
-func sourceHasArtifact(part *model.Part, artifact string) bool {
-	for _, source := range part.Sources {
-		if source.Ref.Entity == artifact {
-			return true
-		}
-	}
-	return false
-}
-
-func parentRefForPath(path []string, pathToID map[string]model.PartID) *model.Ref {
-	if len(path) <= 1 {
-		return nil
-	}
-	parentKey := strings.Join(path[:len(path)-1], "/")
-	parentID, ok := pathToID[parentKey]
-	if !ok {
-		return nil
-	}
-	return &model.Ref{Kind: model.KindPart, Entity: string(parentID)}
-}
-
-func equalPaths(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func parentPathsDiffer(a, b []string) bool {
-	if len(a) <= 1 || len(b) <= 1 {
-		return len(a) != len(b)
-	}
-	return !equalPaths(a[:len(a)-1], b[:len(b)-1])
-}
-
 func writeNewResult(jsonMode bool, result newResult) {
 	if jsonMode {
 		writeJSON(result)
@@ -1990,238 +1275,7 @@ func writeNewResult(jsonMode bool, result newResult) {
 	}
 }
 
-func resolveTicketRef(db *store.Store, ref string, effectiveAt time.Time) (model.TicketID, []string, error) {
-	clean := strings.TrimPrefix(ref, "#")
-	parts := strings.Split(clean, "/")
-	short := parts[0]
-	summaries, err := db.ListTickets(effectiveAt)
-	if err != nil {
-		return "", nil, err
-	}
-	var ticketID model.TicketID
-	for _, summary := range summaries {
-		if summary.Ref == "#"+short || strconv.FormatUint(summary.Number, 10) == short || string(summary.ID) == short {
-			ticketID = summary.ID
-			break
-		}
-	}
-	if ticketID == "" {
-		if strings.HasPrefix(short, "ticket:") {
-			ticketID = model.TicketID(short)
-		} else {
-			return "", nil, fmt.Errorf("ticket not found: %s", short)
-		}
-	}
-	var path []string
-	if len(parts) > 1 {
-		path = parts[1:]
-	}
-	return ticketID, path, nil
-}
-
-func resolvePartRef(db *store.Store, ref string, effectiveAt time.Time) (model.TicketID, model.PartID, []string, error) {
-	if strings.HasPrefix(ref, "part:") {
-		partID := model.PartID(strings.TrimPrefix(ref, "part:"))
-		ticketID, err := findTicketForPart(db, partID)
-		if err != nil {
-			return "", "", nil, err
-		}
-		proj, err := db.CurrentProjection(ticketID, effectiveAt)
-		if err != nil {
-			return "", "", nil, err
-		}
-		path := currentPathForPart(proj, partID)
-		return ticketID, partID, path, nil
-	}
-	ticketID, path, err := resolveTicketRef(db, ref, effectiveAt)
-	if err != nil {
-		return "", "", nil, err
-	}
-	if len(path) == 0 {
-		return "", "", nil, fmt.Errorf("part reference required")
-	}
-	proj, err := db.CurrentProjection(ticketID, effectiveAt)
-	if err != nil {
-		return "", "", nil, err
-	}
-	key := strings.Join(path, "/")
-	partID, ok := proj.Paths[key]
-	if !ok {
-		return "", "", nil, fmt.Errorf("part path not found: %s", key)
-	}
-	return ticketID, partID, path, nil
-}
-
-func ensurePartPath(db *store.Store, ticketID model.TicketID, path []string, actor model.ActorRef, recordedAt, effectiveAt time.Time, stream model.Ref, batchID model.BatchID) ([]model.Event, model.PartID, bool, error) {
-	proj, err := db.CurrentProjection(ticketID, effectiveAt)
-	if err != nil {
-		return nil, "", false, err
-	}
-	var (
-		parentID    *model.PartID
-		events      []model.Event
-		partID      model.PartID
-		existed     = true
-		currentPath []string
-	)
-	for _, segment := range path {
-		currentPath = append(currentPath, segment)
-		key := strings.Join(currentPath, "/")
-		if id, ok := proj.Paths[key]; ok {
-			parentID = &id
-			partID = id
-			continue
-		}
-		existed = false
-		newIDValue := model.PartID(missis.NewID("part"))
-		target := model.Ref{Kind: model.KindPart, Entity: string(newIDValue), Path: append([]string(nil), currentPath...)}
-		var parentRef *model.Ref
-		if parentID != nil {
-			parentRef = &model.Ref{Kind: model.KindPart, Entity: string(*parentID)}
-		}
-		event := model.Event{
-			ID:          model.EventID(missis.NewID("event")),
-			Stream:      stream,
-			Operation:   model.OpCreatePart,
-			Target:      target,
-			RecordedAt:  recordedAt,
-			EffectiveAt: effectiveAt,
-			Actor:       actor,
-			BatchID:     &batchID,
-		}
-		if parentRef != nil {
-			event.Value = model.Value{Ref: parentRef}
-		}
-		events = append(events, event)
-		parentID = &newIDValue
-		partID = newIDValue
-	}
-	return events, partID, existed, nil
-}
-
-func findTicketForPart(db *store.Store, partID model.PartID) (model.TicketID, error) {
-	events, err := db.LoadEvents()
-	if err != nil {
-		return "", err
-	}
-	for _, event := range events {
-		if event.Target.Kind == model.KindPart && event.Target.Entity == string(partID) {
-			return model.TicketID(event.Stream.Entity), nil
-		}
-	}
-	return "", fmt.Errorf("part not found: %s", partID)
-}
-
-func currentPathForPart(proj *model.Projection, partID model.PartID) []string {
-	for path, id := range proj.Paths {
-		if id == partID {
-			return strings.Split(path, "/")
-		}
-	}
-	return nil
-}
-
-func resolveParentRef(db *store.Store, ref string, ticketID model.TicketID, effectiveAt time.Time) (model.Ref, error) {
-	if strings.HasPrefix(ref, "part:") {
-		return model.Ref{Kind: model.KindPart, Entity: strings.TrimPrefix(ref, "part:")}, nil
-	}
-	_, partID, _, err := resolvePartRef(db, ref, effectiveAt)
-	if err != nil {
-		return model.Ref{}, err
-	}
-	return model.Ref{Kind: model.KindPart, Entity: string(partID)}, nil
-}
-
-func parseReference(db *store.Store, ref string, ticketID model.TicketID, effectiveAt time.Time) (model.Ref, error) {
-	if strings.HasPrefix(ref, "part:") {
-		return model.Ref{Kind: model.KindPart, Entity: strings.TrimPrefix(ref, "part:")}, nil
-	}
-	if strings.HasPrefix(ref, "@") {
-		event, err := db.GetEventByAlias(ref)
-		if err != nil {
-			return model.Ref{}, err
-		}
-		return model.Ref{Kind: model.KindEvent, Entity: string(event.ID)}, nil
-	}
-	_, partID, _, err := resolvePartRef(db, ref, effectiveAt)
-	if err != nil {
-		return model.Ref{}, err
-	}
-	return model.Ref{Kind: model.KindPart, Entity: string(partID)}, nil
-}
-
-func resolveAnyRef(db *store.Store, ref string, ticketID model.TicketID, effectiveAt time.Time) (model.Ref, error) {
-	if strings.HasPrefix(ref, "part:") {
-		return model.Ref{Kind: model.KindPart, Entity: strings.TrimPrefix(ref, "part:")}, nil
-	}
-	if strings.HasPrefix(ref, "ticket:") {
-		return model.Ref{Kind: model.KindTicket, Entity: strings.TrimPrefix(ref, "ticket:")}, nil
-	}
-	if strings.HasPrefix(ref, "project:") {
-		return model.Ref{Kind: model.KindProject, Entity: strings.TrimPrefix(ref, "project:")}, nil
-	}
-	if strings.HasPrefix(ref, "group:") {
-		return model.Ref{Kind: model.KindGroup, Entity: strings.TrimPrefix(ref, "group:")}, nil
-	}
-	if strings.HasPrefix(ref, "@") {
-		event, err := db.GetEventByAlias(ref)
-		if err != nil {
-			return model.Ref{}, err
-		}
-		return model.Ref{Kind: model.KindEvent, Entity: string(event.ID)}, nil
-	}
-	if strings.HasPrefix(ref, "#") {
-		ticket, path, err := resolveTicketRef(db, ref, effectiveAt)
-		if err != nil {
-			return model.Ref{}, err
-		}
-		if len(path) == 0 {
-			return model.Ref{Kind: model.KindTicket, Entity: string(ticket)}, nil
-		}
-		_, partID, _, err := resolvePartRef(db, ref, effectiveAt)
-		if err != nil {
-			return model.Ref{}, err
-		}
-		return model.Ref{Kind: model.KindPart, Entity: string(partID), Path: path}, nil
-	}
-	return model.Ref{}, fmt.Errorf("unsupported reference: %s", ref)
-}
-
-func inferValueKind(path []string, value string) model.ValueKind {
-	if len(path) == 0 {
-		return model.ValueKindText
-	}
-	switch path[len(path)-1] {
-	case "status":
-		return model.ValueKindStatus
-	case "priority":
-		return model.ValueKindPriority
-	default:
-		if strings.HasPrefix(strings.TrimSpace(value), "{") || strings.HasPrefix(strings.TrimSpace(value), "[") {
-			return model.ValueKindJSON
-		}
-		return model.ValueKindText
-	}
-}
-
-func validateStatusSet(path []string, value, reason string) error {
-	if len(path) == 0 || path[len(path)-1] != "status" {
-		return nil
-	}
-	switch value {
-	case "open", "doing", "done":
-		return nil
-	case "blocked":
-		if strings.TrimSpace(reason) == "" {
-			return fmt.Errorf("blocked status requires a reason")
-		}
-		return nil
-	default:
-		return fmt.Errorf("invalid status: %s", value)
-	}
-}
-
-func outputTicketList(summaries []store.TicketSummary, jsonMode bool) {
+func outputTicketList(summaries []missis.TicketSummary, jsonMode bool) {
 	if jsonMode {
 		type ticketJSON struct {
 			Ref        string `json:"ref"`
@@ -2234,7 +1288,7 @@ func outputTicketList(summaries []store.TicketSummary, jsonMode bool) {
 		for _, summary := range summaries {
 			items = append(items, ticketJSON{
 				Ref:        summary.Ref,
-				ID:         string(summary.ID),
+				ID:         summary.ID,
 				Title:      summary.Title,
 				Status:     summary.Status,
 				RecordedAt: summary.RecordedAt.UTC().Format(time.RFC3339),
@@ -2249,284 +1303,6 @@ func outputTicketList(summaries []store.TicketSummary, jsonMode bool) {
 	}
 }
 
-func filterTicketSummaries(db *store.Store, summaries []store.TicketSummary, search, status, project, group, typeFilter, tagFilter string, effectiveAt, knownAt time.Time) ([]store.TicketSummary, error) {
-	var linkEvents []model.Event
-	if project != "" || group != "" {
-		var err error
-		linkEvents, err = db.LoadLinkEvents()
-		if err != nil {
-			return nil, err
-		}
-	}
-	projectTicketIDs := make(map[model.TicketID]bool)
-	if project != "" {
-		for _, projectID := range strings.Split(project, ",") {
-			links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: strings.TrimSpace(projectID)}, effectiveAt, knownAt)
-			if err != nil {
-				return nil, err
-			}
-			for _, link := range links {
-				if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
-					projectTicketIDs[model.TicketID(link.To.Entity)] = true
-				}
-			}
-		}
-	}
-	if group != "" {
-		for _, groupID := range strings.Split(group, ",") {
-			groupRef := model.Ref{Kind: model.KindGroup, Entity: strings.TrimSpace(groupID)}
-			groupLinks, err := model.LinksForRef(linkEvents, groupRef, effectiveAt, knownAt)
-			if err != nil {
-				return nil, err
-			}
-			projectIDs := make(map[string]bool)
-			for _, link := range groupLinks {
-				if link.Direction == "asserted" && (link.Relation == "contains" || link.Relation == "governs") && link.To.Kind == model.KindProject {
-					projectIDs[link.To.Entity] = true
-				}
-			}
-			for projectID := range projectIDs {
-				links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: projectID}, effectiveAt, knownAt)
-				if err != nil {
-					return nil, err
-				}
-				for _, link := range links {
-					if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
-						projectTicketIDs[model.TicketID(link.To.Entity)] = true
-					}
-				}
-			}
-		}
-	}
-
-	result := make([]store.TicketSummary, 0, len(summaries))
-	for _, summary := range summaries {
-		if status != "" && !csvContains(status, summary.Status) {
-			continue
-		}
-		if (project != "" || group != "") && !projectTicketIDs[summary.ID] {
-			continue
-		}
-		proj, err := db.BitemporalProjection(summary.ID, effectiveAt, knownAt)
-		if err != nil {
-			return nil, err
-		}
-		if search != "" {
-			text := summary.Title + " " + projectionText(proj)
-			if !matchesAllTokens(text, search) {
-				continue
-			}
-		}
-		if typeFilter != "" && !partHasValue(proj, "type", typeFilter) {
-			continue
-		}
-		if tagFilter != "" && !partHasValue(proj, "tag", tagFilter) {
-			continue
-		}
-		result = append(result, summary)
-	}
-	return result, nil
-}
-
-func csvContains(csv, value string) bool {
-	for _, candidate := range strings.Split(csv, ",") {
-		if strings.EqualFold(strings.TrimSpace(candidate), value) {
-			return true
-		}
-	}
-	return false
-}
-
-func projectionText(proj *model.Projection) string {
-	var b strings.Builder
-	for _, part := range proj.Parts {
-		if part == nil || part.Value == nil {
-			continue
-		}
-		b.WriteString(fmt.Sprint(valueText(*part.Value)))
-		b.WriteByte(' ')
-	}
-	return b.String()
-}
-
-func partHasValue(proj *model.Projection, path, want string) bool {
-	if want == "" {
-		return true
-	}
-	partID, ok := proj.Paths[path]
-	if !ok {
-		return false
-	}
-	part := proj.Parts[partID]
-	if part == nil || part.Value == nil {
-		return false
-	}
-	if len(part.Value.List) > 0 {
-		for _, value := range part.Value.List {
-			for _, candidate := range strings.Split(want, ",") {
-				if strings.EqualFold(value, strings.TrimSpace(candidate)) {
-					return true
-				}
-			}
-		}
-	}
-	for _, candidate := range strings.Split(want, ",") {
-		if strings.EqualFold(part.Value.Text, strings.TrimSpace(candidate)) {
-			return true
-		}
-	}
-	return false
-}
-
-func matchesAllTokens(text, query string) bool {
-	text = strings.ToLower(text)
-	for _, token := range strings.Fields(strings.ToLower(query)) {
-		if !strings.Contains(text, token) {
-			return false
-		}
-	}
-	return true
-}
-
-func outputProjection(ticketID model.TicketID, proj *model.Projection, pathFilter []string, jsonMode bool, recordedAt, ticketRef string) {
-	title, status := projectionTitleStatus(proj)
-	if !jsonMode {
-		fmt.Printf("%s  %s\n", ticketRef, title)
-		fmt.Printf("status: %s\n", status)
-		paths := make([]string, 0, len(proj.Paths))
-		for path := range proj.Paths {
-			paths = append(paths, path)
-		}
-		sort.Strings(paths)
-		for _, path := range paths {
-			if path == "title" || path == "status" {
-				continue
-			}
-			if !pathMatches(path, pathFilter) {
-				continue
-			}
-			part := proj.Parts[proj.Paths[path]]
-			if part == nil {
-				continue
-			}
-			value := valueOrNilFromPart(part)
-			if value == nil {
-				continue
-			}
-			fmt.Printf("%s: %v\n", path, value)
-		}
-		return
-	}
-	parts := make(map[string]showPart)
-	for path, partID := range proj.Paths {
-		if !pathMatches(path, pathFilter) {
-			continue
-		}
-		part := proj.Parts[partID]
-		if part == nil {
-			continue
-		}
-		parts[path] = showPart{
-			ID:        string(part.ID),
-			Path:      path,
-			Value:     valueOrNilFromPart(part),
-			ValueKind: string(part.ValueKind),
-			ParentID:  parentIDOrNil(part),
-			CreatedBy: string(part.CreatedBy),
-		}
-	}
-	writeJSON(showTicket{
-		Ref:        ticketRef,
-		ID:         string(ticketID),
-		Title:      title,
-		Status:     status,
-		RecordedAt: recordedAt,
-		Parts:      parts,
-	})
-}
-
-func outputMarkdownProjection(ticketID model.TicketID, proj *model.Projection, pathFilter []string, ticketRef string, links []model.LinkView) {
-	title, _ := projectionTitleStatus(proj)
-	if title == "" {
-		title = ticketRef
-	}
-	fmt.Printf("# %s\n\n", title)
-	paths := make([]string, 0, len(proj.Paths))
-	for path := range proj.Paths {
-		if pathMatches(path, pathFilter) {
-			paths = append(paths, path)
-		}
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		if path == "title" || path == "status" {
-			continue
-		}
-		part := proj.Parts[proj.Paths[path]]
-		if part == nil {
-			continue
-		}
-		depth := len(strings.Split(path, "/")) + 1
-		if depth > 6 {
-			depth = 6
-		}
-		heading := strings.Repeat("#", depth)
-		last := path
-		if idx := strings.LastIndex(path, "/"); idx >= 0 {
-			last = path[idx+1:]
-		}
-		fmt.Printf("%s %s\n\n", heading, last)
-		if part.Value != nil {
-			fmt.Printf("%s\n\n", valueText(*part.Value))
-		}
-	}
-	if len(links) > 0 {
-		fmt.Printf("## Links\n\n")
-		for _, link := range links {
-			fmt.Printf("- %s %s %s\n", link.Relation, targetText(link.From), targetText(link.To))
-		}
-		fmt.Println()
-	}
-}
-
-func projectionTitleStatus(proj *model.Projection) (string, string) {
-	var title, status string
-	if id, ok := proj.Paths["title"]; ok {
-		if part := proj.Parts[id]; part != nil && part.Value != nil {
-			title = part.Value.Text
-		}
-	}
-	if id, ok := proj.Paths["status"]; ok {
-		if part := proj.Parts[id]; part != nil && part.Value != nil {
-			status = part.Value.Text
-		}
-	}
-	return title, status
-}
-
-func ticketRecordedAt(db *store.Store, ticketID model.TicketID) string {
-	events, err := db.LoadTicketEvents(ticketID)
-	if err != nil || len(events) == 0 {
-		return ""
-	}
-	var createdAt time.Time
-	for _, event := range events {
-		if event.Operation == model.OpCreateEntity {
-			createdAt = event.RecordedAt
-			break
-		}
-	}
-	if createdAt.IsZero() {
-		createdAt = events[0].RecordedAt
-		for _, event := range events[1:] {
-			if event.RecordedAt.Before(createdAt) {
-				createdAt = event.RecordedAt
-			}
-		}
-	}
-	return createdAt.UTC().Format(time.RFC3339)
-}
-
 func pathMatches(path string, filter []string) bool {
 	if len(filter) == 0 {
 		return true
@@ -2535,135 +1311,13 @@ func pathMatches(path string, filter []string) bool {
 	return path == filterKey || strings.HasPrefix(path, filterKey+"/")
 }
 
-func valueOrNil(value model.Value) any {
-	if value.Kind == "" && value.Text == "" && value.Data == nil && value.Ref == nil {
-		return nil
-	}
-	return valueText(value)
-}
-
-func valueOrNilFromPart(part *model.Part) any {
-	if part == nil || part.Value == nil {
-		return nil
-	}
-	if part.Value.Text == "" && part.Value.Data == nil && len(part.Value.List) == 0 {
-		return nil
-	}
-	return valueText(*part.Value)
-}
-
-func valueText(value model.Value) any {
-	if value.Text != "" {
-		return value.Text
-	}
-	if len(value.List) > 0 {
-		return value.List
-	}
-	if value.Data != nil {
-		return value.Data
-	}
-	if value.Ref != nil {
-		return value.Ref
-	}
-	return nil
-}
-
-func parentIDOrNil(part *model.Part) any {
-	if part == nil || part.ParentID == nil {
-		return nil
-	}
-	return string(*part.ParentID)
-}
-
-func filterHistory(events []model.Event, effectiveAt, knownAt time.Time, since, between string, partPath []string) []model.Event {
-	var filtered []model.Event
-	var sinceTime time.Time
-	if since != "" {
-		if parsed, err := parseTime(since); err == nil {
-			sinceTime = parsed
-		}
-	}
-	for _, event := range events {
-		if event.EffectiveAt.After(effectiveAt) || event.RecordedAt.After(knownAt) {
-			continue
-		}
-		if !sinceTime.IsZero() && event.RecordedAt.Before(sinceTime) {
-			continue
-		}
-		if len(partPath) > 0 {
-			if event.Target.Kind != model.KindPart || !pathEquals(event.Target.Path, partPath) {
-				continue
-			}
-		}
-		filtered = append(filtered, event)
-	}
-	return filtered
-}
-
-func pathEquals(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func outputHistory(events []model.Event, jsonMode bool) {
+func outputEventView(event missis.EventView, jsonMode bool) {
 	if jsonMode {
-		items := make([]showEvent, 0, len(events))
-		for _, event := range events {
-			items = append(items, eventJSON(event))
-		}
-		writeJSON(map[string]any{"events": items})
+		writeJSON(eventViewJSON(event))
 		return
 	}
-	for _, event := range events {
-		fmt.Printf("@e%d %s %s %s\n", event.AliasSeq, event.Operation, targetText(event.Target), valueText(event.Value))
-	}
+	fmt.Printf("%s %s %s %v\n", event.Alias, event.Operation, event.Target, event.Value)
 }
-
-func outputEvent(event model.Event, jsonMode bool) {
-	if jsonMode {
-		writeJSON(eventJSON(event))
-		return
-	}
-	fmt.Printf("@e%d %s %s %s\n", event.AliasSeq, event.Operation, targetText(event.Target), valueText(event.Value))
-}
-
-func eventJSON(event model.Event) showEvent {
-	alias := ""
-	if event.AliasSeq > 0 {
-		alias = fmt.Sprintf("@e%d", event.AliasSeq)
-	}
-	return showEvent{
-		ID:          string(event.ID),
-		Alias:       alias,
-		Sequence:    event.Sequence,
-		Operation:   string(event.Operation),
-		Target:      targetText(event.Target),
-		Value:       valueText(event.Value),
-		RecordedAt:  event.RecordedAt.UTC().Format(time.RFC3339),
-		EffectiveAt: event.EffectiveAt.UTC().Format(time.RFC3339),
-		Actor:       event.Actor.ID,
-		Reason:      event.Reason,
-	}
-}
-
-func targetText(ref model.Ref) string {
-	if len(ref.Path) > 0 {
-		return strings.Join(ref.Path, "/")
-	}
-	entity := ref.Entity
-	if strings.HasPrefix(entity, string(ref.Kind)+":") {
-		return entity
-	}
-	return string(ref.Kind) + ":" + entity
-}
-
 func printError(err error, code int, jsonMode bool, target *string) {
 	if jsonMode {
 		writeJSON(errorResult{
@@ -2695,19 +1349,199 @@ func errorCode(code int) string {
 	}
 }
 
-func mapStoreError(err error) int {
-	if errors.Is(err, store.ErrConflict) {
-		return exitConflict
-	}
-	return exitValidation
-}
-
 func writeJSON(value any) {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetEscapeHTML(false)
 	_ = encoder.Encode(value)
 }
 
-func sortStrings(values []string) {
-	sort.Strings(values)
+func newResultFromSDK(result missis.NewTicketResult) newResult {
+	return newResult{
+		Ref:        result.Ref,
+		ID:         result.ID,
+		Title:      result.Title,
+		Status:     result.Status,
+		Project:    result.Project,
+		RecordedAt: result.RecordedAt,
+	}
+}
+
+func showRefPath(ref string) []string {
+	clean := strings.TrimPrefix(ref, "#")
+	parts := strings.Split(clean, "/")
+	if len(parts) > 1 {
+		return parts[1:]
+	}
+	return nil
+}
+
+func writeSetResult(result missis.SetResult, jsonMode bool) {
+	if jsonMode {
+		writeJSON(result)
+		return
+	}
+	fmt.Printf("%s %s", result.Ref, result.Operation)
+	if result.Event != "" {
+		fmt.Printf(" %s", result.Event)
+	}
+	fmt.Println()
+}
+
+func mapError(err error) int {
+	var de *missis.DomainError
+	if errors.As(err, &de) {
+		switch de.Kind {
+		case missis.ErrInvalidInput:
+			return exitInvalid
+		case missis.ErrNotFound:
+			return exitNotFound
+		case missis.ErrConflict:
+			return exitConflict
+		case missis.ErrStorage:
+			return exitStorage
+		case missis.ErrValidation:
+			return exitValidation
+		}
+	}
+	return exitValidation
+}
+
+func outputProjectionSDK(proj missis.TicketProjection, pathFilter []string, jsonMode bool) {
+	if !jsonMode {
+		fmt.Printf("%s  %s\n", proj.Ref, proj.Title)
+		fmt.Printf("status: %s\n", proj.Status)
+		paths := make([]string, 0, len(proj.Parts))
+		for path := range proj.Parts {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		for _, path := range paths {
+			if path == "title" || path == "status" {
+				continue
+			}
+			if !pathMatches(path, pathFilter) {
+				continue
+			}
+			part := proj.Parts[path]
+			if part.Value == nil {
+				continue
+			}
+			fmt.Printf("%s: %v\n", path, part.Value)
+		}
+		return
+	}
+	parts := make(map[string]showPart)
+	for path, part := range proj.Parts {
+		if !pathMatches(path, pathFilter) {
+			continue
+		}
+		parts[path] = showPart{
+			ID:        part.ID,
+			Path:      path,
+			Value:     part.Value,
+			ValueKind: part.ValueKind,
+			ParentID:  part.ParentID,
+			CreatedBy: part.CreatedBy,
+		}
+	}
+	writeJSON(showTicket{
+		Ref:        proj.Ref,
+		ID:         proj.ID,
+		Title:      proj.Title,
+		Status:     proj.Status,
+		RecordedAt: proj.RecordedAt.UTC().Format(time.RFC3339),
+		Parts:      parts,
+	})
+}
+
+func outputMarkdownProjectionSDK(proj missis.TicketProjection, pathFilter []string, links []missis.LinkView) {
+	if len(pathFilter) > 0 {
+		filtered := missis.TicketProjection{
+			Ref:        proj.Ref,
+			ID:         proj.ID,
+			Title:      proj.Title,
+			Status:     proj.Status,
+			RecordedAt: proj.RecordedAt,
+			Parts:      make(map[string]missis.PartView, len(proj.Parts)),
+		}
+		for path, part := range proj.Parts {
+			if pathMatches(path, pathFilter) {
+				filtered.Parts[path] = part
+			}
+		}
+		proj = filtered
+	}
+	fmt.Print(render.ShowMarkdown(proj, links))
+}
+
+func outputHistoryViews(events []missis.EventView, jsonMode bool) {
+	if jsonMode {
+		items := make([]showEvent, 0, len(events))
+		for _, event := range events {
+			items = append(items, eventViewJSON(event))
+		}
+		writeJSON(map[string]any{"events": items})
+		return
+	}
+	for _, event := range events {
+		fmt.Printf("%s %s %s %v\n", event.Alias, event.Operation, event.Target, event.Value)
+	}
+}
+
+func eventViewJSON(event missis.EventView) showEvent {
+	return showEvent{
+		ID:          event.ID,
+		Alias:       event.Alias,
+		Sequence:    event.Sequence,
+		Operation:   event.Operation,
+		Target:      event.Target,
+		Value:       event.Value,
+		RecordedAt:  event.RecordedAt.UTC().Format(time.RFC3339),
+		EffectiveAt: event.EffectiveAt.UTC().Format(time.RFC3339),
+		Actor:       event.Actor,
+		Reason:      event.Reason,
+	}
+}
+
+func outputReferences(links []missis.LinkView, jsonMode bool) {
+	if jsonMode {
+		items := make([]map[string]any, 0, len(links))
+		for _, link := range links {
+			items = append(items, map[string]any{
+				"from":       link.From,
+				"relation":   link.Relation,
+				"to":         link.To,
+				"direction":  link.Direction,
+				"origin":     link.Origin,
+				"created_by": link.CreatedBy,
+			})
+		}
+		writeJSON(map[string]any{"links": items})
+		return
+	}
+	for _, link := range links {
+		fmt.Printf("%s %s %s %s\n", link.Direction, link.Relation, link.From, link.To)
+	}
+}
+
+func outputLineage(edges []missis.LineageEdge, start string, jsonMode bool) {
+	if jsonMode {
+		items := make([]map[string]any, 0, len(edges))
+		for _, edge := range edges {
+			items = append(items, map[string]any{
+				"from":       edge.From,
+				"relation":   edge.Relation,
+				"to":         edge.To,
+				"direction":  edge.Direction,
+				"depth":      edge.Depth,
+				"origin":     edge.Origin,
+				"created_by": edge.CreatedBy,
+			})
+		}
+		writeJSON(map[string]any{"start": start, "edges": items})
+		return
+	}
+	for _, edge := range edges {
+		fmt.Printf("%d %s %s %s %s\n", edge.Depth, edge.Direction, edge.From, edge.Relation, edge.To)
+	}
 }

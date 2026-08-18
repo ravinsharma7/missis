@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -68,12 +69,30 @@ func ResolveStore(storeFlag string) (ResolvedStore, error) {
 		}
 		return ResolvedStore{Path: filepath.Clean(target), Supplied: raw, Source: DiscoveryMarker, MarkerDir: root}, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ResolvedStore{Path: filepath.Clean(filepath.Join(".", ".missis", "missis.db")), Supplied: ".missis/missis.db", Source: DiscoveryDefault}, nil
-	}
-	defaultPath := filepath.Join(home, ".local", "share", "missis", "missis.db")
+	userConfigDir, _ := os.UserConfigDir()
+	home, _ := os.UserHomeDir()
+	defaultPath := defaultStorePath(runtime.GOOS, os.Getenv("LOCALAPPDATA"), userConfigDir, home)
 	return ResolvedStore{Path: filepath.Clean(defaultPath), Supplied: defaultPath, Source: DiscoveryDefault}, nil
+}
+
+// defaultStorePath returns the platform default store path. Windows prefers
+// %LOCALAPPDATA%\missis\missis.db with os.UserConfigDir() as fallback,
+// keeping the XDG-style path for existing stores; POSIX uses
+// ~/.local/share/missis/missis.db. Pure and platform-parameterized so all
+// variants are unit-testable on any host (ticket #55).
+func defaultStorePath(goos, localAppData, userConfigDir, homeDir string) string {
+	if goos == "windows" {
+		if localAppData != "" {
+			return filepath.Join(localAppData, "missis", "missis.db")
+		}
+		if userConfigDir != "" {
+			return filepath.Join(userConfigDir, "missis", "missis.db")
+		}
+	}
+	if homeDir != "" {
+		return filepath.Join(homeDir, ".local", "share", "missis", "missis.db")
+	}
+	return filepath.Join(".", ".missis", "missis.db")
 }
 
 // ResolveStorePath is the path-only form of ResolveStore, kept for callers

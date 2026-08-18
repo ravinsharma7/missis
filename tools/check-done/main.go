@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ravinsharma7/missis/internal/application"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -19,11 +20,12 @@ func main() {
 	if len(os.Args) > 1 {
 		storeFlag = os.Args[1]
 	}
-	client, err := missis.Open(storeFlag)
+	svc, err := application.Open(storeFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(8)
 	}
+	client := missis.NewClient(svc)
 	defer client.Close()
 
 	ctx := context.Background()
