@@ -1606,6 +1606,11 @@ event_hash = SHA-256(HashInput)
   `model.ComputeEventHashV1`; test vectors live in
   `internal/model/canonical_test.go`.
 
+The human-readable storage-compatibility summary lives in
+`docs/storage-compatibility.md`; any change to the on-disk format (new
+migration, canonical encoding, derived tables) must update that document
+alongside this spec.
+
 ---
 
 ## 11. Provenance-first model

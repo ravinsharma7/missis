@@ -5,6 +5,11 @@
 This statement is the compatibility contract for the on-disk store format.
 It exists so upgrades and cross-platform moves are predictable. Ticket: #53.
 
+**Source of truth:** the authoritative contract is
+`specs/missues-issue-specification.v2.md`; this document is the human-readable
+compatibility summary. Any ticket that changes the on-disk format (new
+migration, canonical encoding, derived tables) must update this document.
+
 ## What a missis store is
 
 A single SQLite database file, holding:
