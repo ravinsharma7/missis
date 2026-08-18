@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -23,7 +24,11 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	missisBin = filepath.Join(tmp, "missis")
+	binName := "missis"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	missisBin = filepath.Join(tmp, binName)
 	build := exec.Command("go", "build", "-o", missisBin, "github.com/ravinsharma7/missis/cmd/missis")
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
@@ -34,7 +39,11 @@ func TestMain(m *testing.M) {
 	if env := os.Getenv("MISSIS_REPAIR_BIN"); env != "" {
 		repairBin = env
 	} else {
-		repairBin = filepath.Join(tmp, "repair-store")
+		repairName := "repair-store"
+		if runtime.GOOS == "windows" {
+			repairName += ".exe"
+		}
+		repairBin = filepath.Join(tmp, repairName)
 		buildRepair := exec.Command("go", "build", "-o", repairBin, "github.com/ravinsharma7/missis/tools/repair-store")
 		buildRepair.Stdout = os.Stdout
 		buildRepair.Stderr = os.Stderr

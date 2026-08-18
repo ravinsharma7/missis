@@ -153,11 +153,15 @@ missis --init --store ./.missis-store/missis.db
 .missis                       marker pointing to the local SQLite store
 .missis.d/                    committed project metadata and manifests
 .missis-store/                ignored local SQLite database
-implementation/               lower-level model and store packages
+internal/                     model, store, and application packages
 pkg/missis/                   reusable Go SDK facade
 cmd/missis/                   command-line binary
 tools/                        development and maintenance tools
 ```
+
+Store permissions are private-by-default on POSIX (0700 directory, 0600 file).
+On Windows this is scoped to user-profile ACLs; POSIX mode bits are not
+emulated (ticket #55).
 
 Store discovery order:
 
