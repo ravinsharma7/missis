@@ -798,3 +798,52 @@ func TestLoadLinkEventsEquivalence(t *testing.T) {
 		t.Fatalf("lineage mismatch: all=%d link=%d", len(allEdges), len(linkEdges))
 	}
 }
+
+// TestAppendDuplicateBatchIsIdempotent covers the ambiguous-commit path
+// (ticket #63): re-appending a batch whose event IDs already exist must be a
+// successful replay, not a UNIQUE events.id failure. A batch reusing an ID
+// with different content must still be rejected.
+func TestAppendDuplicateBatchIsIdempotent(t *testing.T) {
+	t.Parallel()
+	s, err := Open(filepath.Join(t.TempDir(), "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	ticketID := model.TicketID("ticket:dupe")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	now := time.Now().UTC()
+	events := []model.Event{
+		{ID: model.EventID("event:dupe:1"), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: model.EventID("event:dupe:2"), Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:dupe:title", Path: []string{"title"}}, Value: model.Value{Kind: model.ValueKindText, Text: "Dupe"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: model.EventID("event:dupe:3"), Stream: stream, Sequence: 3, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:dupe:status", Path: []string{"status"}}, Value: model.Value{Kind: model.ValueKindStatus, Text: "open"}, RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	outcome1, alias1, err := s.AppendTicketBatch(events, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome1.Replayed {
+		t.Fatal("first append must not be a replay")
+	}
+	if alias1 == 0 {
+		t.Fatal("expected a ticket alias")
+	}
+
+	outcome2, alias2, err := s.AppendTicketBatch(events, "", nil)
+	if err != nil {
+		t.Fatalf("duplicate batch should replay, got %v", err)
+	}
+	if !outcome2.Replayed {
+		t.Fatal("duplicate batch must be marked replayed")
+	}
+	if alias2 != alias1 || len(outcome2.Events) != len(events) {
+		t.Fatalf("replay mismatch: alias %d/%d events %d/%d", alias2, alias1, len(outcome2.Events), len(events))
+	}
+
+	bad := append([]model.Event(nil), events...)
+	bad[2].Value = model.Value{Kind: model.ValueKindStatus, Text: "doing"}
+	if _, _, err := s.AppendTicketBatch(bad, "", nil); err == nil {
+		t.Fatal("expected duplicate-ID batch with different content to be rejected")
+	}
+}
