@@ -88,7 +88,7 @@ func Open(path string) (*Store, error) {
 		writer.Close()
 		return nil, err
 	}
-	if err := backfillDerivedTables(writer); err != nil {
+	if err := ensureDerivedFresh(writer); err != nil {
 		writer.Close()
 		return nil, err
 	}
@@ -1173,19 +1173,74 @@ func rebuildProjectionTx(tx *sql.Tx) error {
 	return nil
 }
 
-// backfillDerivedTables populates the derived tables for stores that predate
-// migration 0004: once, on open, when events exist but no rows do.
-func backfillDerivedTables(db *sql.DB) error {
-	var ticketCount, eventCount int
+// ensureDerivedFresh guarantees the derived tables match the authoritative
+// event ledger on open. It rebuilds them when rows are missing or stale, which
+// can happen when a binary predating migration 0004 appended events (ticket
+// #51). Events remain the source of truth, so rebuilding derived data is safe.
+func ensureDerivedFresh(db *sql.DB) error {
+	var ticketCount, eventCount, streamCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM tickets`).Scan(&ticketCount); err != nil {
 		return err
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&eventCount); err != nil {
 		return err
 	}
-	if ticketCount > 0 || eventCount == 0 {
+	if eventCount == 0 {
 		return nil
 	}
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT stream_entity) FROM events WHERE stream_kind = ?`, string(model.KindTicket)).Scan(&streamCount); err != nil {
+		return err
+	}
+	if ticketCount == 0 || ticketCount != streamCount {
+		return rebuildDerived(db)
+	}
+
+	// Compare each ticket's derived head_event to the last event in its
+	// stream; a mismatch means a stale binary appended without maintaining
+	// the derived tables.
+	rows, err := db.Query(
+		`SELECT e.stream_entity, e.event_json FROM events e
+		 WHERE e.stream_kind = ?
+		   AND e.sequence = (SELECT MAX(e2.sequence) FROM events e2
+		                     WHERE e2.stream_kind = e.stream_kind
+		                       AND e2.stream_entity = e.stream_entity)`,
+		string(model.KindTicket),
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	heads := make(map[string]string)
+	for rows.Next() {
+		var entity, raw string
+		if err := rows.Scan(&entity, &raw); err != nil {
+			return err
+		}
+		var event model.Event
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			return err
+		}
+		heads[entity] = string(event.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(heads) != ticketCount {
+		return rebuildDerived(db)
+	}
+	for entity, head := range heads {
+		var dbHead sql.NullString
+		if err := db.QueryRow(`SELECT head_event FROM tickets WHERE ticket_id = ?`, entity).Scan(&dbHead); err != nil {
+			return err
+		}
+		if !dbHead.Valid || dbHead.String != head {
+			return rebuildDerived(db)
+		}
+	}
+	return nil
+}
+
+func rebuildDerived(db *sql.DB) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
