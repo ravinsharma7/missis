@@ -66,6 +66,7 @@ func TestMultiProcessConcurrency(t *testing.T) {
 			t.Fatalf("set worker %d failed: %d stdout=%s stderr=%s", i, result.code, result.stdout, result.stderr)
 		}
 	}
+	assertNoDuplicateEventIDs(t, store)
 	projection := mustJSON(t, runMissis(t, store, "show", "--json", "#1"))
 	parts := projection["parts"].(map[string]any)
 	for i := 0; i < workers; i++ {
@@ -120,4 +121,5 @@ func TestConcurrentSetHealthStress(t *testing.T) {
 			t.Fatalf("health after stress iteration %d failed: %d stdout=%s stderr=%s", iter, health.code, health.stdout, health.stderr)
 		}
 	}
+	assertNoDuplicateEventIDs(t, store)
 }

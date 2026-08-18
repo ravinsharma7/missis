@@ -3,13 +3,12 @@ package missis
 import (
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
+	"github.com/ravinsharma7/missis/internal/idgen"
 	"github.com/ravinsharma7/missis/internal/model"
 )
 
 func NewID(prefix string) string {
-	return prefix + ":" + ulid.Make().String()
+	return idgen.New(prefix)
 }
 
 func NewEvent(stream model.Ref, operation model.Operation, target model.Ref, value model.Value, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, reason string) model.Event {

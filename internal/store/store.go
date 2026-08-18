@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oklog/ulid/v2"
 	_ "modernc.org/sqlite"
 
+	"github.com/ravinsharma7/missis/internal/idgen"
 	"github.com/ravinsharma7/missis/internal/model"
 )
 
@@ -296,10 +296,6 @@ func configureDB(db *sql.DB) error {
 	return nil
 }
 
-func newULID(prefix string) string {
-	return prefix + ":" + ulid.Make().String()
-}
-
 func computeEventHash(event model.Event, previousHash string) string {
 	canonical := event
 	canonical.AliasSeq = 0
@@ -320,7 +316,7 @@ func ensureStoreIdentityAndHashes(db *sql.DB) error {
 	var storeID string
 	err = tx.QueryRow(`SELECT store_id FROM store_meta WHERE singleton = 1`).Scan(&storeID)
 	if err == sql.ErrNoRows {
-		storeID = newULID("store")
+		storeID = idgen.New("store")
 		if _, err := tx.Exec(
 			`INSERT INTO store_meta (singleton, store_id, head_hash, updated_at) VALUES (1, ?, '', ?)`,
 			storeID, time.Now().UTC().Format(time.RFC3339Nano),
@@ -766,7 +762,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 	for i := range events {
 		event := events[i]
 		if event.ID == "" {
-			event.ID = model.EventID(newULID("event"))
+			event.ID = model.EventID(idgen.New("event"))
 		}
 		allocated := nextSequence + uint64(i)
 		if event.Sequence != 0 && event.Sequence != allocated {

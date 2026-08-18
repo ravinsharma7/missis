@@ -1,7 +1,9 @@
 package blackbox
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 var missisBin string
@@ -206,6 +210,40 @@ func copyFileIfExists(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0o600)
+}
+
+// assertNoDuplicateEventIDs scans the store for duplicate event IDs — the
+// cross-process ULID collision mode of ticket #65. The appends themselves
+// would fail on the UNIQUE constraint, but this assertion surfaces the
+// collision class directly with evidence, so regressions are caught even if
+// storage constraints change.
+func assertNoDuplicateEventIDs(t *testing.T, storePath string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", storePath)
+	if err != nil {
+		t.Fatalf("open store for duplicate check: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT id, COUNT(*) FROM events GROUP BY id HAVING COUNT(*) > 1`)
+	if err != nil {
+		t.Fatalf("query duplicate event ids: %v", err)
+	}
+	defer rows.Close()
+	var duplicates []string
+	for rows.Next() {
+		var id string
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			t.Fatalf("scan duplicate id: %v", err)
+		}
+		duplicates = append(duplicates, fmt.Sprintf("%s(x%d)", id, count))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate duplicate ids: %v", err)
+	}
+	if len(duplicates) > 0 {
+		t.Fatalf("duplicate event IDs in %s: %v", storePath, duplicates)
+	}
 }
 
 func mustJSON(t *testing.T, result cmdResult) map[string]any {
