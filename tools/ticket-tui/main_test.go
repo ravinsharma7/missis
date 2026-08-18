@@ -269,16 +269,180 @@ func TestViewStatsTinyTerminal(t *testing.T) {
 
 func TestListVisibleRows(t *testing.T) {
 	m := tuiModel{}
-	if got := m.listVisibleRows(); got != defaultHeight-4 {
-		t.Errorf("default visible = %d, want %d", got, defaultHeight-4)
+	if got := m.listVisibleRows(); got != defaultHeight-5 {
+		t.Errorf("default visible = %d, want %d", got, defaultHeight-5)
 	}
 	m.height = 10
-	if got := m.listVisibleRows(); got != 6 {
-		t.Errorf("height 10 visible = %d, want 6", got)
+	if got := m.listVisibleRows(); got != 5 {
+		t.Errorf("height 10 visible = %d, want 5", got)
 	}
+	m.message = "exported #1 -> out.md"
+	if got := m.listVisibleRows(); got != 4 {
+		t.Errorf("height 10 visible with message = %d, want 4", got)
+	}
+	m.message = ""
 	m.height = 3
 	if got := m.listVisibleRows(); got != 1 {
 		t.Errorf("tiny height visible = %d, want 1", got)
+	}
+}
+
+func TestViewFitsTerminalHeight(t *testing.T) {
+	for _, height := range []int{24, 10, 8, 6} {
+		for _, msg := range []string{"", "exported #1 -> out.md"} {
+			m := tuiModel{width: 80, height: height, message: msg}
+			for i := 1; i <= 40; i++ {
+				m.summaries = append(m.summaries, missis.TicketSummary{
+					Ref:    fmt.Sprintf("#%d", i),
+					Status: "open",
+					Title:  "ticket with a deliberately long title that must be truncated",
+				})
+			}
+			if got := len(strings.Split(m.View(), "\n")); got > height {
+				t.Errorf("list view at height %d (message %q) rendered %d lines", height, msg, got)
+			}
+
+			m.view = "detail"
+			m.detail = &detailState{summary: m.summaries[0]}
+			for i := 0; i < 40; i++ {
+				m.detail.lines = append(m.detail.lines, fmt.Sprintf("content line %02d with padding", i))
+			}
+			if got := len(strings.Split(m.View(), "\n")); got > height {
+				t.Errorf("detail view at height %d (message %q) rendered %d lines", height, msg, got)
+			}
+
+			m.view = "stats"
+			if got := len(strings.Split(m.View(), "\n")); got > height {
+				t.Errorf("stats view at height %d (message %q) rendered %d lines", height, msg, got)
+			}
+		}
+	}
+}
+
+func TestDetailRefsViewOmitsNoPartsLine(t *testing.T) {
+	m := tuiModel{
+		view:   "detail",
+		width:  80,
+		height: 10,
+		detail: &detailState{
+			summary:  missis.TicketSummary{Ref: "#1", Title: "t"},
+			lines:    []string{"<no references>"},
+			showRefs: true,
+		},
+	}
+	if strings.Contains(m.View(), "<no parts>") {
+		t.Errorf("refs view with no references should not render <no parts>:\n%s", m.View())
+	}
+	if got := len(strings.Split(m.View(), "\n")); got > m.height {
+		t.Errorf("refs view rendered %d lines, terminal height %d", got, m.height)
+	}
+}
+
+func TestDetailScrollReachesBothEnds(t *testing.T) {
+	m := tuiModel{
+		view:   "detail",
+		width:  80,
+		height: 10,
+		detail: &detailState{summary: missis.TicketSummary{Ref: "#1", Title: "t"}},
+	}
+	for i := 0; i < 40; i++ {
+		m.detail.lines = append(m.detail.lines, fmt.Sprintf("line %02d", i))
+	}
+
+	// G (end) anchors the last full window: content rows 34..39 at height 10.
+	updated, _ := m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	m = updated.(tuiModel)
+	if m.detail.offset != 34 {
+		t.Fatalf("G set offset %d, want 34", m.detail.offset)
+	}
+	view := m.viewDetail()
+	if !strings.Contains(view, "line 34") || !strings.Contains(view, "line 39") {
+		t.Errorf("bottom page does not show the final window:\n%s", view)
+	}
+
+	// Scrolling up must reach the top (offset 0, line 00 visible).
+	for i := 0; i < 50; i++ {
+		updated, _ := m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+		m = updated.(tuiModel)
+	}
+	if m.detail.offset != 0 {
+		t.Fatalf("scrolling up stopped at offset %d, want 0", m.detail.offset)
+	}
+	if view := m.viewDetail(); !strings.Contains(view, "line 00") {
+		t.Errorf("top page does not show the first content line:\n%s", view)
+	}
+}
+
+func TestListPagingMovesCursorWithWindow(t *testing.T) {
+	m := tuiModel{width: 80, height: 10}
+	for i := 1; i <= 20; i++ {
+		m.summaries = append(m.summaries, missis.TicketSummary{
+			Ref:    fmt.Sprintf("#%d", i),
+			Status: "open",
+			Title:  "t",
+		})
+	}
+	visible := m.listVisibleRows()
+	if visible != 5 {
+		t.Fatalf("listVisibleRows = %d, want 5", visible)
+	}
+	assertCursor := func(t *testing.T, step string) {
+		t.Helper()
+		if m.selected < m.listOffset || m.selected >= m.listOffset+visible {
+			t.Fatalf("%s: cursor %d outside window [%d,%d)", step, m.selected, m.listOffset, m.listOffset+visible)
+		}
+	}
+
+	// pgdown pages the cursor a full window each time, keeping it visible.
+	for _, want := range []int{5, 10, 15, 19} {
+		updated, _ := m.updateList(tea.KeyMsg{Type: tea.KeyPgDown})
+		m = updated.(tuiModel)
+		if m.selected != want {
+			t.Fatalf("pgdown selected = %d, want %d", m.selected, want)
+		}
+		assertCursor(t, "pgdown")
+	}
+	// At the end, the window is anchored to the last page.
+	if m.listOffset != 15 {
+		t.Fatalf("pgdown window offset = %d, want 15", m.listOffset)
+	}
+
+	// pgup pages back up and returns to the top.
+	updated, _ := m.updateList(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = updated.(tuiModel)
+	if m.selected != 14 {
+		t.Fatalf("pgup selected = %d, want 14", m.selected)
+	}
+	assertCursor(t, "pgup")
+	for i := 0; i < 5; i++ {
+		updated, _ := m.updateList(tea.KeyMsg{Type: tea.KeyPgUp})
+		m = updated.(tuiModel)
+		assertCursor(t, "pgup")
+	}
+	if m.selected != 0 || m.listOffset != 0 {
+		t.Fatalf("pgup to top: selected=%d offset=%d, want 0/0", m.selected, m.listOffset)
+	}
+
+	// Line-wise scrolling still works after paging.
+	updated, _ = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(tuiModel)
+	if m.selected != 1 || m.listOffset != 0 {
+		t.Fatalf("j after pgup: selected=%d offset=%d, want 1/0", m.selected, m.listOffset)
+	}
+	updated, _ = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(tuiModel)
+	if m.selected != 0 || m.listOffset != 0 {
+		t.Fatalf("k after j: selected=%d offset=%d, want 0/0", m.selected, m.listOffset)
+	}
+}
+
+func TestListPagingEmptyListDoesNotPanic(t *testing.T) {
+	m := tuiModel{width: 80, height: 10}
+	if _, err := m.updateList(tea.KeyMsg{Type: tea.KeyPgDown}); err != nil {
+		t.Fatal(err)
+	}
+	if m.selected != 0 {
+		t.Fatalf("selected = %d, want 0", m.selected)
 	}
 }
 
