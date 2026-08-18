@@ -25,6 +25,8 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test -count=1 ./...
+      - name: TUI smoke
+        run: go test -count=1 -run '^TestTUISmoke$' -v ./tools/ticket-tui
       - name: store diagnostic summary
         shell: bash
         run: |
@@ -67,6 +69,8 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test -count=1 ./...
+      - name: TUI smoke
+        run: go test -count=1 -run '^TestTUISmoke$' -v ./tools/ticket-tui
       - name: store diagnostic summary
         shell: bash
         run: |
