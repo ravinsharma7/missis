@@ -12,6 +12,7 @@ func TestMultiProcessConcurrency(t *testing.T) {
 	t.Parallel()
 	// covers PH1-CON-001 PH1-CON-002 N106 N107 N108 N109
 	store := filepath.Join(t.TempDir(), "missis.db")
+	preserveStoreOnFailure(t, store)
 	base := newTicket(t, store, "base")
 	if base["ref"] != "#1" {
 		t.Fatalf("base ref = %v", base["ref"])
@@ -65,6 +66,7 @@ func TestMultiProcessConcurrency(t *testing.T) {
 			t.Fatalf("set worker %d failed: %d stdout=%s stderr=%s", i, result.code, result.stdout, result.stderr)
 		}
 	}
+	assertNoDuplicateEventIDs(t, store)
 	projection := mustJSON(t, runMissis(t, store, "show", "--json", "#1"))
 	parts := projection["parts"].(map[string]any)
 	for i := 0; i < workers; i++ {
@@ -82,6 +84,7 @@ func TestMultiProcessConcurrency(t *testing.T) {
 func TestConcurrentSetHealthStress(t *testing.T) {
 	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
+	preserveStoreOnFailure(t, store)
 	base := newTicket(t, store, "stress")
 	if base["ref"] != "#1" {
 		t.Fatalf("base ref = %v", base["ref"])
@@ -118,4 +121,5 @@ func TestConcurrentSetHealthStress(t *testing.T) {
 			t.Fatalf("health after stress iteration %d failed: %d stdout=%s stderr=%s", iter, health.code, health.stdout, health.stderr)
 		}
 	}
+	assertNoDuplicateEventIDs(t, store)
 }

@@ -1,13 +1,19 @@
 package blackbox
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 var missisBin string
@@ -126,6 +132,118 @@ func newTicket(t *testing.T, store, title string) map[string]any {
 		t.Fatalf("new json: %v\n%s", err, result.stdout)
 	}
 	return body
+}
+
+// preserveStoreOnFailure arranges for the store files to be copied into
+// MISSIS_DIAG_DIR when the test fails, so flaky concurrency failures keep
+// their evidence (ticket #65). It is a no-op when MISSIS_DIAG_DIR is unset.
+func preserveStoreOnFailure(t *testing.T, storePath string) {
+	t.Helper()
+	base := os.Getenv("MISSIS_DIAG_DIR")
+	if base == "" {
+		return
+	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		dir, err := preserveStoreDump(base, t.Name(), storePath)
+		if err != nil {
+			t.Logf("preserve store dump: %v", err)
+			return
+		}
+		t.Logf("store diagnostics preserved at %s", dir)
+	})
+}
+
+// preserveStoreDump copies storePath (plus -wal and -shm) and a metadata.json
+// into base/<name>-<timestamp>/. Missing sidecar files are skipped; the main
+// store file is expected to exist.
+func preserveStoreDump(base, name, storePath string) (string, error) {
+	dir := filepath.Join(base, sanitizeTestName(name)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := copyFileIfExists(storePath, filepath.Join(dir, "missis.db")); err != nil {
+		return "", err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := copyFileIfExists(storePath+suffix, filepath.Join(dir, "missis.db"+suffix)); err != nil {
+			return "", err
+		}
+	}
+	meta := map[string]any{
+		"test":          name,
+		"go_version":    runtime.Version(),
+		"goos":          runtime.GOOS,
+		"goarch":        runtime.GOARCH,
+		"gomaxprocs":    runtime.GOMAXPROCS(0),
+		"github_run_id": os.Getenv("GITHUB_RUN_ID"),
+		"github_sha":    os.Getenv("GITHUB_SHA"),
+		"timestamp":     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), raw, 0o600); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func sanitizeTestName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == ':' || r == ' ' {
+			return '_'
+		}
+		return r
+	}, name)
+}
+
+func copyFileIfExists(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return os.WriteFile(dst, data, 0o600)
+}
+
+// assertNoDuplicateEventIDs scans the store for duplicate event IDs — the
+// cross-process ULID collision mode of ticket #65. The appends themselves
+// would fail on the UNIQUE constraint, but this assertion surfaces the
+// collision class directly with evidence, so regressions are caught even if
+// storage constraints change.
+func assertNoDuplicateEventIDs(t *testing.T, storePath string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", storePath)
+	if err != nil {
+		t.Fatalf("open store for duplicate check: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT id, COUNT(*) FROM events GROUP BY id HAVING COUNT(*) > 1`)
+	if err != nil {
+		t.Fatalf("query duplicate event ids: %v", err)
+	}
+	defer rows.Close()
+	var duplicates []string
+	for rows.Next() {
+		var id string
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			t.Fatalf("scan duplicate id: %v", err)
+		}
+		duplicates = append(duplicates, fmt.Sprintf("%s(x%d)", id, count))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate duplicate ids: %v", err)
+	}
+	if len(duplicates) > 0 {
+		t.Fatalf("duplicate event IDs in %s: %v", storePath, duplicates)
+	}
 }
 
 func mustJSON(t *testing.T, result cmdResult) map[string]any {

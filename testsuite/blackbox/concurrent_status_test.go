@@ -24,6 +24,7 @@ import (
 func TestConcurrentStatusChangesAcrossClients(t *testing.T) {
 	t.Parallel()
 	storePath := filepath.Join(t.TempDir(), "missis.db")
+	preserveStoreOnFailure(t, storePath)
 	const tickets = 8
 	for i := 0; i < tickets; i++ {
 		newTicket(t, storePath, fmt.Sprintf("status-%d", i))
