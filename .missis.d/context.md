@@ -67,6 +67,10 @@ go run ./tools/store-gaps .missis-store/missis.db
   implementation `model.CanonicalEventBytesV1` (ticket #45).
 - Store discovery: env outranks repo markers; markers must stay inside the
   repo root; store dirs 0700 and DB 0600 by default (ticket #47).
+- main branch is protected: strict CI checks (ci/linux + ci/windows) are
+  enforced for admins, so a push to main that fails CI is rejected (2026-08-18,
+  ticket #53). v0.1.0 tagged; storage compatibility statement published in
+  docs/storage-compatibility.md and cross-referenced from the spec.
 
 ## Known open areas
 
