@@ -12,6 +12,7 @@ func TestMultiProcessConcurrency(t *testing.T) {
 	t.Parallel()
 	// covers PH1-CON-001 PH1-CON-002 N106 N107 N108 N109
 	store := filepath.Join(t.TempDir(), "missis.db")
+	preserveStoreOnFailure(t, store)
 	base := newTicket(t, store, "base")
 	if base["ref"] != "#1" {
 		t.Fatalf("base ref = %v", base["ref"])
@@ -82,6 +83,7 @@ func TestMultiProcessConcurrency(t *testing.T) {
 func TestConcurrentSetHealthStress(t *testing.T) {
 	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")
+	preserveStoreOnFailure(t, store)
 	base := newTicket(t, store, "stress")
 	if base["ref"] != "#1" {
 		t.Fatalf("base ref = %v", base["ref"])

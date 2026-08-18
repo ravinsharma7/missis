@@ -6,8 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 var missisBin string
@@ -126,6 +128,84 @@ func newTicket(t *testing.T, store, title string) map[string]any {
 		t.Fatalf("new json: %v\n%s", err, result.stdout)
 	}
 	return body
+}
+
+// preserveStoreOnFailure arranges for the store files to be copied into
+// MISSIS_DIAG_DIR when the test fails, so flaky concurrency failures keep
+// their evidence (ticket #65). It is a no-op when MISSIS_DIAG_DIR is unset.
+func preserveStoreOnFailure(t *testing.T, storePath string) {
+	t.Helper()
+	base := os.Getenv("MISSIS_DIAG_DIR")
+	if base == "" {
+		return
+	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		dir, err := preserveStoreDump(base, t.Name(), storePath)
+		if err != nil {
+			t.Logf("preserve store dump: %v", err)
+			return
+		}
+		t.Logf("store diagnostics preserved at %s", dir)
+	})
+}
+
+// preserveStoreDump copies storePath (plus -wal and -shm) and a metadata.json
+// into base/<name>-<timestamp>/. Missing sidecar files are skipped; the main
+// store file is expected to exist.
+func preserveStoreDump(base, name, storePath string) (string, error) {
+	dir := filepath.Join(base, sanitizeTestName(name)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := copyFileIfExists(storePath, filepath.Join(dir, "missis.db")); err != nil {
+		return "", err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := copyFileIfExists(storePath+suffix, filepath.Join(dir, "missis.db"+suffix)); err != nil {
+			return "", err
+		}
+	}
+	meta := map[string]any{
+		"test":          name,
+		"go_version":    runtime.Version(),
+		"goos":          runtime.GOOS,
+		"goarch":        runtime.GOARCH,
+		"gomaxprocs":    runtime.GOMAXPROCS(0),
+		"github_run_id": os.Getenv("GITHUB_RUN_ID"),
+		"github_sha":    os.Getenv("GITHUB_SHA"),
+		"timestamp":     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), raw, 0o600); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func sanitizeTestName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == ':' || r == ' ' {
+			return '_'
+		}
+		return r
+	}, name)
+}
+
+func copyFileIfExists(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return os.WriteFile(dst, data, 0o600)
 }
 
 func mustJSON(t *testing.T, result cmdResult) map[string]any {

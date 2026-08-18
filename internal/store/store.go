@@ -48,6 +48,11 @@ type Store struct {
 	writer *sql.DB
 	reader *sql.DB
 
+	// diag is an optional side-channel sink for append-path diagnostics
+	// (ticket #65). When nil, diagnostics are disabled with zero overhead.
+	// It must never influence store behavior.
+	diag Diagnostics
+
 	// appendCommitHook is test-only fault injection. When non-nil it runs just
 	// before the append transaction commits, and its error is returned in place
 	// of a commit failure. Production code never sets it.
@@ -62,6 +67,17 @@ type Store struct {
 var migrationsFS embed.FS
 
 func Open(path string) (*Store, error) {
+	return open(path, nil)
+}
+
+// OpenWithDiag opens a store and attaches a side-channel diagnostics sink.
+// Diagnostics must not affect store behavior; they are write-only evidence for
+// CI and debugging (ticket #65).
+func OpenWithDiag(path string, diag Diagnostics) (*Store, error) {
+	return open(path, diag)
+}
+
+func open(path string, diag Diagnostics) (*Store, error) {
 	if path == "" {
 		return nil, fmt.Errorf("store path is empty")
 	}
@@ -114,7 +130,14 @@ func Open(path string) (*Store, error) {
 	}
 	writer.SetMaxOpenConns(1)
 	reader.SetMaxOpenConns(4)
-	return &Store{writer: writer, reader: reader}, nil
+	return &Store{writer: writer, reader: reader, diag: diag}, nil
+}
+
+func (s *Store) emit(event string, fields map[string]any) {
+	if s.diag == nil {
+		return
+	}
+	s.diag.Emit(event, fields)
 }
 
 func (s *Store) Close() error {
@@ -627,9 +650,25 @@ func (s *Store) appendBatchWithRetry(events []model.Event, idempotencyKey string
 		}
 		outcome, alias, err = s.appendBatchOnce(attemptEvents, idempotencyKey, preconditions, result, allocateAlias)
 		if err == nil || !isRetryableAppendError(err) {
+			if err != nil {
+				s.emit("append-attempt", map[string]any{
+					"attempt":   attempt,
+					"err_kind":  classifyAppendError(err),
+					"err":       err.Error(),
+					"retryable": false,
+				})
+			}
 			return outcome, alias, err
 		}
-		time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+		sleepMS := (attempt + 1) * 100
+		s.emit("append-attempt", map[string]any{
+			"attempt":   attempt,
+			"err_kind":  classifyAppendError(err),
+			"err":       err.Error(),
+			"retryable": true,
+			"sleep_ms":  sleepMS,
+		})
+		time.Sleep(time.Duration(sleepMS) * time.Millisecond)
 	}
 	return outcome, alias, err
 }
@@ -829,11 +868,21 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 // replay outcome. A mismatch (same ID, different content) is an error.
 func (s *Store) replayExistingBatchTx(tx *sql.Tx, events []model.Event, allocateAlias bool) (bool, AppendOutcome, uint64, error) {
 	existing := make([]model.Event, 0, len(events))
+	streamEntity := ""
+	if len(events) > 0 {
+		streamEntity = events[0].Stream.Entity
+	}
 	for _, event := range events {
 		var raw string
 		var aliasSeq uint64
 		err := tx.QueryRow(`SELECT event_json, alias_seq FROM events WHERE id = ?`, string(event.ID)).Scan(&raw, &aliasSeq)
 		if err == sql.ErrNoRows {
+			s.emit("append-replay", map[string]any{
+				"decision":   "absent",
+				"stream":     streamEntity,
+				"event_id":   string(event.ID),
+				"batch_size": len(events),
+			})
 			return false, AppendOutcome{}, 0, nil
 		}
 		if err != nil {
@@ -845,6 +894,15 @@ func (s *Store) replayExistingBatchTx(tx *sql.Tx, events []model.Event, allocate
 		}
 		stored.AliasSeq = aliasSeq
 		if !sameAppendEvent(event, stored) {
+			proposedJSON, _ := json.Marshal(event)
+			s.emit("append-replay", map[string]any{
+				"decision":      "conflict",
+				"stream":        streamEntity,
+				"event_id":      string(event.ID),
+				"proposed_json": string(proposedJSON),
+				"stored_json":   raw,
+				"batch_size":    len(events),
+			})
 			return false, AppendOutcome{}, 0, fmt.Errorf("event %s already exists with different content", event.ID)
 		}
 		existing = append(existing, stored)
@@ -857,7 +915,33 @@ func (s *Store) replayExistingBatchTx(tx *sql.Tx, events []model.Event, allocate
 			return false, AppendOutcome{}, 0, err
 		}
 	}
+	if len(events) > 0 {
+		s.emit("append-replay", map[string]any{
+			"decision":   "replayed",
+			"stream":     streamEntity,
+			"event_id":   string(events[0].ID),
+			"batch_size": len(events),
+		})
+	}
 	return true, AppendOutcome{Replayed: true, Events: existing}, alias, nil
+}
+
+func classifyAppendError(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if isBusyError(err) {
+		return "busy"
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "unique constraint failed: events.stream_kind"):
+		return "unique"
+	case strings.Contains(text, "already exists with different content"):
+		return "conflict"
+	default:
+		return "other"
+	}
 }
 
 // sameAppendEvent compares the caller-supplied fields of an event to its

@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ravinsharma7/missis/internal/model"
@@ -46,7 +48,15 @@ func OpenPathWithClock(path string, clock missis.Clock) (*Service, error) {
 }
 
 func openResolved(resolved missis.ResolvedStore, clock missis.Clock) (*Service, error) {
-	s, err := store.Open(resolved.Path)
+	var (
+		s   *store.Store
+		err error
+	)
+	if diag := storeDiagnosticsFromEnv(); diag != nil {
+		s, err = store.OpenWithDiag(resolved.Path, diag)
+	} else {
+		s, err = store.Open(resolved.Path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +67,29 @@ func openResolved(resolved missis.ResolvedStore, clock missis.Clock) (*Service, 
 		source:   resolved.Source,
 		clock:    clock,
 	}, nil
+}
+
+// storeDiagnosticsFromEnv wires append-path diagnostics (ticket #65).
+// MISSIS_STORE_DIAG is a path to a JSON-lines file, or one of "1"/"true"/
+// "stderr" to write to stderr. Unset, "0", or "false" disables. CI sets it
+// unconditionally so every run captures structured evidence; the store itself
+// stays free of environment reads.
+func storeDiagnosticsFromEnv() store.Diagnostics {
+	value := os.Getenv("MISSIS_STORE_DIAG")
+	switch value {
+	case "", "0", "false":
+		return nil
+	case "1", "true", "stderr":
+		return store.NewJSONLinesDiagnostics(os.Stderr)
+	}
+	if err := os.MkdirAll(filepath.Dir(value), 0o700); err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(value, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil
+	}
+	return store.NewJSONLinesDiagnostics(f)
 }
 
 // realClock is the production clock.
