@@ -25,12 +25,9 @@ var (
 )
 
 const (
-	defaultWidth       = 80
-	defaultHeight      = 24
-	refreshInterval    = 2 * time.Second
-	listReservedRows   = 4
-	detailReservedRows = 4
-	statsReservedRows  = 4
+	defaultWidth    = 80
+	defaultHeight   = 24
+	refreshInterval = 2 * time.Second
 )
 
 type detailState struct {
@@ -174,15 +171,27 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampListOffset()
 		}
 	case "pgup":
-		if m.height > 0 {
-			m.listOffset -= maxInt(1, m.height-3)
+		if len(m.summaries) > 0 {
+			visible := m.listVisibleRows()
+			rel := m.selected - m.listOffset
+			m.selected -= visible
+			if m.selected < 0 {
+				m.selected = 0
+			}
+			m.listOffset = m.selected - rel
+			m.clampListOffset()
 		}
-		m.clampListOffset()
 	case "pgdown":
-		if m.height > 0 {
-			m.listOffset += maxInt(1, m.height-3)
+		if len(m.summaries) > 0 {
+			visible := m.listVisibleRows()
+			rel := m.selected - m.listOffset
+			m.selected += visible
+			if m.selected > len(m.summaries)-1 {
+				m.selected = len(m.summaries) - 1
+			}
+			m.listOffset = m.selected - rel
+			m.clampListOffset()
 		}
-		m.clampListOffset()
 	case "enter", " ":
 		if len(m.summaries) == 0 {
 			return m, nil
@@ -239,35 +248,33 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	rendered := m.renderedDetailLines()
+	maxOffset := len(rendered) - m.detailWindowRows()
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
 	switch key.String() {
 	case "up", "k":
 		if m.detail.offset > 0 {
 			m.detail.offset--
 		}
 	case "down", "j":
-		if m.detail.offset < len(rendered)-1 {
+		if m.detail.offset < maxOffset {
 			m.detail.offset++
 		}
 	case "pgup":
-		if m.height > 0 {
-			m.detail.offset -= maxInt(1, m.height-4)
-		}
+		m.detail.offset -= m.detailWindowRows()
 		if m.detail.offset < 0 {
 			m.detail.offset = 0
 		}
 	case "pgdown":
-		if m.height > 0 {
-			m.detail.offset += maxInt(1, m.height-4)
-		}
-		if m.detail.offset > len(rendered)-1 {
-			m.detail.offset = len(rendered) - 1
+		m.detail.offset += m.detailWindowRows()
+		if m.detail.offset > maxOffset {
+			m.detail.offset = maxOffset
 		}
 	case "g", "home":
 		m.detail.offset = 0
 	case "G", "end":
-		if len(rendered) > 0 {
-			m.detail.offset = len(rendered) - 1
-		}
+		m.detail.offset = maxOffset
 	case "b", "esc":
 		m.view = "list"
 		m.detail = nil
@@ -373,31 +380,29 @@ func (m tuiModel) updateStats(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	lines := m.statsLines()
+	maxOffset := len(lines) - m.statsWindowRows()
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
 	switch key.String() {
 	case "up", "k":
 		if m.statsOffset > 0 {
 			m.statsOffset--
 		}
 	case "down", "j":
-		if m.statsOffset < len(lines)-1 {
+		if m.statsOffset < maxOffset {
 			m.statsOffset++
 		}
 	case "pgup":
-		if m.height > 0 {
-			m.statsOffset -= maxInt(1, m.height-statsReservedRows)
-		}
+		m.statsOffset -= m.statsWindowRows()
 		m.clampStatsOffset()
 	case "pgdown":
-		if m.height > 0 {
-			m.statsOffset += maxInt(1, m.height-statsReservedRows)
-		}
+		m.statsOffset += m.statsWindowRows()
 		m.clampStatsOffset()
 	case "g", "home":
 		m.statsOffset = 0
 	case "G", "end":
-		if len(lines) > 0 {
-			m.statsOffset = len(lines) - 1
-		}
+		m.statsOffset = maxOffset
 	case "b", "esc":
 		m.view = "list"
 		m.message = ""
@@ -516,15 +521,51 @@ func (m tuiModel) effectiveSize() (width, height int) {
 	return width, height
 }
 
+// helpRows returns the number of rows the help bar plus any status message
+// will occupy below the view body.
+func (m tuiModel) helpRows() int {
+	rows := 1
+	if m.message != "" {
+		rows++
+	}
+	return rows
+}
+
 // listVisibleRows leaves room for the title line, blank line, column header,
-// and the help bar rendered by View().
+// the blank separator row, and the help bar rendered by View().
 func (m tuiModel) listVisibleRows() int {
 	_, height := m.effectiveSize()
-	visible := height - listReservedRows
+	visible := height - 4 - m.helpRows()
 	if visible < 1 {
 		visible = 1
 	}
 	return visible
+}
+
+// detailWindowRows leaves room for the title line, blank line, blank
+// separator row, the help bar rendered by View(), and the "<no parts>" line
+// when present.
+func (m tuiModel) detailWindowRows() int {
+	_, height := m.effectiveSize()
+	rows := height - 3 - m.helpRows()
+	if m.detail != nil && len(m.detail.lines) <= 1 && !m.detail.showRefs {
+		rows--
+	}
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
+// statsWindowRows leaves room for the title line, blank line, blank separator
+// row, and the help bar rendered by View().
+func (m tuiModel) statsWindowRows() int {
+	_, height := m.effectiveSize()
+	rows := height - 3 - m.helpRows()
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
 }
 
 // visibleRange returns the half-open [start, end) window into content of
@@ -583,12 +624,12 @@ func (m tuiModel) viewDetail() string {
 	}
 	b.WriteString(titleStyle.Render(m.detail.summary.Ref + "  " + detailTitle + viewLabel))
 	b.WriteString("\n\n")
-	if len(m.detail.lines) <= 1 {
+	noParts := len(m.detail.lines) <= 1 && !m.detail.showRefs
+	if noParts {
 		b.WriteString("<no parts>\n")
 	}
 	rendered := m.renderedDetailLines()
-	_, height := m.effectiveSize()
-	start, end := visibleRange(m.detail.offset, len(rendered), height-detailReservedRows)
+	start, end := visibleRange(m.detail.offset, len(rendered), m.detailWindowRows())
 	for _, line := range rendered[start:end] {
 		b.WriteString(line)
 		b.WriteByte('\n')
@@ -604,8 +645,12 @@ func (m *tuiModel) clampDetailOffset() {
 		m.detail.offset = 0
 	}
 	rendered := m.renderedDetailLines()
-	if len(rendered) > 0 && m.detail.offset >= len(rendered) {
-		m.detail.offset = len(rendered) - 1
+	maxOffset := len(rendered) - m.detailWindowRows()
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.detail.offset > maxOffset {
+		m.detail.offset = maxOffset
 	}
 }
 
@@ -800,8 +845,7 @@ func (m tuiModel) statsLines() []string {
 
 func (m tuiModel) viewStats() string {
 	lines := m.statsLines()
-	_, height := m.effectiveSize()
-	start, end := visibleRange(m.statsOffset, len(lines), height-statsReservedRows)
+	start, end := visibleRange(m.statsOffset, len(lines), m.statsWindowRows())
 	var b strings.Builder
 	for _, line := range lines[start:end] {
 		b.WriteString(line)
@@ -815,8 +859,12 @@ func (m *tuiModel) clampStatsOffset() {
 		m.statsOffset = 0
 	}
 	lines := m.statsLines()
-	if len(lines) > 0 && m.statsOffset >= len(lines) {
-		m.statsOffset = len(lines) - 1
+	maxOffset := len(lines) - m.statsWindowRows()
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.statsOffset > maxOffset {
+		m.statsOffset = maxOffset
 	}
 }
 
