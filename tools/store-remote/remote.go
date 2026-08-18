@@ -88,7 +88,11 @@ type localRemote struct {
 }
 
 func (r *localRemote) keyPath(key string) string {
-	return filepath.Join(r.dir, filepath.FromSlash(key))
+	// Windows forbids ':' in path segments, and store IDs embed colons
+	// (store:01M...). The local filesystem remote sanitizes them; the logical
+	// key (used in messages and by rclone/aws) keeps the colon (ticket #55).
+	safe := strings.ReplaceAll(key, ":", "_")
+	return filepath.Join(r.dir, filepath.FromSlash(safe))
 }
 
 func (r *localRemote) Exists(ctx context.Context, key string) (bool, error) {

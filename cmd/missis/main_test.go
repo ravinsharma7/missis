@@ -26,6 +26,10 @@ exit 0
 }
 
 func TestLatestModuleVersionHermetic(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Same POSIX sh shim as TestSelfUpdateHermetic (ticket #55).
+		t.Skip("hermetic go shim is POSIX-only")
+	}
 	dir := t.TempDir()
 	writeFakeGo(t, dir, `{"Version":"vTest","Time":"2026-01-01T00:00:00Z"}`, 0)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

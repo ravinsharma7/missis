@@ -3,9 +3,24 @@ package missis
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// canonicalTempDir returns a t.TempDir whose path is in long form. On Windows
+// runners the temp root may use 8.3 short names (e.g. RUNNER~1) while
+// os.Getwd returns the long form, so comparisons need a canonical base.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return resolved
+		}
+	}
+	return dir
+}
 
 func chdirForTest(t *testing.T, dir string) {
 	t.Helper()
@@ -32,7 +47,7 @@ func writeMarker(t *testing.T, dir, content string) {
 }
 
 func TestResolveStorePathRelativeMarker(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := canonicalTempDir(t)
 	project := filepath.Join(tmp, "project")
 	writeMarker(t, project, "db/store.db\n")
 	chdirForTest(t, project)
@@ -73,7 +88,7 @@ func TestResolveStorePathMarkerEscapeRejected(t *testing.T) {
 }
 
 func TestResolveStorePathDirectoryMarker(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := canonicalTempDir(t)
 	project := filepath.Join(tmp, "project")
 	if err := os.MkdirAll(filepath.Join(project, ".missis"), 0o755); err != nil {
 		t.Fatal(err)
@@ -130,7 +145,7 @@ func TestResolveStoreEnvBeatsMarker(t *testing.T) {
 }
 
 func TestResolveStoreSources(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := canonicalTempDir(t)
 
 	flagPath := filepath.Join(tmp, "flag.db")
 	rs, err := ResolveStore(flagPath)
@@ -168,7 +183,7 @@ func TestResolveStoreSources(t *testing.T) {
 }
 
 func TestResolveStoreMarkerThroughSymlinkedCwd(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := canonicalTempDir(t)
 	project := filepath.Join(tmp, "project")
 	writeMarker(t, project, "db/store.db\n")
 	link := filepath.Join(tmp, "linked")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -140,6 +141,11 @@ func TestStoreIdentityAndHeadHash(t *testing.T) {
 
 func TestOpenCreatesPrivateStore(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		// Private-by-default is POSIX-scoped; Windows relies on user-profile
+		// ACLs and does not emulate mode bits (ticket #55).
+		t.Skip("store mode assertion is POSIX-only")
+	}
 	tmp := t.TempDir()
 	storeDir := filepath.Join(tmp, "store")
 	path := filepath.Join(storeDir, "missis.db")

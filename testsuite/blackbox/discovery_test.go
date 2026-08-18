@@ -3,6 +3,7 @@ package blackbox
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -119,6 +120,11 @@ func TestMissisDirectoryMarker(t *testing.T) {
 
 func TestXDGFallback(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		// The default store path on Windows is %LOCALAPPDATA% (ticket #55),
+		// so the POSIX XDG fallback contract does not apply.
+		t.Skip("XDG default is POSIX-only")
+	}
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "home")
 	work := filepath.Join(tmp, "work")
