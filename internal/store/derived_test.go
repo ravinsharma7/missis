@@ -188,6 +188,46 @@ func TestBackfillDerivedOnOpen(t *testing.T) {
 	}
 }
 
+// TestOpenHealsDerivedDrift simulates a stale binary (predating migration
+// 0004) appending events without maintaining derived rows: after removing one
+// derived row and corrupting another ticket's head, reopening must rebuild the
+// derived tables so the store is consistent again.
+func TestOpenHealsDerivedDrift(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missis.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := derivedTicketEvents(t, s, "a", "Alpha")
+	b := derivedTicketEvents(t, s, "b", "Beta")
+	if _, err := s.writer.Exec(`DELETE FROM tickets WHERE ticket_id = ?`, string(b)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.writer.Exec(`UPDATE tickets SET head_event = 'stale' WHERE ticket_id = ?`, string(a)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	summaries, err := reopened.ListTickets(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 tickets after open-time heal, got %d", len(summaries))
+	}
+	if err := reopened.CheckConsistency(); err != nil {
+		t.Fatalf("consistency after open-time heal: %v", err)
+	}
+}
+
 func TestDerivedRetraction(t *testing.T) {
 	t.Parallel()
 	s := openDerivedStore(t)
