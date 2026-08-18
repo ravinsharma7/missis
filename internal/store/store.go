@@ -673,6 +673,17 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		}
 	}
 
+	// Ambiguous-commit guard: a previous attempt may have committed even
+	// though an error was returned (most likely under lock contention on
+	// Windows). If every event ID in this batch already exists and matches,
+	// treat the append as a successful replay instead of surfacing a
+	// UNIQUE events.id failure (ticket #63).
+	if replayed, outcome, replayAlias, err := s.replayExistingBatchTx(tx, events, allocateAlias); err != nil {
+		return AppendOutcome{}, 0, err
+	} else if replayed {
+		return outcome, replayAlias, nil
+	}
+
 	if events[0].Stream.Kind == "" || events[0].Stream.Entity == "" {
 		return AppendOutcome{}, 0, fmt.Errorf("event stream is required")
 	}
@@ -811,6 +822,88 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		return AppendOutcome{}, 0, err
 	}
 	return AppendOutcome{Replayed: false, Events: appended}, alias, nil
+}
+
+// replayExistingBatchTx reports whether every event in the batch already
+// exists with identical content, and if so returns the stored events as a
+// replay outcome. A mismatch (same ID, different content) is an error.
+func (s *Store) replayExistingBatchTx(tx *sql.Tx, events []model.Event, allocateAlias bool) (bool, AppendOutcome, uint64, error) {
+	existing := make([]model.Event, 0, len(events))
+	for _, event := range events {
+		var raw string
+		var aliasSeq uint64
+		err := tx.QueryRow(`SELECT event_json, alias_seq FROM events WHERE id = ?`, string(event.ID)).Scan(&raw, &aliasSeq)
+		if err == sql.ErrNoRows {
+			return false, AppendOutcome{}, 0, nil
+		}
+		if err != nil {
+			return false, AppendOutcome{}, 0, err
+		}
+		var stored model.Event
+		if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+			return false, AppendOutcome{}, 0, err
+		}
+		stored.AliasSeq = aliasSeq
+		if !sameAppendEvent(event, stored) {
+			return false, AppendOutcome{}, 0, fmt.Errorf("event %s already exists with different content", event.ID)
+		}
+		existing = append(existing, stored)
+	}
+	var alias uint64
+	if allocateAlias {
+		var err error
+		alias, err = aliasForTicketTx(tx, model.TicketID(events[0].Stream.Entity))
+		if err != nil {
+			return false, AppendOutcome{}, 0, err
+		}
+	}
+	return true, AppendOutcome{Replayed: true, Events: existing}, alias, nil
+}
+
+// sameAppendEvent compares the caller-supplied fields of an event to its
+// stored form. Sequence and AliasSeq are allocated by the store, so they are
+// excluded from the comparison.
+func sameAppendEvent(proposed, stored model.Event) bool {
+	return proposed.Stream.Kind == stored.Stream.Kind &&
+		proposed.Stream.Entity == stored.Stream.Entity &&
+		proposed.Operation == stored.Operation &&
+		refsEqual(proposed.Target, stored.Target) &&
+		valuesEqual(proposed.Value, stored.Value) &&
+		proposed.RecordedAt.Equal(stored.RecordedAt) &&
+		proposed.EffectiveAt.Equal(stored.EffectiveAt) &&
+		proposed.Actor.ID == stored.Actor.ID &&
+		proposed.Actor.Name == stored.Actor.Name &&
+		proposed.Reason == stored.Reason
+}
+
+func refsEqual(a, b model.Ref) bool {
+	if a.Kind != b.Kind || a.Entity != b.Entity || len(a.Path) != len(b.Path) {
+		return false
+	}
+	for i := range a.Path {
+		if a.Path[i] != b.Path[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func valuesEqual(a, b model.Value) bool {
+	if a.Kind != b.Kind || a.Text != b.Text || len(a.List) != len(b.List) {
+		return false
+	}
+	for i := range a.List {
+		if a.List[i] != b.List[i] {
+			return false
+		}
+	}
+	if (a.Ref == nil) != (b.Ref == nil) {
+		return false
+	}
+	if a.Ref != nil && !refsEqual(*a.Ref, *b.Ref) {
+		return false
+	}
+	return fmt.Sprint(a.Data) == fmt.Sprint(b.Data)
 }
 
 func (s *Store) LoadEvents() ([]model.Event, error) {
