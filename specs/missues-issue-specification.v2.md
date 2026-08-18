@@ -1604,7 +1604,7 @@ event_hash = SHA-256(HashInput)
   format-versioned migration is a separate storage task.
 - Reference implementation: `model.CanonicalEventBytesV1` and
   `model.ComputeEventHashV1`; test vectors live in
-  `implementation/model/canonical_test.go`.
+  `internal/model/canonical_test.go`.
 
 ---
 
@@ -3422,7 +3422,7 @@ Operations whose feature phases have not landed (`assign-ontology`,
 `attach-evidence`, `record-verification`) are declared projection-neutral
 markers: they are accepted, validated, and visible in history/provenance, but
 have no projection effect until their phase lands. The reference registry in
-`implementation/model/registry.go` is the executable definition; a new phase
+`internal/model/registry.go` is the executable definition; a new phase
 registers new semantics rather than reinterpreting old events.
 
 These operation types improve projection and validation while keeping the external command vocabulary stable.

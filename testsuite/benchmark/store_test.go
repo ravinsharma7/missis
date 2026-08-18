@@ -6,15 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ravinsharma7/missis/implementation/model"
-	"github.com/ravinsharma7/missis/implementation/store"
+	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/store"
 )
 
 // BenchmarkListTickets measures how the TUI's refresh path (ListTickets) grows
 // with store size. Each ticket carries 5 events, so the event ledger is
-// 5x the ticket count. This supports the projection-snapshot decision (#51).
-// Sizes are capped because seeding is quadratic: every append re-loads and
-// re-validates the whole ledger, which itself is a scaling concern (#61).
+// 5x the ticket count. This supports the projection-snapshot decision (#51);
+// append is stream-scoped now, so seeding is no longer quadratic (#61).
 func BenchmarkListTickets(b *testing.B) {
 	for _, tickets := range []int{10, 50, 200, 400} {
 		b.Run(fmt.Sprintf("tickets=%d", tickets), func(b *testing.B) {

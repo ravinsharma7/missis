@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ravinsharma7/missis/implementation/model"
+	"github.com/ravinsharma7/missis/internal/model"
 )
 
 // FuzzAppendBatchInvariants explores the append path for states that can break

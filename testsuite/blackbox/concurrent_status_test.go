@@ -13,8 +13,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ravinsharma7/missis/implementation/model"
-	"github.com/ravinsharma7/missis/implementation/store"
+	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/store"
 )
 
 // TestConcurrentStatusChangesAcrossClients hammers one shared store with many

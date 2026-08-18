@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ravinsharma7/missis/implementation/store"
+	"github.com/ravinsharma7/missis/internal/store"
 )
 
 func main() {
