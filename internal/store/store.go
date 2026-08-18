@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,7 +20,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	_ "modernc.org/sqlite"
 
-	"github.com/ravinsharma7/missis/implementation/model"
+	"github.com/ravinsharma7/missis/internal/model"
 )
 
 var ErrConflict = errors.New("optimistic concurrency conflict")
@@ -51,6 +52,10 @@ type Store struct {
 	// before the append transaction commits, and its error is returned in place
 	// of a commit failure. Production code never sets it.
 	appendCommitHook func() error
+	// appendLoadHook is test-only instrumentation: when non-nil it is called
+	// with the stream kind and entity loaded for each append, proving appends
+	// are stream-scoped. Production code never sets it.
+	appendLoadHook func(streamKind, streamEntity string)
 }
 
 //go:embed migrations/*.sql
@@ -83,11 +88,19 @@ func Open(path string) (*Store, error) {
 		writer.Close()
 		return nil, err
 	}
-	// The SQLite file is created with the process umask; tighten it to
-	// owner-only so ticket content is not world-readable by default.
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := backfillDerivedTables(writer); err != nil {
 		writer.Close()
 		return nil, err
+	}
+	// The SQLite file is created with the process umask; tighten it to
+	// owner-only so ticket content is not world-readable by default. This is
+	// POSIX-scoped: Windows relies on user-profile ACLs and does not emulate
+	// mode bits (ticket #55).
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o600); err != nil {
+			writer.Close()
+			return nil, err
+		}
 	}
 	reader, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -400,6 +413,9 @@ func (s *Store) CheckConsistency() error {
 			previous = event.Sequence
 		}
 	}
+	if err := verifyDerivedVsLedger(tx, byStream); err != nil {
+		return err
+	}
 	if err := verifyEventColumnsMatchPayload(tx); err != nil {
 		return err
 	}
@@ -676,9 +692,12 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		}
 	}
 
-	existing, err := loadEventsTx(tx)
+	existing, err := loadStreamEventsTx(tx, streamKind, streamEntity)
 	if err != nil {
 		return AppendOutcome{}, 0, err
+	}
+	if s.appendLoadHook != nil {
+		s.appendLoadHook(streamKind, streamEntity)
 	}
 
 	if err := checkPreconditions(existing, preconditions); err != nil {
@@ -754,6 +773,11 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		previousHash, now.Format(time.RFC3339Nano),
 	); err != nil {
 		return AppendOutcome{}, 0, err
+	}
+	if streamKind == string(model.KindTicket) {
+		if err := upsertTicketDerivedTx(tx, model.TicketID(streamEntity), running, alias); err != nil {
+			return AppendOutcome{}, 0, err
+		}
 	}
 
 	if idempotencyKey != "" {
@@ -884,6 +908,22 @@ func (s *Store) GetEventByAlias(alias string) (model.Event, error) {
 }
 
 func (s *Store) ListTickets(effectiveAt time.Time) ([]TicketSummary, error) {
+	if effectiveAt.IsZero() {
+		effectiveAt = time.Now().UTC()
+	}
+	maxRecorded, err := s.MaxRecordedAt()
+	if err != nil {
+		return nil, err
+	}
+	if !maxRecorded.IsZero() && effectiveAt.Before(maxRecorded) {
+		// Historical list: fold from the ledger because the derived tables
+		// only hold the current projection.
+		return s.listTicketsByFold(effectiveAt)
+	}
+	return s.listTicketsFromDerived()
+}
+
+func (s *Store) listTicketsByFold(effectiveAt time.Time) ([]TicketSummary, error) {
 	events, err := s.LoadEvents()
 	if err != nil {
 		return nil, err
@@ -928,6 +968,320 @@ func (s *Store) ListTickets(effectiveAt time.Time) ([]TicketSummary, error) {
 	}
 	sortTicketSummaries(summaries)
 	return summaries, nil
+}
+
+func (s *Store) listTicketsFromDerived() ([]TicketSummary, error) {
+	rows, err := s.reader.Query(`SELECT ticket_id, alias, title, status, recorded_at FROM tickets ORDER BY alias ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	summaries := make([]TicketSummary, 0, 8)
+	for rows.Next() {
+		var (
+			ticketID   string
+			alias      uint64
+			title      string
+			status     string
+			recordedAt string
+		)
+		if err := rows.Scan(&ticketID, &alias, &title, &status, &recordedAt); err != nil {
+			return nil, err
+		}
+		summary := TicketSummary{
+			ID:     model.TicketID(ticketID),
+			Number: alias,
+			Ref:    "#" + strconv.FormatUint(alias, 10),
+			Title:  title,
+			Status: status,
+		}
+		if recordedAt != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, recordedAt); err == nil {
+				summary.RecordedAt = parsed
+			}
+		}
+		summaries = append(summaries, summary)
+	}
+	sortTicketSummaries(summaries)
+	return summaries, rows.Err()
+}
+
+// MaxRecordedAt returns the latest recorded_at across the ledger, or the zero
+// time when the ledger is empty.
+func (s *Store) MaxRecordedAt() (time.Time, error) {
+	var raw string
+	err := s.reader.QueryRow(`SELECT event_json FROM events ORDER BY alias_seq DESC LIMIT 1`).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	var event model.Event
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		return time.Time{}, err
+	}
+	return event.RecordedAt, nil
+}
+
+func loadStreamEventsTx(tx *sql.Tx, streamKind, streamEntity string) ([]model.Event, error) {
+	rows, err := tx.Query(
+		`SELECT event_json, alias_seq FROM events WHERE stream_kind = ? AND stream_entity = ? ORDER BY sequence ASC`,
+		streamKind, streamEntity,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []model.Event
+	for rows.Next() {
+		var raw string
+		var aliasSeq uint64
+		if err := rows.Scan(&raw, &aliasSeq); err != nil {
+			return nil, err
+		}
+		var event model.Event
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			return nil, err
+		}
+		event.AliasSeq = aliasSeq
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+// upsertTicketDerivedTx folds one ticket's stream and writes its current
+// summary and parts into the derived tables inside the append transaction.
+func upsertTicketDerivedTx(tx *sql.Tx, ticketID model.TicketID, events []model.Event, alias uint64) error {
+	proj, err := model.CurrentProjection(events, ticketID, model.MaxRecordedAt(events))
+	if err != nil {
+		return err
+	}
+	title, status := "", ""
+	if id, ok := proj.Paths["title"]; ok {
+		if part := proj.Parts[id]; part != nil && part.Value != nil {
+			title = part.Value.Text
+		}
+	}
+	if id, ok := proj.Paths["status"]; ok {
+		if part := proj.Parts[id]; part != nil && part.Value != nil {
+			status = part.Value.Text
+		}
+	}
+	if alias == 0 {
+		if n, err := aliasForTicketTx(tx, ticketID); err == nil {
+			alias = n
+		} else {
+			for _, event := range events {
+				if event.AliasSeq > alias {
+					alias = event.AliasSeq
+				}
+			}
+		}
+	}
+	var recordedAt string
+	headEvent := ""
+	for _, event := range events {
+		headEvent = string(event.ID)
+		if event.Operation == model.OpCreateEntity && recordedAt == "" {
+			recordedAt = event.RecordedAt.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	if recordedAt == "" && len(events) > 0 {
+		recordedAt = events[0].RecordedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO tickets (ticket_id, alias, title, status, head_event, recorded_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(ticket_id) DO UPDATE SET
+		   alias = excluded.alias, title = excluded.title, status = excluded.status,
+		   head_event = excluded.head_event, recorded_at = excluded.recorded_at`,
+		string(ticketID), alias, title, status, headEvent, recordedAt,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM parts_current WHERE ticket_id = ?`, string(ticketID)); err != nil {
+		return err
+	}
+	for path, partID := range proj.Paths {
+		part := proj.Parts[partID]
+		if part == nil {
+			continue
+		}
+		var valueJSON any
+		if part.Value != nil {
+			raw, err := json.Marshal(part.Value)
+			if err != nil {
+				return err
+			}
+			valueJSON = string(raw)
+		}
+		var parentID any
+		if part.ParentID != nil {
+			parentID = string(*part.ParentID)
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO parts_current (ticket_id, path, part_id, value_json, value_kind, parent_id, created_by, current_event)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			string(ticketID), path, string(part.ID), valueJSON, string(part.ValueKind),
+			parentID, string(part.CreatedBy), string(part.CurrentFrom),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RebuildProjection recomputes the derived tables from the authoritative
+// event ledger. It is O(ledger) and intended for recovery only.
+func (s *Store) RebuildProjection() error {
+	tx, err := s.writer.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := rebuildProjectionTx(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func rebuildProjectionTx(tx *sql.Tx) error {
+	if _, err := tx.Exec(`DELETE FROM tickets`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM parts_current`); err != nil {
+		return err
+	}
+	events, err := loadEventsTx(tx)
+	if err != nil {
+		return err
+	}
+	byTicket := make(map[model.TicketID][]model.Event)
+	for _, event := range events {
+		if event.Stream.Kind != model.KindTicket {
+			continue
+		}
+		id := model.TicketID(event.Stream.Entity)
+		byTicket[id] = append(byTicket[id], event)
+	}
+	for ticketID, streamEvents := range byTicket {
+		if err := upsertTicketDerivedTx(tx, ticketID, streamEvents, 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// backfillDerivedTables populates the derived tables for stores that predate
+// migration 0004: once, on open, when events exist but no rows do.
+func backfillDerivedTables(db *sql.DB) error {
+	var ticketCount, eventCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tickets`).Scan(&ticketCount); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&eventCount); err != nil {
+		return err
+	}
+	if ticketCount > 0 || eventCount == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := rebuildProjectionTx(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// verifyDerivedVsLedger compares every ticket's derived rows against a fold
+// of its authoritative events.
+func verifyDerivedVsLedger(tx *sql.Tx, byStream map[string][]model.Event) error {
+	for key, streamEvents := range byStream {
+		kind, entity, ok := strings.Cut(key, ":")
+		if !ok || model.Kind(kind) != model.KindTicket {
+			continue
+		}
+		ticketID := model.TicketID(entity)
+		proj, err := model.CurrentProjection(streamEvents, ticketID, model.MaxRecordedAt(streamEvents))
+		if err != nil {
+			return err
+		}
+		title, status := "", ""
+		if id, ok := proj.Paths["title"]; ok {
+			if part := proj.Parts[id]; part != nil && part.Value != nil {
+				title = part.Value.Text
+			}
+		}
+		if id, ok := proj.Paths["status"]; ok {
+			if part := proj.Parts[id]; part != nil && part.Value != nil {
+				status = part.Value.Text
+			}
+		}
+		var dbTitle, dbStatus string
+		err = tx.QueryRow(`SELECT title, status FROM tickets WHERE ticket_id = ?`, string(ticketID)).Scan(&dbTitle, &dbStatus)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("derived ticket row missing for %s", ticketID)
+		}
+		if err != nil {
+			return err
+		}
+		if dbTitle != title || dbStatus != status {
+			return fmt.Errorf("derived ticket mismatch for %s: title %q/%q status %q/%q", ticketID, dbTitle, title, dbStatus, status)
+		}
+		rows, err := tx.Query(`SELECT path, value_json, parent_id FROM parts_current WHERE ticket_id = ?`, string(ticketID))
+		if err != nil {
+			return err
+		}
+		gotParts := make(map[string][2]any)
+		for rows.Next() {
+			var path string
+			var valueJSON any
+			var parentID any
+			if err := rows.Scan(&path, &valueJSON, &parentID); err != nil {
+				rows.Close()
+				return err
+			}
+			gotParts[path] = [2]any{valueJSON, parentID}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for path, partID := range proj.Paths {
+			part := proj.Parts[partID]
+			if part == nil {
+				continue
+			}
+			wantValue := any(nil)
+			if part.Value != nil {
+				raw, err := json.Marshal(part.Value)
+				if err != nil {
+					return err
+				}
+				wantValue = string(raw)
+			}
+			var wantParent any
+			if part.ParentID != nil {
+				wantParent = string(*part.ParentID)
+			}
+			got, ok := gotParts[path]
+			if !ok {
+				return fmt.Errorf("derived part row missing for %s/%s", ticketID, path)
+			}
+			if got[0] != wantValue || got[1] != wantParent {
+				return fmt.Errorf("derived part mismatch for %s/%s", ticketID, path)
+			}
+			delete(gotParts, path)
+		}
+		if len(gotParts) > 0 {
+			return fmt.Errorf("derived part rows exceed ledger for %s: %v", ticketID, gotParts)
+		}
+	}
+	return nil
 }
 
 func loadEventsTx(db interface {
