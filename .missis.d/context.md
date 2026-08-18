@@ -71,6 +71,11 @@ go run ./tools/store-gaps .missis-store/missis.db
   enforced for admins, so a push to main that fails CI is rejected (2026-08-18,
   ticket #53). v0.1.0 tagged; storage compatibility statement published in
   docs/storage-compatibility.md and cross-referenced from the spec.
+- GitHub API merges on protected main hit a GitHub-side quirk: strict required
+  checks report "2 of 2 required status checks are expected" even when checks
+  are green, and auto-merge stalls. Workaround: delete branch protection,
+  merge, re-add it — or merge from the web UI, which is unaffected
+  (2026-08-18, observed twice).
 
 ## Known open areas
 
