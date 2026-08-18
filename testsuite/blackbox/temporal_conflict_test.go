@@ -98,3 +98,37 @@ func TestBitemporalProjection(t *testing.T) {
 		t.Fatalf("future status = %v, want doing", futureView["status"])
 	}
 }
+
+func TestBitemporalCLITimeFlags(t *testing.T) {
+	t.Parallel()
+	// covers PH1-BT-001: --effective-at and --known-at must be honored
+	// independently, not only through --at. Fixed far-future timestamps keep
+	// the test deterministic (recorded_at is system-controlled).
+	store := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, store, "Temporal flags")
+	ref := created["ref"].(string)
+
+	if result := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--effective-at", "2099-01-01T10:00:00Z"); result.code != 0 {
+		t.Fatalf("set doing: %d %s", result.code, result.stderr)
+	}
+	if result := runMissis(t, store, "set", "--json", ref+"/status", "done", "--effective-at", "2099-01-01T11:00:00Z"); result.code != 0 {
+		t.Fatalf("set done: %d %s", result.code, result.stderr)
+	}
+
+	mid := mustJSON(t, runMissis(t, store, "show", "--json", ref, "--effective-at", "2099-01-01T10:30:00Z"))
+	if mid["status"] != "doing" {
+		t.Fatalf("effective-at 10:30 status = %v, want doing", mid["status"])
+	}
+	late := mustJSON(t, runMissis(t, store, "show", "--json", ref, "--effective-at", "2099-01-01T11:30:00Z"))
+	if late["status"] != "done" {
+		t.Fatalf("effective-at 11:30 status = %v, want done", late["status"])
+	}
+	at := mustJSON(t, runMissis(t, store, "show", "--json", ref, "--at", "2099-01-01T10:30:00Z"))
+	if at["status"] != "doing" {
+		t.Fatalf("at 10:30 status = %v, want doing", at["status"])
+	}
+	history := mustJSON(t, runMissis(t, store, "show", "--json", ref, "--history", "--known-at", "2020-01-01T00:00:00Z"))
+	if events, ok := history["events"].([]any); !ok || len(events) != 0 {
+		t.Fatalf("history before known-at 2020 should be empty: %v", history["events"])
+	}
+}

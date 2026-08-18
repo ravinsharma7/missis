@@ -287,3 +287,50 @@ func TestBitemporalBackdatedLinkRetraction(t *testing.T) {
 		t.Fatalf("link should be active before retraction was known, got %+v", notKnown)
 	}
 }
+
+func TestBitemporalKnownTimeBoundaryInclusive(t *testing.T) {
+	// covers PH1-BT-001: the recorded_at <= knownAt boundary is inclusive.
+	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
+	events := []Event{
+		bScalarEvent("e1", 1, OpSetValue, base, base, "open"),
+		bScalarEvent("e2", 2, OpSetValue, base.Add(2*time.Hour), base.Add(1*time.Hour), "doing"),
+	}
+	inclusive, err := ProjectTicket(events, bitemporalTicket, base.Add(3*time.Hour), base.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bStatusValue(inclusive); got == nil || *got != "doing" {
+		t.Fatalf("status at exact known boundary = %v, want doing", got)
+	}
+	exclusive, err := ProjectTicket(events, bitemporalTicket, base.Add(3*time.Hour), base.Add(2*time.Hour).Add(-time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bStatusValue(exclusive); got == nil || *got != "open" {
+		t.Fatalf("status one nanosecond before known boundary = %v, want open", got)
+	}
+}
+
+func TestBitemporalBackdatedUpdateKnownWindow(t *testing.T) {
+	// covers PH1-BT-001 PH1-BT-004: a plain backdated update is invisible
+	// until it is recorded, then wins by effective time once known.
+	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
+	events := []Event{
+		bScalarEvent("e1", 1, OpSetValue, base, base, "open"),
+		bScalarEvent("e2", 2, OpSetValue, base.Add(4*time.Hour), base.Add(1*time.Hour), "doing"),
+	}
+	unknown, err := ProjectTicket(events, bitemporalTicket, base.Add(2*time.Hour), base.Add(3*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bStatusValue(unknown); got == nil || *got != "open" {
+		t.Fatalf("status before backdated update was recorded = %v, want open", got)
+	}
+	known, err := ProjectTicket(events, bitemporalTicket, base.Add(2*time.Hour), base.Add(5*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bStatusValue(known); got == nil || *got != "doing" {
+		t.Fatalf("status after backdated update was recorded = %v, want doing", got)
+	}
+}
