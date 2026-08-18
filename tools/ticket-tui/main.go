@@ -1366,6 +1366,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	// --smoke renders one frame to stdout and exits. It is the hermetic
+	// CI smoke (ticket #55 C2): it exercises the real binary's store open,
+	// model init, and View rendering without requiring a terminal, which
+	// headless runners cannot provide.
+	if len(os.Args) > 1 && os.Args[1] == "--smoke" {
+		fmt.Print(m.View())
+		return
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
