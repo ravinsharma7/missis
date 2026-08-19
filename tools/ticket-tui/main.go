@@ -1803,6 +1803,49 @@ func main() {
 	// model init, and View rendering without requiring a terminal, which
 	// headless runners cannot provide.
 	if len(os.Args) > 1 && os.Args[1] == "--smoke" {
+		for i := 2; i < len(os.Args); i++ {
+			switch os.Args[i] {
+			case "--view":
+				if i+1 < len(os.Args) {
+					i++
+					m.view = os.Args[i]
+				}
+			case "--kind":
+				if i+1 < len(os.Args) {
+					i++
+					m.kind = os.Args[i]
+				}
+			case "--input":
+				if i+1 < len(os.Args) {
+					i++
+					m.input = os.Args[i]
+				}
+			}
+		}
+		m.refresh()
+		switch m.view {
+		case "detail":
+			if m.isEntityList() && len(m.entities) > 0 {
+				ent := m.entities[0]
+				if lines, err := entityLines(m.client, ent, m.renderWidth()); err == nil {
+					m.detail = &detailState{entity: &ent, lines: lines}
+				}
+			} else if len(m.summaries) > 0 {
+				summary := m.summaries[0]
+				if lines, err := ticketLines(m.client, summary, m.renderWidth()); err == nil {
+					m.detail = &detailState{summary: summary, lines: lines}
+				}
+			}
+			if m.detail == nil {
+				m.view = "list"
+			}
+		case "create":
+			m.view = "input"
+			m.inputMode = "create"
+		case "link":
+			m.view = "input"
+			m.inputMode = "link"
+		}
 		fmt.Print(m.View())
 		return
 	}

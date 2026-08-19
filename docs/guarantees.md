@@ -1,0 +1,82 @@
+# Guarantees and performance
+
+**Status:** canonical inventory (2026-08-19). Companion to
+`docs/storage-compatibility.md` and the canonical spec
+(`specs/missues-issue-specification.v2.md`). The precondition inventory in
+this document is authoritative for the store and service layers (tickets #77
+and #78).
+
+Guarantees differ by layer. Consumers must not assume a guarantee from one
+layer at another. This document states what each layer promises and what it
+costs at different scales.
+
+## 1. Core guarantees (event model)
+
+| Guarantee | Contract |
+| --- | --- |
+| Events are immutable | Accepted events are never rewritten, deleted, or repaired in place (spec 10; ticket #41). Recovery from corruption is restore-from-backup. |
+| Per-stream sequences | Sequences are unique and strictly increasing per stream; a gap is an integrity incident (ticket #41). |
+| Bitemporal winner rule | Latest effective time wins; recorded time breaks ties (spec 10.9; ticket #42). |
+| Canonical encoding | Event hashes use canonical encoding v1 (spec 10.10; ticket #45). |
+| No destructive delete | The only removal mechanism is retraction (spec 6.9; AGENTS.md). |
+
+## 2. Store guarantees
+
+| Guarantee | Contract |
+| --- | --- |
+| Batch atomicity | `AppendBatch` commits all events in one transaction, including across multiple streams (multi-stream batches, ticket #77). A failed batch writes nothing. |
+| Idempotency | A repeated append with the same idempotency key replays the stored result and events (ticket #63). |
+| Derived tables | `tickets`/`parts_current` are rebuildable from the ledger with parity checks (ticket #51, #61). |
+| Precondition form 1 (part/entity) | `Precondition{TargetEntity, ExpectedCurrentEvent}`: the mutation applies only if the part's current event matches (CLI `--if-current`). Mismatch = conflict. |
+| Precondition form 2 (link-assertion) | `LinkPrecondition{From, Relation, To, ExpectedCurrentEvent}`: the mutation applies only if the active assertion of that triple is the expected event (ticket #77). Mismatch = conflict. Set semantics until #66. |
+| Hash chain | Append order defines a SHA-256 chain; `show --health` verifies it (ticket #51). |
+
+## 3. Service workflow guarantees
+
+| Workflow | Guarantee |
+| --- | --- |
+| `NewTicket` | Atomic ticket creation; `--project P` additionally asserts `has-home` in the same batch and fails with guidance when `P` does not exist (spec 14.8). |
+| `SetLink` | Targets resolve at write time; relation endpoint rules enforced; has-home uniqueness enforced; last-home retraction warns. |
+| `MoveLink` | Retract + assert in one atomic batch; membership relations only; automatic link-assertion precondition (explicit `IfCurrent` override); unguarded moves rejected; result reports the transition and never emits the zero-home warning (ticket #77). |
+| Markdown import/reimport | All-or-nothing: any violation rejects the whole batch (schema subspec rev 5). |
+
+## 4. SDK guarantees
+
+- Stateless: the SDK carries no hidden context; context is a client-side
+  preference (`MISSIS_PROJECT` / `MISSIS_GROUP`), never a model concept.
+- Ref-keyed: every read and mutation is addressed by explicit refs
+  (ticket, part, project, group, event); resolution is deterministic.
+- The SDK facade (`pkg/missis`) is the only public surface; `internal/*` is
+  not importable by external consumers.
+
+## 5. Performance at scale
+
+`n` = ledger size. Derived-index work (#70 schema declarations, #75 scope
+entity indexes) is the planned remedy for O(n) reads; correctness is
+unchanged until then.
+
+| Path | Complexity | Notes |
+| --- | --- | --- |
+| Append (single batch) | Amortized constant per event (#61) | Sequence allocation + validation of the affected stream. |
+| Multi-stream batch | One transaction, per-stream sequences | Used by `MoveLink` for `contains`/`governs` (ticket #77). |
+| Link-precondition evaluation | O(n) | Full-ledger scan inside the append transaction until #75. |
+| `ListEntities` (projects/groups) | O(n) | Full-ledger scan until #75. |
+| `refExists` (link targets) | O(n) or O(stream) | Projects/groups/tickets use stream loads; parts/events scan the ledger. |
+| Scope history | O(stream) | Loads one entity stream. |
+| Schema declaration resolution | O(n) per write | Until #70. |
+
+Expected gains: #70/#75 derived tables turn the O(n) rows above into indexed
+reads, matching the #51 snapshot pattern.
+
+## 6. Precondition inventory (authoritative)
+
+1. **Part/entity expected-current-event** — `Precondition{TargetEntity,
+   ExpectedCurrentEvent}`, CLI `--if-current @eN`. Applies to part and entity
+   current values.
+2. **Link-assertion expected-current-event** — `LinkPrecondition{From,
+   Relation, To, ExpectedCurrentEvent}`. Applies to link retraction and
+   assertion; used automatically by `MoveLink` (ticket #77). Set semantics
+   until evidence semantics (#66) land.
+
+Preconditions are per-request and never stored; a caller may always pass a
+different expected event on the next call.
