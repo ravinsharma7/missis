@@ -1433,6 +1433,34 @@ the current assertion at effective time; callers may override via
 `IfCurrent`. Unguarded moves are rejected with guidance rather than silently
 proceeding. Preconditions are per-request and never stored.
 
+### 9.8.3 Terminology: assertion, declaration, precondition
+
+These three terms are distinct and must not be interchanged, even though
+they overlap in mechanism:
+
+- **Assertion** (link assertion): a recorded claim that a relation holds
+  between two refs. The record is an `assert-link` event with provenance
+  (actor, recorded/effective time, source); `retract-link` withdraws one
+  assertion. Assertions are evidence: the visible relation is derived from
+  them (visible while at least one is active). Used for membership
+  (`has-home`, `contains`, `governs`) and any typed relation.
+- **Declaration** (schema declaration): a part under the reserved `schema/`
+  subtree on a scope entity (project/group) that maps a key prefix to a
+  declared value kind (for example `schema/status -> status`). Declarations
+  are meaning rules for part keys, not claims about relations (section 12.11,
+  tracked by #27).
+- **Precondition**: a write-time guard, not a fact. A precondition names an
+  expected current event; the mutation applies only while that expectation
+  holds, otherwise a conflict. Two forms: part/entity
+  expected-current-event (20.1) and link-assertion expected-current-event
+  (9.8.2).
+
+Overlap: all three are ledger records, bitemporal, retractable, and
+provenance-bearing. Differences: assertions claim a relation between refs;
+declarations assign meaning to part keys; preconditions constrain when a
+write may apply. Assertions and declarations may be retracted; preconditions
+are per-request and never stored.
+
 The full guarantees and performance inventory lives in
 `docs/guarantees.md` (and the spec appendix, section 31).
 
@@ -2675,10 +2703,10 @@ concept (14.7, N082).
   `retract-link` (19). `join-scope` and `leave-scope` remain
   projection-neutral marker operations until Phase 4 defines their
   semantics.
-- v1 link projection is set-semantics: one active triple per
-  (from, relation, to); multiple assertions of the same triple collapse, and
-  retracting the last assertion hides the relation. Multi-assertion
-  coexistence and per-assertion provenance are a separate deliverable.
+- Link projection uses evidence semantics (9.8, #66): multiple assertions of
+  the same triple coexist; the relation is visible while at least one
+  assertion is active; retracting one assertion does not hide the relation
+  while another remains; retracting all hides it.
 
 ### 14.8.4 Scope chain
 

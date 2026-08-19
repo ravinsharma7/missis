@@ -10,6 +10,22 @@ Guarantees differ by layer. Consumers must not assume a guarantee from one
 layer at another. This document states what each layer promises and what it
 costs at different scales.
 
+## 0. Terminology
+
+Three distinct terms must not be interchanged:
+
+| Term | What it is | Example |
+| --- | --- | --- |
+| **Assertion** | A recorded claim that a relation holds between two refs; an `assert-link` event with provenance. The visible relation is derived from assertions (visible while at least one is active). | `set '#184/links' --add 'supports:#12'` |
+| **Declaration** | A part under the reserved `schema/` subtree on a scope entity that maps a key prefix to a declared value kind. A meaning rule, not a claim about a relation. | `schema/status -> status` on `project:x` |
+| **Precondition** | A write-time guard naming an expected current event; the mutation applies only while the expectation holds, otherwise a conflict. Per-request, never stored. | `--if-current @eN`; `LinkPrecondition` |
+
+Overlap: all three are ledger records, bitemporal, retractable, and
+provenance-bearing. Differences: assertions claim relations between refs,
+declarations assign meaning to part keys, preconditions constrain when a
+write may apply. Assertions and declarations may be retracted; preconditions
+cannot be retracted because they are never stored.
+
 ## 1. Core guarantees (event model)
 
 | Guarantee | Contract |
