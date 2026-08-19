@@ -23,6 +23,11 @@ Transient or generated context (treat as context, never as contract):
 - A ticket is `done` only when its `done-when` criteria are met AND no
   follow-up remains. Outstanding work becomes a new ticket linked to the old
   ref; a done ticket must not carry a `next` or `followup` part.
+- When a `done-when` criterion cannot be satisfied inside the ticket (for
+  example, a manual check that needs an operator), re-scope the done-when to
+  the achieved state and move the unmet criterion to a new follow-up ticket
+  linked via `related`. Never mark a ticket `done` with an unchecked or
+  skipped criterion; make the outstanding work explicit and owned.
 - Verify with `go run ./tools/check-done` (exit non-zero on violations).
 - Before creating tickets, list existing refs with `missis show` — alias
   numbers may be allocated by other sessions.
