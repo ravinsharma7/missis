@@ -31,6 +31,8 @@ var relationInverses = map[string]string{
 	"governed-by":     "governs",
 	"has-home":        "home-of",
 	"home-of":         "has-home",
+	"member-of":       "has-member",
+	"has-member":      "member-of",
 }
 
 type LinkView struct {
@@ -88,7 +90,7 @@ func applyLinkEvent(proj *Projection, event Event) error {
 
 	linkID := LinkID(event.ID)
 	switch event.Operation {
-	case OpAssertLink:
+	case OpAssertLink, OpJoinScope:
 		proj.Links[linkID] = &Link{
 			ID:          linkID,
 			From:        event.Target,
@@ -98,7 +100,7 @@ func applyLinkEvent(proj *Projection, event Event) error {
 			CreatedBy:   event.ID,
 			RetractedBy: nil,
 		}
-	case OpRetractLink:
+	case OpRetractLink, OpLeaveScope:
 		targetID := retractionTarget(event)
 		for _, existing := range proj.Links {
 			if existing.RetractedBy != nil ||
@@ -293,7 +295,8 @@ func currentLinkViews(events []Event, effectiveAt, knownAt time.Time) ([]LinkVie
 
 	filtered := make([]Event, 0, len(events))
 	for _, event := range events {
-		if event.Operation != OpAssertLink && event.Operation != OpRetractLink {
+		if event.Operation != OpAssertLink && event.Operation != OpRetractLink &&
+			event.Operation != OpJoinScope && event.Operation != OpLeaveScope {
 			continue
 		}
 		if event.EffectiveAt.After(effectiveAt) || event.RecordedAt.After(knownAt) {
@@ -319,13 +322,13 @@ func currentLinkViews(events []Event, effectiveAt, knownAt time.Time) ([]LinkVie
 			links[key] = current
 		}
 		switch event.Operation {
-		case OpAssertLink:
+		case OpAssertLink, OpJoinScope:
 			current.assertions = append(current.assertions, assertionState{
 				createdBy: event.ID,
 				actor:     event.Actor,
 				sources:   event.Sources,
 			})
-		case OpRetractLink:
+		case OpRetractLink, OpLeaveScope:
 			targetID := retractionTarget(event)
 			for i := range current.assertions {
 				assertion := &current.assertions[i]

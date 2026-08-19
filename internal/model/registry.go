@@ -127,18 +127,8 @@ var operationRegistry = func() map[Operation]OperationDescriptor {
 			}
 			return requireValueRef(e)
 		}},
-		{Name: OpJoinScope, Version: 1, ProjectionNeutral: true, Validate: func(e Event) error {
-			if err := requireTargetKind(e, KindPart, KindTicket); err != nil {
-				return err
-			}
-			return requireValueRef(e)
-		}},
-		{Name: OpLeaveScope, Version: 1, ProjectionNeutral: true, Validate: func(e Event) error {
-			if err := requireTargetKind(e, KindPart, KindTicket); err != nil {
-				return err
-			}
-			return requireValueRef(e)
-		}},
+		{Name: OpJoinScope, Version: 1, Validate: validateScopeTransition},
+		{Name: OpLeaveScope, Version: 1, Validate: validateScopeTransition},
 		{Name: OpObserveEffect, Version: 1, ProjectionNeutral: true, Validate: func(e Event) error {
 			if err := requireTargetKind(e, KindPart); err != nil {
 				return err
@@ -222,6 +212,22 @@ func requireText(e Event) error {
 func requireValueRef(e Event) error {
 	if e.Value.Ref == nil {
 		return fmt.Errorf("operation %s requires a reference value", e.Operation)
+	}
+	return nil
+}
+
+func validateScopeTransition(e Event) error {
+	if e.Value.Ref == nil {
+		return fmt.Errorf("operation %s requires a scope reference", e.Operation)
+	}
+	if e.Value.Text != "member-of" {
+		return fmt.Errorf("operation %s requires relation member-of, got %q", e.Operation, e.Value.Text)
+	}
+	if e.Target.Kind != KindTicket && e.Target.Kind != KindProject && e.Target.Kind != KindGroup {
+		return fmt.Errorf("operation %s target must be a ticket, project, or group", e.Operation)
+	}
+	if e.Value.Ref.Kind != KindProject && e.Value.Ref.Kind != KindGroup {
+		return fmt.Errorf("operation %s scope must be a project or group", e.Operation)
 	}
 	return nil
 }

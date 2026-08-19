@@ -55,6 +55,7 @@ cannot be retracted because they are never stored.
 | Markdown import (`--project`) | Ticket, content, and the `has-home` assertion land in one atomic batch; missing targets fail with guidance; reimport never changes membership (spec 14.8; ticket #73). |
 | `SetLink` | Targets resolve at write time; relation endpoint rules enforced; has-home uniqueness enforced; last-home retraction warns. |
 | `MoveLink` | Retract + assert in one atomic batch; membership relations only; automatic link-assertion precondition (explicit `IfCurrent` override); unguarded moves rejected; result reports the transition and never emits the zero-home warning (ticket #77). |
+| `JoinScope` / `LeaveScope` | Phase 4 scope membership (ticket #74): a `member-of` assertion or retraction (entity to project/group) in one atomic batch with validated targets; leave targets a specific assertion (default retract-all); evidence semantics applies. |
 | Markdown import/reimport | All-or-nothing: any violation rejects the whole batch (schema subspec rev 5). |
 
 ## 4. SDK guarantees

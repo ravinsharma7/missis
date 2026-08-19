@@ -129,3 +129,39 @@ func TestEvidenceSemanticsHistoricalView(t *testing.T) {
 		t.Fatalf("historical view before retraction should show the assertion: %+v", views)
 	}
 }
+
+func TestJoinScopeProjectionUsesMemberOf(t *testing.T) {
+	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	stream := Ref{Kind: KindTicket, Entity: "t1"}
+	scope := Ref{Kind: KindGroup, Entity: "eng"}
+	join := func(id string) Event {
+		return Event{
+			ID: EventID(id), Stream: stream, Operation: OpJoinScope, Target: stream,
+			Value:      Value{Text: "member-of", Ref: &scope},
+			RecordedAt: base, EffectiveAt: base, Actor: ActorRef{ID: "human/local"},
+		}
+	}
+	leave := Event{
+		ID: "e2", Stream: stream, Operation: OpLeaveScope, Target: stream,
+		Value:      Value{Text: "member-of", Ref: &scope},
+		RecordedAt: base, EffectiveAt: base, Actor: ActorRef{ID: "human/local"},
+		Causes: []Ref{{Kind: KindEvent, Entity: "e1"}},
+	}
+	events := []Event{join("e1"), leave}
+	views, err := LinksForRef(events, stream, base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, view := range views {
+		if view.Relation == "member-of" && view.Direction == "asserted" {
+			t.Fatalf("member-of should be hidden after leave-scope: %+v", views)
+		}
+	}
+	proj, err := ProjectStream(events, stream, base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proj.Links) != 1 || proj.Links[LinkID("e1")].RetractedBy == nil {
+		t.Fatalf("leave-scope should retract the joined assertion: %+v", proj.Links)
+	}
+}

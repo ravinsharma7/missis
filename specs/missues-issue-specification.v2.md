@@ -2700,9 +2700,13 @@ concept (14.7, N082).
   project, group, ticket, part, or event is rejected with actionable
   guidance.
 - Membership changes are the registry operations `assert-link` and
-  `retract-link` (19). `join-scope` and `leave-scope` remain
-  projection-neutral marker operations until Phase 4 defines their
-  semantics.
+  `retract-link` (19), plus the Phase 4 membership transitions
+  `join-scope` / `leave-scope` (ticket #74): a scope membership change
+  realized as a `member-of` assertion or retraction (entity to project or
+  group) that shares the link projection and evidence semantics (#66). The
+  CLI `set .../links --add member-of:...` emits `assert-link`; the SDK
+  `JoinScope`/`LeaveScope` emit the canonical `join-scope`/`leave-scope`
+  operations; both produce identical visible membership.
 - Link projection uses evidence semantics (9.8, #66): multiple assertions of
   the same triple coexist; the relation is visible while at least one
   assertion is active; retracting one assertion does not hide the relation

@@ -54,8 +54,6 @@ func TestRegistryMarkersAreExplicit(t *testing.T) {
 		OpCreateEntity:       true,
 		OpAssignOntology:     true,
 		OpRemoveOntology:     true,
-		OpJoinScope:          true,
-		OpLeaveScope:         true,
 		OpObserveEffect:      true,
 		OpAttachEvidence:     true,
 		OpRecordVerification: true,
@@ -129,7 +127,25 @@ func TestOperationValidation(t *testing.T) {
 		{name: "join-scope valid", mutate: func(e *Event) {
 			e.Operation = OpJoinScope
 			e.Target = Ref{Kind: KindTicket, Entity: "ticket:test"}
-			e.Value = Value{Ref: &to}
+			scope := Ref{Kind: KindGroup, Entity: "group:eng"}
+			e.Value = Value{Text: "member-of", Ref: &scope}
+		}},
+		{name: "join-scope wrong relation", mutate: func(e *Event) {
+			e.Operation = OpJoinScope
+			e.Target = Ref{Kind: KindTicket, Entity: "ticket:test"}
+			scope := Ref{Kind: KindGroup, Entity: "group:eng"}
+			e.Value = Value{Text: "contains", Ref: &scope}
+		}, wantErr: "requires relation member-of"},
+		{name: "join-scope scope must be project/group", mutate: func(e *Event) {
+			e.Operation = OpJoinScope
+			e.Target = Ref{Kind: KindTicket, Entity: "ticket:test"}
+			e.Value = Value{Text: "member-of", Ref: &to}
+		}, wantErr: "scope must be a project or group"},
+		{name: "leave-scope valid", mutate: func(e *Event) {
+			e.Operation = OpLeaveScope
+			e.Target = Ref{Kind: KindTicket, Entity: "ticket:test"}
+			scope := Ref{Kind: KindGroup, Entity: "group:eng"}
+			e.Value = Value{Text: "member-of", Ref: &scope}
 		}},
 		{name: "observe-effect valid text", mutate: func(e *Event) {
 			e.Operation = OpObserveEffect
@@ -198,7 +214,6 @@ func TestMarkerOperationsAreProjectionNeutral(t *testing.T) {
 		value Value
 	}{
 		{op: OpAssignOntology, value: Value{Ref: &Ref{Kind: KindPart, Entity: "part:onto"}}},
-		{op: OpJoinScope, value: Value{Ref: &Ref{Kind: KindProject, Entity: "project:s"}}},
 		{op: OpObserveEffect, value: Value{Text: "effect"}},
 	}
 	for _, marker := range markers {

@@ -269,6 +269,17 @@ type MoveLinkOptions struct {
 	IfCurrent string
 }
 
+// ScopeOptions describes a Phase 4 scope membership transition (ticket #74):
+// an entity (ticket, project, or group) joins or leaves a project/group scope
+// as a member-of relation. Assertion targets a specific membership assertion
+// on leave.
+type ScopeOptions struct {
+	Entity    string
+	Scope     string
+	Reason    string
+	Assertion string
+}
+
 type LineageOptions struct {
 	Direction   string
 	Depth       int

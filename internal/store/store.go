@@ -1032,7 +1032,7 @@ func (s *Store) LoadEvents() ([]model.Event, error) {
 func (s *Store) LoadLinkEvents() ([]model.Event, error) {
 	rows, err := s.reader.Query(
 		`SELECT event_json, alias_seq FROM events
-		 WHERE json_extract(event_json, '$.Operation') IN ('assert-link', 'retract-link')
+		 WHERE json_extract(event_json, '$.Operation') IN ('assert-link', 'retract-link', 'join-scope', 'leave-scope')
 		 ORDER BY alias_seq ASC`,
 	)
 	if err != nil {

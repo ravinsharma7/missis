@@ -57,6 +57,8 @@ type Service interface {
 	Set(ctx context.Context, req RequestContext, mutation Mutation) (SetResult, error)
 	SetLink(ctx context.Context, req RequestContext, opts LinkOptions) (SetResult, error)
 	MoveLink(ctx context.Context, req RequestContext, opts MoveLinkOptions) (SetResult, error)
+	JoinScope(ctx context.Context, req RequestContext, opts ScopeOptions) (SetResult, error)
+	LeaveScope(ctx context.Context, req RequestContext, opts ScopeOptions) (SetResult, error)
 	Manifest(ctx context.Context) (ManifestInfo, error)
 	BackupTo(ctx context.Context, dst string) error
 	Restore(ctx context.Context, backupPath, dst string) error

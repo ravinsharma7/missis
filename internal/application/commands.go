@@ -1212,6 +1212,108 @@ func isScopeRef(ref model.Ref) bool {
 	return ref.Kind == model.KindProject || ref.Kind == model.KindGroup
 }
 
+func (s *Service) JoinScope(ctx context.Context, req missis.RequestContext, opts missis.ScopeOptions) (missis.SetResult, error) {
+	req, now := s.normalize(req)
+	entityRef, scopeRef, err := s.resolveScopeTransition(ctx, opts.Entity, opts.Scope, req.EffectiveAt)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
+	event := s.linkEventFor(model.OpJoinScope, entityRef, scopeRef, "member-of", opts.Reason, parseActor(req.Actor), now, req.EffectiveAt, "")
+	result := missis.SetResult{
+		Ref:       opts.Entity,
+		Operation: "join-scope",
+		Value:     "member-of:" + opts.Scope,
+	}
+	outcome, err := s.AppendBatch(ctx, []model.Event{event}, req.IdempotencyKey, nil, &result)
+	if err != nil {
+		return missis.SetResult{}, keepStorage(err)
+	}
+	if len(outcome.Events) > 0 {
+		last := outcome.Events[len(outcome.Events)-1]
+		result.Event = "@e" + strconv.FormatUint(last.AliasSeq, 10)
+	}
+	return result, nil
+}
+
+func (s *Service) LeaveScope(ctx context.Context, req missis.RequestContext, opts missis.ScopeOptions) (missis.SetResult, error) {
+	req, now := s.normalize(req)
+	entityRef, scopeRef, err := s.resolveScopeTransition(ctx, opts.Entity, opts.Scope, req.EffectiveAt)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
+	assertions, err := s.activeLinkAssertions(ctx, entityRef, scopeRef, "member-of", req.EffectiveAt, now)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
+	actor := parseActor(req.Actor)
+	events := make([]model.Event, 0, len(assertions))
+	if opts.Assertion != "" {
+		ev, err := s.GetEventByAlias(ctx, opts.Assertion)
+		if err != nil {
+			return missis.SetResult{}, notFound("%v", err)
+		}
+		active := false
+		for _, assertion := range assertions {
+			if assertion.CreatedBy == ev.ID {
+				active = true
+				break
+			}
+		}
+		if !active {
+			return missis.SetResult{}, conflict(fmt.Errorf("assertion %s is not an active member-of from %s to %s; re-read and retry", opts.Assertion, opts.Entity, opts.Scope))
+		}
+		events = append(events, s.linkEventFor(model.OpLeaveScope, entityRef, scopeRef, "member-of", opts.Reason, actor, now, req.EffectiveAt, ev.ID))
+	} else {
+		for _, assertion := range assertions {
+			events = append(events, s.linkEventFor(model.OpLeaveScope, entityRef, scopeRef, "member-of", opts.Reason, actor, now, req.EffectiveAt, assertion.CreatedBy))
+		}
+		if len(events) == 0 {
+			return missis.SetResult{}, validation("no active member-of assertion from %s to %s; nothing to leave", opts.Entity, opts.Scope)
+		}
+	}
+	result := missis.SetResult{
+		Ref:       opts.Entity,
+		Operation: "leave-scope",
+		Value:     "member-of:" + opts.Scope,
+	}
+	outcome, err := s.AppendBatch(ctx, events, req.IdempotencyKey, nil, &result)
+	if err != nil {
+		return missis.SetResult{}, keepStorage(err)
+	}
+	if len(outcome.Events) > 0 {
+		last := outcome.Events[len(outcome.Events)-1]
+		result.Event = "@e" + strconv.FormatUint(last.AliasSeq, 10)
+	}
+	return result, nil
+}
+
+func (s *Service) resolveScopeTransition(ctx context.Context, entity, scope string, effectiveAt time.Time) (model.Ref, model.Ref, error) {
+	entityRef, err := s.resolveAnyRef(ctx, entity, effectiveAt)
+	if err != nil {
+		return model.Ref{}, model.Ref{}, err
+	}
+	scopeRef, err := s.resolveAnyRef(ctx, scope, effectiveAt)
+	if err != nil {
+		return model.Ref{}, model.Ref{}, err
+	}
+	if entityRef.Kind != model.KindTicket && entityRef.Kind != model.KindProject && entityRef.Kind != model.KindGroup {
+		return model.Ref{}, model.Ref{}, validation("scope transition target must be a ticket, project, or group")
+	}
+	if scopeRef.Kind != model.KindProject && scopeRef.Kind != model.KindGroup {
+		return model.Ref{}, model.Ref{}, validation("scope must be a project or group")
+	}
+	for _, ref := range []model.Ref{entityRef, scopeRef} {
+		exists, err := s.refExists(ctx, ref)
+		if err != nil {
+			return model.Ref{}, model.Ref{}, err
+		}
+		if !exists {
+			return model.Ref{}, model.Ref{}, validation("scope transition target does not exist: %s", targetText(ref))
+		}
+	}
+	return entityRef, scopeRef, nil
+}
+
 func (s *Service) activeLinkAssertions(ctx context.Context, origin, target model.Ref, relation string, effectiveAt, now time.Time) ([]model.LinkAssertionView, error) {
 	linkEvents, err := s.LoadLinkEvents(ctx)
 	if err != nil {

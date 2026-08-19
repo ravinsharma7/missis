@@ -136,7 +136,8 @@ func applyEvent(proj *Projection, event Event) error {
 	if descriptor, ok := LookupOperation(event.Operation); ok && descriptor.ProjectionNeutral {
 		return nil
 	}
-	if event.Operation == OpAssertLink || event.Operation == OpRetractLink {
+	if event.Operation == OpAssertLink || event.Operation == OpRetractLink ||
+		event.Operation == OpJoinScope || event.Operation == OpLeaveScope {
 		return applyLinkEvent(proj, event)
 	}
 	if event.Target.Kind == KindPart {
