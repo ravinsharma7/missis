@@ -52,7 +52,7 @@ func TestMultiProcessConcurrency(t *testing.T) {
 		setWG.Add(1)
 		go func(i int) {
 			defer setWG.Done()
-			result, err := runMissisRaw(store, "set", "--json", "#1/agent-"+strconv.Itoa(i), "value-"+strconv.Itoa(i))
+			result, err := runMissisRaw(store, "set", "--json", "#1/agent-"+strconv.Itoa(i), "value-"+strconv.Itoa(i), "--kind", "text")
 			if err != nil {
 				t.Errorf("set worker %d: %v", i, err)
 				return
@@ -100,7 +100,7 @@ func TestConcurrentSetHealthStress(t *testing.T) {
 			go func(i int) {
 				defer wg.Done()
 				ref := "#1/" + strconv.Itoa(iter) + "-" + strconv.Itoa(i)
-				result, err := runMissisRaw(store, "set", "--json", ref, "value")
+				result, err := runMissisRaw(store, "set", "--json", ref, "value", "--kind", "text")
 				if err != nil {
 					errs <- err
 					return

@@ -16,10 +16,10 @@ func TestOptimisticConflict(t *testing.T) {
 	history := mustJSON(t, runMissis(t, store, "show", ref+"/status", "--history", "--json"))
 	oldAlias := history["events"].([]any)[0].(map[string]any)["alias"].(string)
 
-	if result := runMissis(t, store, "set", "--json", ref+"/status", "doing"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--kind", "status"); result.code != 0 {
 		t.Fatalf("set: %d %s", result.code, result.stderr)
 	}
-	conflict := runMissis(t, store, "set", "--json", ref+"/status", "blocked", "--reason", "x", "--if-current", oldAlias)
+	conflict := runMissis(t, store, "set", "--json", ref+"/status", "blocked", "--kind", "status", "--reason", "x", "--if-current", oldAlias)
 	if conflict.code != 5 {
 		t.Fatalf("expected conflict code 5, got %d %s", conflict.code, conflict.stdout)
 	}
@@ -32,8 +32,8 @@ func TestIdempotency(t *testing.T) {
 	created := newTicket(t, store, "Idempotency")
 	ref := created["ref"].(string)
 
-	first := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--idempotency-key", "k1")
-	second := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--idempotency-key", "k1")
+	first := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--kind", "status", "--idempotency-key", "k1")
+	second := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--kind", "status", "--idempotency-key", "k1")
 	if first.code != 0 || second.code != 0 {
 		t.Fatalf("idempotent set failed: %d/%d", first.code, second.code)
 	}
@@ -49,11 +49,11 @@ func TestBlockedRequiresReason(t *testing.T) {
 	created := newTicket(t, store, "Blocked")
 	ref := created["ref"].(string)
 
-	bad := runMissis(t, store, "set", "--json", ref+"/status", "blocked")
+	bad := runMissis(t, store, "set", "--json", ref+"/status", "blocked", "--kind", "status")
 	if bad.code != 4 {
 		t.Fatalf("expected validation code 4, got %d", bad.code)
 	}
-	good := runMissis(t, store, "set", "--json", ref+"/status", "blocked", "--reason", "waiting")
+	good := runMissis(t, store, "set", "--json", ref+"/status", "blocked", "--kind", "status", "--reason", "waiting")
 	if good.code != 0 {
 		t.Fatalf("blocked with reason failed: %d %s", good.code, good.stderr)
 	}
@@ -66,7 +66,7 @@ func TestCycleRejected(t *testing.T) {
 	created := newTicket(t, store, "Cycle")
 	ref := created["ref"].(string)
 
-	if result := runMissis(t, store, "set", "--json", ref+"/a/b", "child"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/a/b", "child", "--kind", "text"); result.code != 0 {
 		t.Fatalf("create child: %d %s", result.code, result.stderr)
 	}
 	cycle := runMissis(t, store, "set", "--json", ref+"/a", "--parent", ref+"/a/b")
@@ -83,7 +83,7 @@ func TestBitemporalProjection(t *testing.T) {
 	ref := created["ref"].(string)
 
 	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	set := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--effective-at", future)
+	set := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--kind", "status", "--effective-at", future)
 	if set.code != 0 {
 		t.Fatalf("set future: %d %s", set.code, set.stderr)
 	}
@@ -108,10 +108,10 @@ func TestBitemporalCLITimeFlags(t *testing.T) {
 	created := newTicket(t, store, "Temporal flags")
 	ref := created["ref"].(string)
 
-	if result := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--effective-at", "2099-01-01T10:00:00Z"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--kind", "status", "--effective-at", "2099-01-01T10:00:00Z"); result.code != 0 {
 		t.Fatalf("set doing: %d %s", result.code, result.stderr)
 	}
-	if result := runMissis(t, store, "set", "--json", ref+"/status", "done", "--effective-at", "2099-01-01T11:00:00Z"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/status", "done", "--kind", "status", "--effective-at", "2099-01-01T11:00:00Z"); result.code != 0 {
 		t.Fatalf("set done: %d %s", result.code, result.stderr)
 	}
 

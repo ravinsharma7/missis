@@ -67,7 +67,7 @@ func TestTitleEditPreservesHistory(t *testing.T) {
 	created := newTicket(t, store, "Old Title")
 	ref := created["ref"].(string)
 
-	set := runMissis(t, store, "set", "--json", ref+"/title", "New Title")
+	set := runMissis(t, store, "set", "--json", ref+"/title", "New Title", "--kind", "text")
 	if set.code != 0 {
 		t.Fatalf("title edit failed: %d %s", set.code, set.stderr)
 	}

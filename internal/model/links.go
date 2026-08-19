@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -144,9 +145,9 @@ func LinksForRef(events []Event, ref Ref, effectiveAt, knownAt time.Time) ([]Lin
 			continue
 		}
 		key := linkKey{
-			from:     refKey(event.Target),
+			from:     CanonicalRefKey(event.Target),
 			relation: event.Value.Text,
-			to:       refKey(*event.Value.Ref),
+			to:       CanonicalRefKey(*event.Value.Ref),
 		}
 		switch event.Operation {
 		case OpAssertLink:
@@ -199,7 +200,7 @@ func LinksForRef(events []Event, ref Ref, effectiveAt, knownAt time.Time) ([]Lin
 		if views[i].Relation != views[j].Relation {
 			return views[i].Relation < views[j].Relation
 		}
-		return refKey(views[i].To) < refKey(views[j].To)
+		return PresentationRefKey(views[i].To) < PresentationRefKey(views[j].To)
 	})
 	return views, nil
 }
@@ -214,8 +215,8 @@ func BuildLineageGraph(events []Event, effectiveAt, knownAt time.Time) (*Lineage
 		byTo:   make(map[string][]LinkView),
 	}
 	for _, link := range current {
-		fromKey := refKey(link.From)
-		toKey := refKey(link.To)
+		fromKey := CanonicalRefKey(link.From)
+		toKey := CanonicalRefKey(link.To)
 		graph.byFrom[fromKey] = append(graph.byFrom[fromKey], link)
 		graph.byTo[toKey] = append(graph.byTo[toKey], link)
 	}
@@ -224,7 +225,7 @@ func BuildLineageGraph(events []Event, effectiveAt, knownAt time.Time) (*Lineage
 			if graph.byFrom[key][i].Relation != graph.byFrom[key][j].Relation {
 				return graph.byFrom[key][i].Relation < graph.byFrom[key][j].Relation
 			}
-			return refKey(graph.byFrom[key][i].To) < refKey(graph.byFrom[key][j].To)
+			return PresentationRefKey(graph.byFrom[key][i].To) < PresentationRefKey(graph.byFrom[key][j].To)
 		})
 	}
 	for key := range graph.byTo {
@@ -232,7 +233,7 @@ func BuildLineageGraph(events []Event, effectiveAt, knownAt time.Time) (*Lineage
 			if graph.byTo[key][i].Relation != graph.byTo[key][j].Relation {
 				return graph.byTo[key][i].Relation < graph.byTo[key][j].Relation
 			}
-			return refKey(graph.byTo[key][i].From) < refKey(graph.byTo[key][j].From)
+			return PresentationRefKey(graph.byTo[key][i].From) < PresentationRefKey(graph.byTo[key][j].From)
 		})
 	}
 	return graph, nil
@@ -249,18 +250,18 @@ func (g *LineageGraph) Walk(start Ref, direction string, maxDepth int, relations
 	}
 
 	var edges []LineageEdge
-	visited := map[string]bool{refKey(start): true}
+	visited := map[string]bool{CanonicalRefKey(start): true}
 	var walk func(Ref, int)
 	walk = func(current Ref, depth int) {
 		if depth > maxDepth {
 			return
 		}
 		if direction == "outgoing" || direction == "both" {
-			for _, link := range g.byFrom[refKey(current)] {
+			for _, link := range g.byFrom[CanonicalRefKey(current)] {
 				if len(relations) > 0 && !relations[link.Relation] {
 					continue
 				}
-				nextKey := refKey(link.To)
+				nextKey := CanonicalRefKey(link.To)
 				if visited[nextKey] {
 					continue
 				}
@@ -278,7 +279,7 @@ func (g *LineageGraph) Walk(start Ref, direction string, maxDepth int, relations
 			}
 		}
 		if direction == "incoming" || direction == "both" {
-			for _, link := range g.byTo[refKey(current)] {
+			for _, link := range g.byTo[CanonicalRefKey(current)] {
 				inverse, ok := InverseRelation(link.Relation)
 				if !ok {
 					continue
@@ -286,7 +287,7 @@ func (g *LineageGraph) Walk(start Ref, direction string, maxDepth int, relations
 				if len(relations) > 0 && !relations[inverse] {
 					continue
 				}
-				nextKey := refKey(link.From)
+				nextKey := CanonicalRefKey(link.From)
 				if visited[nextKey] {
 					continue
 				}
@@ -340,9 +341,9 @@ func currentLinkViews(events []Event, effectiveAt, knownAt time.Time) ([]LinkVie
 			continue
 		}
 		key := linkKey{
-			from:     refKey(event.Target),
+			from:     CanonicalRefKey(event.Target),
 			relation: event.Value.Text,
-			to:       refKey(*event.Value.Ref),
+			to:       CanonicalRefKey(*event.Value.Ref),
 		}
 		switch event.Operation {
 		case OpAssertLink:
@@ -378,10 +379,10 @@ func currentLinkViews(events []Event, effectiveAt, knownAt time.Time) ([]LinkVie
 		if views[i].Relation != views[j].Relation {
 			return views[i].Relation < views[j].Relation
 		}
-		if refKey(views[i].From) != refKey(views[j].From) {
-			return refKey(views[i].From) < refKey(views[j].From)
+		if PresentationRefKey(views[i].From) != PresentationRefKey(views[j].From) {
+			return PresentationRefKey(views[i].From) < PresentationRefKey(views[j].From)
 		}
-		return refKey(views[i].To) < refKey(views[j].To)
+		return PresentationRefKey(views[i].To) < PresentationRefKey(views[j].To)
 	})
 	return views, nil
 }
@@ -390,6 +391,17 @@ func refEqual(a, b Ref) bool {
 	return a.Kind == b.Kind && a.Entity == b.Entity
 }
 
-func refKey(ref Ref) string {
-	return string(ref.Kind) + ":" + ref.Entity + ":" + strings.Join(ref.Path, "/")
+// CanonicalRefKey is the identity key for a reference: Kind and Entity only,
+// length-prefixed so no separator character can cause collisions. Mutable
+// paths never participate in canonical identity.
+func CanonicalRefKey(ref Ref) string {
+	return strconv.Itoa(len(ref.Kind)) + ":" + string(ref.Kind) +
+		strconv.Itoa(len(ref.Entity)) + ":" + ref.Entity
+}
+
+// PresentationRefKey is the canonical key plus the path. It is for display
+// sorting and path lookup only; it never participates in identity,
+// deduplication, retraction matching, or traversal.
+func PresentationRefKey(ref Ref) string {
+	return CanonicalRefKey(ref) + ":" + strings.Join(ref.Path, "/")
 }

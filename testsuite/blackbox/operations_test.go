@@ -16,7 +16,7 @@ func TestCLIFlagsMapToOperations(t *testing.T) {
 	created := newTicket(t, storePath, "Ops")
 	ref := created["ref"].(string)
 
-	if result := runMissis(t, storePath, "set", "--json", ref+"/notes", "hello"); result.code != 0 {
+	if result := runMissis(t, storePath, "set", "--json", ref+"/notes", "hello", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set-value: %d %s", result.code, result.stderr)
 	}
 	if result := runMissis(t, storePath, "set", "--json", ref+"/tag", "--add", "x"); result.code != 0 {
@@ -28,7 +28,7 @@ func TestCLIFlagsMapToOperations(t *testing.T) {
 	if result := runMissis(t, storePath, "set", "--json", ref+"/notes", "--name", "memo"); result.code != 0 {
 		t.Fatalf("rename-part: %d %s", result.code, result.stderr)
 	}
-	if result := runMissis(t, storePath, "set", "--json", ref+"/section", "s"); result.code != 0 {
+	if result := runMissis(t, storePath, "set", "--json", ref+"/section", "s", "--kind", "text"); result.code != 0 {
 		t.Fatalf("create section: %d %s", result.code, result.stderr)
 	}
 	if result := runMissis(t, storePath, "set", "--json", ref+"/memo", "--parent", ref+"/section"); result.code != 0 {
@@ -41,9 +41,9 @@ func TestCLIFlagsMapToOperations(t *testing.T) {
 	if result := runMissis(t, storePath, "set", "--json", ref+"/links", "--retract", "blocked-by:"+second["ref"].(string), "--reason", "done"); result.code != 0 {
 		t.Fatalf("retract-link: %d %s", result.code, result.stderr)
 	}
-	first := mustJSON(t, runMissis(t, storePath, "set", "--json", ref+"/status", "doing"))
+	first := mustJSON(t, runMissis(t, storePath, "set", "--json", ref+"/status", "doing", "--kind", "status"))
 	alias := first["event"].(string)
-	if result := runMissis(t, storePath, "set", "--json", ref+"/status", "blocked", "--reason", "waiting", "--supersedes", alias); result.code != 0 {
+	if result := runMissis(t, storePath, "set", "--json", ref+"/status", "blocked", "--kind", "status", "--reason", "waiting", "--supersedes", alias); result.code != 0 {
 		t.Fatalf("supersede-event: %d %s", result.code, result.stderr)
 	}
 

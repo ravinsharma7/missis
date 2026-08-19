@@ -2,6 +2,8 @@ package missis
 
 import (
 	"time"
+
+	"github.com/ravinsharma7/missis/internal/model"
 )
 
 // RequestContext carries the per-request provenance and concurrency inputs.
@@ -52,6 +54,7 @@ type Mutation interface {
 type SetValue struct {
 	Target string
 	Value  string
+	Kind   model.ValueKind
 	Reason string
 }
 
@@ -86,6 +89,7 @@ type MovePart struct {
 type SupersedeEvent struct {
 	Target     string
 	Value      string
+	Kind       model.ValueKind
 	Supersedes string
 	Reason     string
 }
@@ -109,14 +113,15 @@ type TicketSummary struct {
 }
 
 type PartView struct {
-	ID          string
-	Path        string
-	Value       any
-	ValueKind   string
-	ParentID    any
-	CreatedBy   string
-	Name        string
-	DisplayName string
+	ID             string
+	Path           string
+	Value          any
+	ValueKind      string
+	DeclaredSchema string
+	ParentID       any
+	CreatedBy      string
+	Name           string
+	DisplayName    string
 }
 
 type TicketProjection struct {

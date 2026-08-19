@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -60,7 +61,7 @@ func TestDeterministicBitemporalAndDefaults(t *testing.T) {
 		t.Fatalf("expected default actor human/local in history: %+v", history)
 	}
 
-	if _, err := svc.Set(ctx, missis.RequestContext{EffectiveAt: now.Add(time.Hour)}, missis.SetValue{Target: created.Ref + "/status", Value: "doing"}); err != nil {
+	if _, err := svc.Set(ctx, missis.RequestContext{EffectiveAt: now.Add(time.Hour)}, missis.SetValue{Target: created.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus}); err != nil {
 		t.Fatal(err)
 	}
 	current, err := svc.ShowTicket(ctx, created.Ref, missis.ShowOptions{})
@@ -115,7 +116,7 @@ func TestTypedErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Set(ctx, missis.RequestContext{}, missis.SetValue{Target: created.Ref + "/status", Value: "blocked"}); err != nil {
+	if _, err := svc.Set(ctx, missis.RequestContext{}, missis.SetValue{Target: created.Ref + "/status", Value: "blocked", Kind: model.ValueKindStatus}); err != nil {
 		var de *missis.DomainError
 		if !errors.As(err, &de) || de.Kind != missis.ErrValidation {
 			t.Fatalf("expected Validation domain error, got %v", err)
@@ -141,11 +142,11 @@ func TestDeterministicConflict(t *testing.T) {
 		t.Fatalf("status history = %d events", len(history))
 	}
 	oldAlias := history[0].Alias
-	if _, err := svc.Set(ctx, missis.RequestContext{}, missis.SetValue{Target: created.Ref + "/status", Value: "doing"}); err != nil {
+	if _, err := svc.Set(ctx, missis.RequestContext{}, missis.SetValue{Target: created.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus}); err != nil {
 		t.Fatal(err)
 	}
 	conflictReq := missis.RequestContext{IfCurrent: oldAlias}
-	if _, err := svc.Set(ctx, conflictReq, missis.SetValue{Target: created.Ref + "/status", Value: "done"}); err != nil {
+	if _, err := svc.Set(ctx, conflictReq, missis.SetValue{Target: created.Ref + "/status", Value: "done", Kind: model.ValueKindStatus}); err != nil {
 		var de *missis.DomainError
 		if !errors.As(err, &de) || de.Kind != missis.ErrConflict {
 			t.Fatalf("expected Conflict domain error, got %v", err)

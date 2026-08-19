@@ -87,6 +87,10 @@ func CanonicalEventBytesV1(event Event) ([]byte, error) {
 //
 //	HashInput = "MISSIS-EVENT-HASH" || 0x00 || "v1" || 0x00
 //	            || previous_hash || 0x00 || canonical_bytes
+//
+// The 0x00 framing is unambiguous because neither variable field can contain
+// a raw NUL: previous_hash is lowercase hex, and canonical bytes are JSON,
+// which escapes NUL as \u0000 (see TestCanonicalEventBytesV1NoRawNUL).
 func ComputeEventHashV1(event Event, previousHash string) (string, error) {
 	canonical, err := CanonicalEventBytesV1(event)
 	if err != nil {

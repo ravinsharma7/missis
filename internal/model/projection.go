@@ -31,10 +31,16 @@ func BitemporalProjection(events []Event, ticketID TicketID, effectiveAt, knownA
 
 // ProjectTicket folds events for one ticket into a projection.
 func ProjectTicket(events []Event, ticketID TicketID, effectiveAt, knownAt time.Time) (*Projection, error) {
+	return ProjectStream(events, Ref{Kind: KindTicket, Entity: string(ticketID)}, effectiveAt, knownAt)
+}
+
+// ProjectStream folds events for one stream (ticket, project, group, ...)
+// into a projection.
+func ProjectStream(events []Event, stream Ref, effectiveAt, knownAt time.Time) (*Projection, error) {
 	filtered := make([]Event, 0, len(events))
 	superseded := make(map[EventID]bool)
 	for _, event := range events {
-		if event.Stream.Kind != KindTicket || event.Stream.Entity != string(ticketID) {
+		if !sameStream(event.Stream, stream) {
 			continue
 		}
 		if event.RecordedAt.After(knownAt) {
@@ -54,12 +60,15 @@ func ProjectTicket(events []Event, ticketID TicketID, effectiveAt, knownAt time.
 	sortEventsByValidTime(filtered)
 
 	proj := &Projection{
-		TicketID:    ticketID,
+		Stream:      stream,
 		Parts:       make(map[PartID]*Part),
 		Links:       make(map[LinkID]*Link),
 		Paths:       make(map[string]PartID),
 		EffectiveAt: effectiveAt,
 		KnownAt:     knownAt,
+	}
+	if stream.Kind == KindTicket {
+		proj.TicketID = TicketID(stream.Entity)
 	}
 
 	for _, event := range filtered {
@@ -75,6 +84,10 @@ func ProjectTicket(events []Event, ticketID TicketID, effectiveAt, knownAt time.
 		return nil, err
 	}
 	return proj, nil
+}
+
+func sameStream(a, b Ref) bool {
+	return a.Kind == b.Kind && a.Entity == b.Entity
 }
 
 // ResolvePartPath resolves a logical part path in a projection.

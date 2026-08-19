@@ -96,10 +96,10 @@ func TestPartLevelLinks(t *testing.T) {
 	first := newTicket(t, store, "first")
 	second := newTicket(t, store, "second")
 
-	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "problem"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "problem", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set first problem: %d %s", result.code, result.stderr)
 	}
-	if result := runMissis(t, store, "set", "--json", second["ref"].(string)+"/evidence", "evidence"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", second["ref"].(string)+"/evidence", "evidence", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set second evidence: %d %s", result.code, result.stderr)
 	}
 

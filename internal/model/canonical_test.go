@@ -65,6 +65,27 @@ func TestCanonicalEventBytesV1NoHTMLEscaping(t *testing.T) {
 	}
 }
 
+// TestCanonicalEventBytesV1NoRawNUL pins the safety of the 0x00 hash domain
+// framing: canonical JSON escapes NUL as \u0000, so the variable fields in
+// the hash input (hex previous_hash, JSON canonical bytes) can never contain
+// a raw NUL byte that could shift the framing boundaries.
+func TestCanonicalEventBytesV1NoRawNUL(t *testing.T) {
+	event := canonicalVectorEvent()
+	event.Value.Text = "a\x00b"
+	got, err := CanonicalEventBytesV1(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range got {
+		if b == 0 {
+			t.Fatalf("canonical bytes must not contain a raw NUL byte: %q", got)
+		}
+	}
+	if !strings.Contains(string(got), `"Text":"a\u0000b"`) {
+		t.Fatalf("NUL must be JSON-escaped in canonical bytes: %s", got)
+	}
+}
+
 func TestCanonicalEventBytesV1MapKeysSorted(t *testing.T) {
 	event := canonicalVectorEvent()
 	event.Value.Kind = ValueKindJSON

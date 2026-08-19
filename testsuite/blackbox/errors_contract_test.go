@@ -43,7 +43,7 @@ func TestStructuredJSONErrorShape(t *testing.T) {
 	created := newTicket(t, store, "ErrorShape")
 	ref := created["ref"].(string)
 
-	result := runMissis(t, store, "set", "--json", ref+"/status", "blocked")
+	result := runMissis(t, store, "set", "--json", ref+"/status", "blocked", "--kind", "status")
 	if result.code != 4 {
 		t.Fatalf("expected validation exit 4, got %d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}

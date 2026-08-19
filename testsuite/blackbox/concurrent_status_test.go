@@ -51,7 +51,7 @@ func TestConcurrentStatusChangesAcrossClients(t *testing.T) {
 			for i := 0; i < iterations; i++ {
 				ref := fmt.Sprintf("#%d", (w+i)%tickets+1)
 				status := statuses[(w+i)%len(statuses)]
-				result, err := runMissisRaw(storePath, "set", "--json", ref+"/status", status)
+				result, err := runMissisRaw(storePath, "set", "--json", ref+"/status", status, "--kind", "status")
 				if err != nil {
 					errs <- fmt.Errorf("worker %d iter %d: %v", w, i, err)
 					return
@@ -115,7 +115,7 @@ func TestRepairStoreRefusesInPlaceRepair(t *testing.T) {
 	}
 
 	// A subsequent set lands past the skipped number, leaving a visible gap.
-	if result := runMissis(t, storePath, "set", "--json", created["ref"].(string)+"/status", "doing"); result.code != 0 {
+	if result := runMissis(t, storePath, "set", "--json", created["ref"].(string)+"/status", "doing", "--kind", "status"); result.code != 0 {
 		t.Fatalf("set after skipped sequence: %d %s", result.code, result.stderr)
 	}
 

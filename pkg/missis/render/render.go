@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
@@ -72,18 +73,19 @@ func TicketText(projection missis.TicketProjection) string {
 		if part.Value == nil {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("%s: %v\n", path, part.Value))
+		b.WriteString(fmt.Sprintf("%s: %s\n", path, renderPartValue(part)))
 	}
 	return b.String()
 }
 
 type partJSON struct {
-	ID        string `json:"id"`
-	Path      string `json:"path"`
-	Value     any    `json:"value"`
-	ValueKind string `json:"value_kind"`
-	ParentID  any    `json:"parent_id"`
-	CreatedBy string `json:"created_by"`
+	ID             string `json:"id"`
+	Path           string `json:"path"`
+	Value          any    `json:"value"`
+	ValueKind      string `json:"value_kind"`
+	DeclaredSchema string `json:"declared_schema,omitempty"`
+	ParentID       any    `json:"parent_id"`
+	CreatedBy      string `json:"created_by"`
 }
 
 type ticketJSON struct {
@@ -99,12 +101,13 @@ func TicketJSON(projection missis.TicketProjection) ([]byte, error) {
 	parts := make(map[string]partJSON, len(projection.Parts))
 	for path, part := range projection.Parts {
 		parts[path] = partJSON{
-			ID:        part.ID,
-			Path:      path,
-			Value:     part.Value,
-			ValueKind: part.ValueKind,
-			ParentID:  part.ParentID,
-			CreatedBy: part.CreatedBy,
+			ID:             part.ID,
+			Path:           path,
+			Value:          part.Value,
+			ValueKind:      part.ValueKind,
+			DeclaredSchema: part.DeclaredSchema,
+			ParentID:       part.ParentID,
+			CreatedBy:      part.CreatedBy,
 		}
 	}
 	return json.Marshal(ticketJSON{
@@ -294,7 +297,7 @@ func ShowMarkdown(projection missis.TicketProjection, links []missis.LinkView) s
 		}
 		b.WriteString(heading + " " + last + "\n\n")
 		if part.Value != nil {
-			b.WriteString(fmt.Sprintf("%v\n\n", part.Value))
+			b.WriteString(renderPartValue(part) + "\n\n")
 		}
 	}
 	if len(links) > 0 {
@@ -305,6 +308,25 @@ func ShowMarkdown(projection missis.TicketProjection, links []missis.LinkView) s
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// renderPartValue renders a part from its resolved kind contract. It never
+// infers meaning from key names or content.
+func renderPartValue(part missis.PartView) string {
+	switch part.ValueKind {
+	case "list", "map", "json":
+		if list, ok := part.Value.([]string); ok {
+			return strings.Join(list, "\n")
+		}
+		return fmt.Sprintf("%v", part.Value)
+	case "ref":
+		if ref, ok := part.Value.(*model.Ref); ok && ref != nil {
+			return string(ref.Kind) + ":" + ref.Entity
+		}
+		return fmt.Sprintf("%v", part.Value)
+	default:
+		return fmt.Sprintf("%v", part.Value)
+	}
 }
 
 func ShowHistory(events []missis.EventView, format string) (string, error) {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -22,7 +23,7 @@ func TestBackupManifestRestoreVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: created.Ref + "/problem", Value: "content"}); err != nil {
+	if _, err := client.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: created.Ref + "/problem", Value: "content", Kind: model.ValueKindText}); err != nil {
 		t.Fatal(err)
 	}
 

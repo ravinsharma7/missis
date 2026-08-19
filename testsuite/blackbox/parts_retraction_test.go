@@ -12,7 +12,7 @@ func TestNestedPartRenameMoveRetractHistory(t *testing.T) {
 	created := newTicket(t, store, "Nested")
 	ref := created["ref"].(string)
 
-	set := runMissis(t, store, "set", "--json", ref+"/evidence/race-test", "go test")
+	set := runMissis(t, store, "set", "--json", ref+"/evidence/race-test", "go test", "--kind", "text")
 	if set.code != 0 {
 		t.Fatalf("create nested: %d %s", set.code, set.stderr)
 	}
@@ -43,7 +43,7 @@ func TestSupersession(t *testing.T) {
 	statusEvent := events[0].(map[string]any)
 	alias := statusEvent["alias"].(string)
 
-	set := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--supersedes", alias)
+	set := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--kind", "status", "--supersedes", alias)
 	if set.code != 0 {
 		t.Fatalf("supersede: %d %s", set.code, set.stderr)
 	}
@@ -60,10 +60,10 @@ func TestParentValueRetractionPreservesChild(t *testing.T) {
 	created := newTicket(t, store, "Parent retraction")
 	ref := created["ref"].(string)
 
-	if result := runMissis(t, store, "set", "--json", ref+"/a", "parent"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/a", "parent", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set parent: %d %s", result.code, result.stderr)
 	}
-	if result := runMissis(t, store, "set", "--json", ref+"/a/b", "child"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/a/b", "child", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set child: %d %s", result.code, result.stderr)
 	}
 	if result := runMissis(t, store, "set", "--json", ref+"/a", "--retract", "--reason", "only parent value"); result.code != 0 {
@@ -84,7 +84,7 @@ func TestRecursiveRetractionRemovesSubtree(t *testing.T) {
 	created := newTicket(t, store, "Recursive retraction")
 	ref := created["ref"].(string)
 
-	if result := runMissis(t, store, "set", "--json", ref+"/a/b", "child"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/a/b", "child", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set child: %d %s", result.code, result.stderr)
 	}
 	if result := runMissis(t, store, "set", "--json", ref+"/a", "--retract", "--recursive", "--reason", "remove subtree"); result.code != 0 {
@@ -102,7 +102,7 @@ func TestStalePathDoesNotRetarget(t *testing.T) {
 	created := newTicket(t, store, "Stale path")
 	ref := created["ref"].(string)
 
-	if result := runMissis(t, store, "set", "--json", ref+"/old", "value"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/old", "value", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set old: %d %s", result.code, result.stderr)
 	}
 	if result := runMissis(t, store, "set", "--json", ref+"/old", "--name", "new"); result.code != 0 {
