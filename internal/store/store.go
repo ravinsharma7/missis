@@ -28,6 +28,18 @@ var ErrConflict = errors.New("optimistic concurrency conflict")
 type Precondition struct {
 	TargetEntity         string
 	ExpectedCurrentEvent model.EventID
+	Link                 *LinkPrecondition
+}
+
+// LinkPrecondition guards a link mutation: the retraction/assertion of
+// (From, Relation, To) only applies if the current active assertion of that
+// triple is ExpectedCurrentEvent. Set semantics apply until evidence
+// semantics (ticket #66) land.
+type LinkPrecondition struct {
+	From                 model.Ref
+	Relation             string
+	To                   model.Ref
+	ExpectedCurrentEvent model.EventID
 }
 
 type AppendOutcome struct {
@@ -719,85 +731,109 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		return outcome, replayAlias, nil
 	}
 
-	if events[0].Stream.Kind == "" || events[0].Stream.Entity == "" {
-		return AppendOutcome{}, 0, fmt.Errorf("event stream is required")
-	}
-	streamKind := string(events[0].Stream.Kind)
-	streamEntity := events[0].Stream.Entity
+	streams := make(map[streamKey][]model.Event, len(events))
+	var order []streamKey
 	for _, event := range events {
-		if string(event.Stream.Kind) != streamKind || event.Stream.Entity != streamEntity {
-			return AppendOutcome{}, 0, fmt.Errorf("batch contains multiple streams")
+		if event.Stream.Kind == "" || event.Stream.Entity == "" {
+			return AppendOutcome{}, 0, fmt.Errorf("event stream is required")
 		}
+		key := streamKey{kind: string(event.Stream.Kind), entity: event.Stream.Entity}
+		if _, ok := streams[key]; !ok {
+			order = append(order, key)
+		}
+		streams[key] = append(streams[key], event)
 	}
 
 	var alias uint64
 	if allocateAlias {
-		alias, err = insertTicketAliasTx(tx, model.TicketID(streamEntity))
+		if len(order) != 1 || order[0].kind != string(model.KindTicket) {
+			return AppendOutcome{}, 0, fmt.Errorf("ticket alias requires a single ticket stream")
+		}
+		alias, err = insertTicketAliasTx(tx, model.TicketID(order[0].entity))
 		if err != nil {
 			return AppendOutcome{}, 0, err
 		}
 	}
 
-	existing, err := loadStreamEventsTx(tx, streamKind, streamEntity)
-	if err != nil {
-		return AppendOutcome{}, 0, err
-	}
-	if s.appendLoadHook != nil {
-		s.appendLoadHook(streamKind, streamEntity)
+	existingByStream := make(map[streamKey][]model.Event, len(order))
+	for _, key := range order {
+		existing, err := loadStreamEventsTx(tx, key.kind, key.entity)
+		if err != nil {
+			return AppendOutcome{}, 0, err
+		}
+		existingByStream[key] = existing
+		if s.appendLoadHook != nil {
+			s.appendLoadHook(key.kind, key.entity)
+		}
 	}
 
-	if err := checkPreconditions(existing, preconditions); err != nil {
-		return AppendOutcome{}, 0, err
+	var allEvents []model.Event
+	for _, precondition := range preconditions {
+		if precondition.Link != nil {
+			allEvents, err = loadAllEventsTx(tx)
+			if err != nil {
+				return AppendOutcome{}, 0, err
+			}
+			break
+		}
 	}
 
-	nextSequence, err := allocateSequenceTx(tx, streamKind, streamEntity, uint64(len(events)))
-	if err != nil {
+	if err := checkPreconditions(existingByStream, allEvents, preconditions); err != nil {
 		return AppendOutcome{}, 0, err
 	}
 
 	now := time.Now().UTC()
 	appended := make([]model.Event, 0, len(events))
-	running := append([]model.Event(nil), existing...)
-
-	for i := range events {
-		event := events[i]
-		if event.ID == "" {
-			event.ID = model.EventID(idgen.New("event"))
-		}
-		allocated := nextSequence + uint64(i)
-		if event.Sequence != 0 && event.Sequence != allocated {
-			return AppendOutcome{}, 0, fmt.Errorf(
-				"event %d: explicit sequence %d does not match allocated sequence %d",
-				i, event.Sequence, allocated,
-			)
-		}
-		event.Sequence = allocated
-		if event.RecordedAt.IsZero() {
-			event.RecordedAt = now
-		}
-		if event.EffectiveAt.IsZero() {
-			event.EffectiveAt = event.RecordedAt
-		}
-		if err := model.ValidateAppend(running, event); err != nil {
-			return AppendOutcome{}, 0, err
-		}
-		eventJSON, err := json.Marshal(event)
+	runningByStream := make(map[streamKey][]model.Event, len(order))
+	for _, key := range order {
+		group := streams[key]
+		existing := existingByStream[key]
+		nextSequence, err := allocateSequenceTx(tx, key.kind, key.entity, uint64(len(group)))
 		if err != nil {
 			return AppendOutcome{}, 0, err
 		}
-		if _, err := tx.Exec(
-			`INSERT INTO events (id, stream_kind, stream_entity, sequence, event_json) VALUES (?, ?, ?, ?, ?)`,
-			event.ID, streamKind, streamEntity, event.Sequence, eventJSON,
-		); err != nil {
-			return AppendOutcome{}, 0, err
+		running := append([]model.Event(nil), existing...)
+		for i := range group {
+			event := group[i]
+			if event.ID == "" {
+				event.ID = model.EventID(idgen.New("event"))
+			}
+			allocated := nextSequence + uint64(i)
+			if event.Sequence != 0 && event.Sequence != allocated {
+				return AppendOutcome{}, 0, fmt.Errorf(
+					"event %d: explicit sequence %d does not match allocated sequence %d",
+					i, event.Sequence, allocated,
+				)
+			}
+			event.Sequence = allocated
+			if event.RecordedAt.IsZero() {
+				event.RecordedAt = now
+			}
+			if event.EffectiveAt.IsZero() {
+				event.EffectiveAt = event.RecordedAt
+			}
+			if err := model.ValidateAppend(running, event); err != nil {
+				return AppendOutcome{}, 0, err
+			}
+			eventJSON, err := json.Marshal(event)
+			if err != nil {
+				return AppendOutcome{}, 0, err
+			}
+			if _, err := tx.Exec(
+				`INSERT INTO events (id, stream_kind, stream_entity, sequence, event_json) VALUES (?, ?, ?, ?, ?)`,
+				event.ID, key.kind, key.entity, event.Sequence, eventJSON,
+			); err != nil {
+				return AppendOutcome{}, 0, err
+			}
+			var aliasSeq uint64
+			if err := tx.QueryRow(`SELECT alias_seq FROM events WHERE id = ?`, event.ID).Scan(&aliasSeq); err != nil {
+				return AppendOutcome{}, 0, err
+			}
+			event.AliasSeq = aliasSeq
+			running = append(running, event)
+			appended = append(appended, event)
 		}
-		var aliasSeq uint64
-		if err := tx.QueryRow(`SELECT alias_seq FROM events WHERE id = ?`, event.ID).Scan(&aliasSeq); err != nil {
-			return AppendOutcome{}, 0, err
-		}
-		event.AliasSeq = aliasSeq
-		running = append(running, event)
-		appended = append(appended, event)
+		runningByStream[key] = running
 	}
 
 	var previousHash string
@@ -820,8 +856,11 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 	); err != nil {
 		return AppendOutcome{}, 0, err
 	}
-	if streamKind == string(model.KindTicket) {
-		if err := upsertTicketDerivedTx(tx, model.TicketID(streamEntity), running, alias); err != nil {
+	for _, key := range order {
+		if key.kind != string(model.KindTicket) {
+			continue
+		}
+		if err := upsertTicketDerivedTx(tx, model.TicketID(key.entity), runningByStream[key], alias); err != nil {
 			return AppendOutcome{}, 0, err
 		}
 	}
@@ -1599,29 +1638,88 @@ func allocateSequenceTx(tx *sql.Tx, streamKind, streamEntity string, count uint6
 	return newValue - count + 1, nil
 }
 
-func checkPreconditions(events []model.Event, preconditions []Precondition) error {
+func checkPreconditions(streamEvents map[streamKey][]model.Event, allEvents []model.Event, preconditions []Precondition) error {
 	for _, precondition := range preconditions {
-		if precondition.TargetEntity == "" || precondition.ExpectedCurrentEvent == "" {
-			continue
-		}
-		ticketID := events[0].Stream.Entity
-		proj, err := model.CurrentProjection(events, model.TicketID(ticketID), model.MaxRecordedAt(events))
-		if err != nil {
-			return err
-		}
-		partID := model.PartID(precondition.TargetEntity)
-		part := proj.Parts[partID]
-		if part == nil {
-			if precondition.ExpectedCurrentEvent != "" {
-				return ErrConflict
+		if precondition.Link != nil {
+			if err := checkLinkPrecondition(allEvents, precondition.Link); err != nil {
+				return err
 			}
 			continue
 		}
-		if part.CurrentFrom != precondition.ExpectedCurrentEvent {
-			return ErrConflict
+		if precondition.TargetEntity == "" || precondition.ExpectedCurrentEvent == "" {
+			continue
+		}
+		if len(streamEvents) != 1 {
+			return fmt.Errorf("part precondition requires a single ticket stream")
+		}
+		for _, events := range streamEvents {
+			ticketID := events[0].Stream.Entity
+			proj, err := model.CurrentProjection(events, model.TicketID(ticketID), model.MaxRecordedAt(events))
+			if err != nil {
+				return err
+			}
+			partID := model.PartID(precondition.TargetEntity)
+			part := proj.Parts[partID]
+			if part == nil {
+				if precondition.ExpectedCurrentEvent != "" {
+					return ErrConflict
+				}
+				continue
+			}
+			if part.CurrentFrom != precondition.ExpectedCurrentEvent {
+				return ErrConflict
+			}
 		}
 	}
 	return nil
+}
+
+func checkLinkPrecondition(allEvents []model.Event, link *LinkPrecondition) error {
+	if link == nil || len(allEvents) == 0 {
+		return nil
+	}
+	at := model.MaxRecordedAt(allEvents)
+	views, err := model.LinksForRef(allEvents, link.From, at, at)
+	if err != nil {
+		return err
+	}
+	var current model.EventID
+	for _, view := range views {
+		if view.Direction != "asserted" || view.Relation != link.Relation {
+			continue
+		}
+		if view.To.Kind == link.To.Kind && view.To.Entity == link.To.Entity {
+			current = view.CreatedBy
+			break
+		}
+	}
+	if link.ExpectedCurrentEvent != "" && current != link.ExpectedCurrentEvent {
+		return ErrConflict
+	}
+	return nil
+}
+
+func loadAllEventsTx(tx *sql.Tx) ([]model.Event, error) {
+	rows, err := tx.Query(`SELECT event_json, alias_seq FROM events ORDER BY stream_kind, stream_entity, sequence`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []model.Event
+	for rows.Next() {
+		var raw string
+		var aliasSeq uint64
+		if err := rows.Scan(&raw, &aliasSeq); err != nil {
+			return nil, err
+		}
+		var event model.Event
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			return nil, err
+		}
+		event.AliasSeq = aliasSeq
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 func shortID(id model.TicketID) string {

@@ -78,6 +78,12 @@ go run ./tools/store-gaps .missis-store/missis.db
   was retired and references repointed to spec section 14. Follow-ups: #66
   evidence semantics, #73 import `--project`, #74 Phase 4 scope ops, #75
   derived scope indexes.
+- Atomic link moves landed (2026-08-19, #77 steps 1/1b/2): `MoveLink`
+  service workflow (retract+assert in one batch, per-relation origins),
+  `LinkPrecondition` in the store (link-assertion guard, in-transaction
+  evaluation), multi-stream `AppendBatch`, and the `MoveHome` SDK
+  convenience. Semantics documented in specs/link-workflows.subspec.md
+  (transient); TUI membership UI and the guarantees doc remain (#77/#78).
 - GitHub API merges on protected main hit a GitHub-side quirk: strict required
   checks report "2 of 2 required status checks are expected" even when checks
   are green, and auto-merge stalls. Workaround: delete branch protection,

@@ -250,6 +250,15 @@ type LinkOptions struct {
 	Reason   string
 }
 
+type MoveLinkOptions struct {
+	Relation  string
+	From      string
+	To        string
+	Target    string
+	Reason    string
+	IfCurrent string
+}
+
 type LineageOptions struct {
 	Direction   string
 	Depth       int
