@@ -229,3 +229,114 @@ func TestConcurrentMoveHomeExactlyOneWinner(t *testing.T) {
 		t.Fatalf("final home assertions = %d, want exactly 1", homeTargets)
 	}
 }
+
+func TestConcurrentMoveLinkAcrossScopes(t *testing.T) {
+	now := fixedNow()
+	svc := openFixed(t, fixedClock{now})
+	ctx := context.Background()
+	req := missis.RequestContext{}
+	newProjects(t, svc, "a", "b", "c")
+	for _, id := range []string{"g1", "g2"} {
+		if _, err := svc.NewEntity(ctx, req, missis.EntityOptions{Kind: "group", ID: id, Title: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Three independent tickets: one home move, one contains move, one
+	// governs move, run concurrently across project/group boundaries.
+	homeTicket, err := svc.NewTicket(ctx, req, missis.NewTicketOptions{Title: "Home", Project: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	containsTicket, err := svc.NewTicket(ctx, req, missis.NewTicketOptions{Title: "Contains"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: "project:a/links", Relation: "contains", Target: containsTicket.Ref, Add: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: "group:g1/links", Relation: "governs", Target: "project:c", Add: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 3)
+	ops := []func() error{
+		func() error {
+			_, err := svc.MoveLink(context.Background(), missis.RequestContext{}, missis.MoveLinkOptions{
+				Relation: "has-home", From: "project:a", To: "project:b", Target: homeTicket.Ref, Reason: "race",
+			})
+			return err
+		},
+		func() error {
+			_, err := svc.MoveLink(context.Background(), missis.RequestContext{}, missis.MoveLinkOptions{
+				Relation: "contains", From: "project:a", To: "project:c", Target: containsTicket.Ref, Reason: "race",
+			})
+			return err
+		},
+		func() error {
+			_, err := svc.MoveLink(context.Background(), missis.RequestContext{}, missis.MoveLinkOptions{
+				Relation: "governs", From: "group:g1", To: "group:g2", Target: "project:c", Reason: "race",
+			})
+			return err
+		},
+	}
+	for i, op := range ops {
+		wg.Add(1)
+		go func(i int, op func() error) {
+			defer wg.Done()
+			errs[i] = op()
+		}(i, op)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("independent concurrent move %d failed: %v", i, err)
+		}
+	}
+
+	// Home moved a -> b.
+	links, err := svc.LoadLinkEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	views, err := model.LinksForRef(links, model.Ref{Kind: model.KindTicket, Entity: homeTicket.ID}, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	homeToB := false
+	for _, view := range views {
+		if view.Relation == "has-home" && view.Direction == "asserted" {
+			homeToB = view.To.Entity == "b"
+		}
+	}
+	if !homeToB {
+		t.Fatalf("home should be b after concurrent move: %+v", views)
+	}
+
+	// Contains moved a -> c.
+	viewA, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "a", EffectiveAt: now, KnownAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewC, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "c", EffectiveAt: now, KnownAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(viewA) != 0 || len(viewC) != 1 {
+		t.Fatalf("contains move: a=%d c=%d", len(viewA), len(viewC))
+	}
+
+	// Governs moved g1 -> g2; group g2 sees project c tickets, g1 does not.
+	viewG1, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Group: "g1", EffectiveAt: now, KnownAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewG2, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Group: "g2", EffectiveAt: now, KnownAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(viewG1) != 0 || len(viewG2) != 1 {
+		t.Fatalf("governs move: g1=%d g2=%d", len(viewG1), len(viewG2))
+	}
+}
