@@ -2659,6 +2659,10 @@ concept (14.7, N082).
 - `new --project P` creates the ticket and asserts `has-home` to `project:P`
   in the same atomic batch. If `project:P` does not exist, the batch fails
   with actionable guidance.
+- Markdown import with `--project P` behaves identically: the imported
+  ticket, its content, and the `has-home` assertion land in one atomic batch;
+  a missing target fails with the same guidance. Reimport never changes
+  membership.
 - Membership is links only; tickets never carry a `project` part.
 
 ### 14.8.3 Link target resolution and operations

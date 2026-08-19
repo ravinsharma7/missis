@@ -166,6 +166,22 @@ func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext,
 		missis.PartEvent(stream, "status", "open", model.ValueKindStatus, actor, now, req.EffectiveAt, batchID),
 	}
 	events = append(events, buildImportEvents(stream, parts, actor, now, req.EffectiveAt, batchID, opts.Artifact)...)
+	if opts.Project != "" {
+		projectEvents, err := s.LoadStreamEvents(ctx, model.Ref{Kind: model.KindProject, Entity: opts.Project})
+		if err != nil {
+			return missis.NewTicketResult{}, keepStorage(err)
+		}
+		if len(projectEvents) == 0 {
+			return missis.NewTicketResult{}, validation("project does not exist: project:%s; create it with: missis new --kind project --id %s", opts.Project, opts.Project)
+		}
+		projectRef := model.Ref{Kind: model.KindProject, Entity: opts.Project}
+		events = append(events, missis.NewEvent(
+			stream, model.OpAssertLink,
+			model.Ref{Kind: model.KindTicket, Entity: string(ticketID)},
+			model.Value{Text: "has-home", Ref: &projectRef},
+			actor, now, req.EffectiveAt, batchID, "",
+		))
+	}
 	outcome, alias, err := s.AppendTicketBatch(ctx, events, req.IdempotencyKey, result)
 	if err != nil {
 		return missis.NewTicketResult{}, keepStorage(err)

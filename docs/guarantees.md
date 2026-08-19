@@ -36,6 +36,7 @@ costs at different scales.
 | Workflow | Guarantee |
 | --- | --- |
 | `NewTicket` | Atomic ticket creation; `--project P` additionally asserts `has-home` in the same batch and fails with guidance when `P` does not exist (spec 14.8). |
+| Markdown import (`--project`) | Ticket, content, and the `has-home` assertion land in one atomic batch; missing targets fail with guidance; reimport never changes membership (spec 14.8; ticket #73). |
 | `SetLink` | Targets resolve at write time; relation endpoint rules enforced; has-home uniqueness enforced; last-home retraction warns. |
 | `MoveLink` | Retract + assert in one atomic batch; membership relations only; automatic link-assertion precondition (explicit `IfCurrent` override); unguarded moves rejected; result reports the transition and never emits the zero-home warning (ticket #77). |
 | Markdown import/reimport | All-or-nothing: any violation rejects the whole batch (schema subspec rev 5). |
