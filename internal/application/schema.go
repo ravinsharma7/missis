@@ -88,7 +88,8 @@ func streamText(stream model.Ref) string {
 }
 
 // schemaContext derives the effective scope chain for a ticket: its types,
-// its home project, and the groups governing that project (canonical order).
+// its home project (has-home), and the groups governing that project
+// (canonical order).
 func (s *Service) schemaContext(ctx context.Context, ticketID model.TicketID, effectiveAt, knownAt time.Time) (schema.TicketContext, error) {
 	var tc schema.TicketContext
 	proj, err := s.BitemporalProjection(ctx, ticketID, effectiveAt, knownAt)
@@ -110,8 +111,9 @@ func (s *Service) schemaContext(ctx context.Context, ticketID model.TicketID, ef
 		return tc, keepStorage(err)
 	}
 	for _, link := range links {
-		if link.Direction == "derived-inverse" && link.Relation == "contained-by" && link.To.Kind == model.KindProject {
+		if link.Direction == "asserted" && link.Relation == "has-home" && link.To.Kind == model.KindProject {
 			tc.ProjectID = link.To.Entity
+			break
 		}
 	}
 	if tc.ProjectID != "" {

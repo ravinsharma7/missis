@@ -112,6 +112,14 @@ type TicketSummary struct {
 	RecordedAt time.Time
 }
 
+type EntitySummary struct {
+	Ref        string    `json:"ref"`
+	ID         string    `json:"id"`
+	Title      string    `json:"title"`
+	Status     string    `json:"status"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
 type PartView struct {
 	ID             string
 	Path           string
@@ -187,6 +195,7 @@ type SetResult struct {
 	Event     string `json:"event"`
 	Operation string `json:"operation"`
 	Value     any    `json:"value"`
+	Warning   string `json:"warning,omitempty"`
 }
 
 type ImportResult struct {

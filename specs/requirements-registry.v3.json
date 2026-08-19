@@ -1193,17 +1193,17 @@
       "id": "N079",
       "source": "14.1",
       "strength": "MUST",
-      "status": "deferred-phase-4",
+      "status": "phase-1",
       "text": "Relations distinguish organization from semantic authority.",
-      "tests": []
+      "tests": ["TestHasHomeMembershipEndToEnd", "TestScopeEntityListingAndGroupDirectContains"]
     },
     {
       "id": "N080",
       "source": "14.4",
       "strength": "SHOULD",
-      "status": "deferred-phase-4",
+      "status": "phase-1",
       "text": "Ticket has one home project.",
-      "tests": []
+      "tests": ["TestNewTicketWithHomeAssertsHasHome", "TestHasHomeMembershipEndToEnd"]
     },
     {
       "id": "N081",

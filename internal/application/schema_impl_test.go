@@ -19,7 +19,7 @@ func TestScopeEntitySchemaPartsAndShow(t *testing.T) {
 	if _, err := svc.Set(ctx, missis.RequestContext{}, missis.SetValue{Target: "project:proj/schema/status", Value: "status", Kind: model.ValueKindText}); err != nil {
 		t.Fatal(err)
 	}
-	proj, err := svc.ShowTicket(ctx, "project:proj", missis.ShowOptions{})
+	proj, err := svc.ShowEntity(ctx, "project:proj", missis.ShowOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestDeclarationEnforcementOnTicketWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: "project:safedesign/links", Relation: "contains", Target: created.Ref, Add: true}); err != nil {
+	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: created.Ref + "/links", Relation: "has-home", Target: "project:safedesign", Add: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Set(ctx, req, missis.SetValue{Target: "project:safedesign/schema/deps", Value: "list[ref]", Kind: model.ValueKindText}); err != nil {
@@ -107,7 +107,7 @@ func TestDeclaredKindWinsAndShowsInProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: "project:safedesign/links", Relation: "contains", Target: created.Ref, Add: true}); err != nil {
+	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: created.Ref + "/links", Relation: "has-home", Target: "project:safedesign", Add: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Set(ctx, req, missis.SetValue{Target: "project:safedesign/schema/problem", Value: "markdown", Kind: model.ValueKindText}); err != nil {
@@ -141,7 +141,7 @@ func TestLinkLegalityEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: "project:safedesign/links", Relation: "contains", Target: created.Ref, Add: true}); err != nil {
+	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: created.Ref + "/links", Relation: "has-home", Target: "project:safedesign", Add: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Set(ctx, req, missis.SetValue{Target: "project:safedesign/schema/links/supports", Value: "ref[ticket|part]", Kind: model.ValueKindText}); err != nil {
@@ -167,7 +167,7 @@ func TestReimportRejectsAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: "project:safedesign/links", Relation: "contains", Target: created.Ref, Add: true}); err != nil {
+	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: created.Ref + "/links", Relation: "has-home", Target: "project:safedesign", Add: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Set(ctx, req, missis.SetValue{Target: "project:safedesign/schema/problem", Value: "scalar", Kind: model.ValueKindText}); err != nil {

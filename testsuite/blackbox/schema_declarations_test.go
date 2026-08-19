@@ -15,7 +15,7 @@ func TestSchemaDeclarationsEndToEnd(t *testing.T) {
 	if result := runMissis(t, store, "new", "--json", "--kind", "project", "--id", "safedesign", "SafeDesign"); result.code != 0 {
 		t.Fatalf("new project: %d %s", result.code, result.stderr)
 	}
-	if result := runMissis(t, store, "set", "--json", "project:safedesign/links", "--add", "contains:"+ref); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/links", "--add", "has-home:project:safedesign"); result.code != 0 {
 		t.Fatalf("link ticket to project: %d %s", result.code, result.stderr)
 	}
 	if result := runMissis(t, store, "set", "--json", "project:safedesign/schema/status", "status", "--kind", "text"); result.code != 0 {

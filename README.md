@@ -100,7 +100,7 @@ go run ./tools/repair-store .missis-store/missis.db
 ```
 
 For how tickets, parts, tags, links, projects, and groups relate, see
-[docs/projects-groups-and-scopes.md](docs/projects-groups-and-scopes.md).
+spec section 14 ([Projects, groups, and scopes](specs/missues-issue-specification.v2.md#14-projects-groups-and-scopes)).
 
 ## Deletion and retraction
 
