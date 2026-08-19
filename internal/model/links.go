@@ -29,8 +29,8 @@ var relationInverses = map[string]string{
 	"contained-by":    "contains",
 	"governs":         "governed-by",
 	"governed-by":     "governs",
-	"home-project":    "home-of",
-	"home-of":         "home-project",
+	"has-home":        "home-of",
+	"home-of":         "has-home",
 }
 
 type LinkView struct {

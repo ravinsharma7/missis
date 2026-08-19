@@ -1291,6 +1291,7 @@ same-origin
 related
 contains / contained-by
 governs / governed-by
+has-home / home-of
 member-of / has-member
 ```
 
@@ -2511,7 +2512,7 @@ Adding a project to a dashboard or reporting group must not accidentally change 
 A ticket SHOULD have one home project for human numbering and default governance:
 
 ```text
-home: project:safedesign
+has-home: project:safedesign
 ```
 
 It MAY appear in additional projects or groups:
@@ -2574,13 +2575,109 @@ Governance conflicts MUST be deterministic. Recommended behavior:
 
 ## 14.6 Temporal scope membership
 
-Project membership, group membership, home-project changes, and governance links are all temporal links represented by events.
+Project membership, group membership, has-home changes, and governance links are all temporal links represented by events.
 
 A historical project view must reflect the memberships and governance effective at the requested time.
 
 ## 14.7 Scopes are not automatically security boundaries
 
 A project or group is an organizational and governance scope. Access control MAY use scopes, but the system MUST NOT assume that membership alone defines confidentiality or authorization. Security policy must be explicit.
+
+---
+
+## 14.8 v1 membership, views, and navigation (2026-08-19)
+
+This subsection fixes the v1 semantics for projects and groups. It is the
+normative contract behind the reference implementation and the CLI/SDK
+surface (ticket #28).
+
+### 14.8.1 Membership is conceptual, not people-based
+
+Membership is exclusively entity-to-entity (tickets, projects, groups) and is
+expressed as typed links. There is no user, team, role, owner, or permission
+concept (14.7, N082).
+
+- `has-home` (asserted) / `home-of` (inverse): the single numbering and
+  default-governance project of a ticket.
+- `contains` / `contained-by`: structural membership for navigation,
+  reporting, and search.
+- `governs` / `governed-by`: authority and policy inheritance.
+
+### 14.8.2 Membership model
+
+- A ticket SHOULD have at most one current `has-home` link (14.4, N080). A
+  batch that would create a second current `has-home` on the same ticket is
+  rejected with a provenance-bearing reason naming the existing assertion. A
+  ticket with zero home projects is allowed.
+- Legal `contains` targets in v1: project to ticket, project to project,
+  group to project, group to group, group to ticket (direct containment).
+- Multiple `contains` links are allowed: a ticket may appear in several
+  projects; a project may belong to several groups (14.2).
+- `new --project P` creates the ticket and asserts `has-home` to `project:P`
+  in the same atomic batch. If `project:P` does not exist, the batch fails
+  with actionable guidance.
+- Membership is links only; tickets never carry a `project` part.
+
+### 14.8.3 Link target resolution and operations
+
+- Link targets resolve at write time: asserting a link to a nonexistent
+  project, group, ticket, part, or event is rejected with actionable
+  guidance.
+- Membership changes are the registry operations `assert-link` and
+  `retract-link` (19). `join-scope` and `leave-scope` remain
+  projection-neutral marker operations until Phase 4 defines their
+  semantics.
+- v1 link projection is set-semantics: one active triple per
+  (from, relation, to); multiple assertions of the same triple collapse, and
+  retracting the last assertion hides the relation. Multi-assertion
+  coexistence and per-assertion provenance are a separate deliverable.
+
+### 14.8.4 Scope chain
+
+Effective scope for a ticket is deterministic:
+
+```text
+has-home (via has-home link) -> its groups (canonical-ID order)
+```
+
+A `contains` project that is not the home project contributes to views and
+search but not to schema resolution unless declared otherwise. The same
+guardrail applies to direct group-to-ticket `contains`. Overlapping
+memberships must not make resolution nondeterministic (14.5, N081).
+
+### 14.8.5 Views and search
+
+- Detail: `show project:<id>` and `group:<id>` render the entity (ref, title,
+  status, recorded time), its parts (including schema declarations),
+  membership links, references, history, and lineage.
+- List: `show --kind project|group` lists scope entities and combines with
+  search and status filters; `show --project P` / `--group G` filter tickets.
+- Project view membership: tickets with an active asserted `contains` or
+  `has-home` link from the project.
+- Group view membership (union, canonical order): tickets with a direct
+  asserted `contains` link from the group, plus tickets in projects the group
+  `contains` or `governs` (one hop).
+- Repeated filter values are unions; views reflect membership effective at
+  the requested time (14.6). Tickets remain independent entities across
+  projects (9.6).
+
+### 14.8.6 Context is client-side
+
+Context is a client preference, not a model concept. `MISSIS_PROJECT` /
+`MISSIS_GROUP` act as default scope filters when no explicit `--project` /
+`--group` flag is given; explicit flags override. A TUI may switch context
+explicitly in-session. The active pointer file is never written implicitly by
+the command surface. The core and SDK remain stateless.
+
+### 14.8.7 Changes and retraction
+
+- Membership changes are link assertions and retractions only (14.6).
+- Retracting a membership link removes it from current views; historical
+  views at an earlier effective time still show it.
+- Retracting the last current `has-home` assertion warns and is documented:
+  the ticket enters the zero-home state, which is allowed (SHOULD, not MUST).
+- No copy-per-project tickets (14.4): one canonical identity, one provenance
+  history, multiple scoped views.
 
 ---
 

@@ -87,6 +87,12 @@ func newModel() (*tuiModel, error) {
 			}
 		}
 	}
+	if env := os.Getenv("MISSIS_PROJECT"); env != "" {
+		projectCtx = env
+	}
+	if env := os.Getenv("MISSIS_GROUP"); env != "" {
+		groupCtx = env
+	}
 	return &tuiModel{
 		client:     client,
 		summaries:  summaries,
@@ -124,12 +130,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if m.view == "list" || m.view == "detail" || m.view == "compare" || m.view == "input" || m.view == "stats" {
+			if m.view == "list" || m.view == "detail" || m.view == "compare" || m.view == "input" || m.view == "context" || m.view == "stats" {
 				if m.view != "list" {
 					m.view = "list"
 					m.detail = nil
 					m.compareA = nil
 					m.compareB = nil
+					m.editing = false
 					m.message = ""
 					return m, nil
 				}
@@ -149,6 +156,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateStats(msg)
 	case "input":
 		return m.updateInput(msg)
+	case "context":
+		return m.updateContext(msg)
 	default:
 		return m, nil
 	}
@@ -237,6 +246,16 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.view = "stats"
 		m.statsOffset = 0
+		m.message = ""
+	case "x":
+		prefix := "none"
+		if m.projectCtx != "" && m.projectCtx != "none" {
+			prefix = "project:" + m.projectCtx
+		} else if m.groupCtx != "" && m.groupCtx != "none" {
+			prefix = "group:" + m.groupCtx
+		}
+		m.input = prefix
+		m.view = "context"
 		m.message = ""
 	}
 	return m, nil
@@ -360,6 +379,58 @@ func (m tuiModel) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m tuiModel) updateContext(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "enter":
+		value := strings.TrimSpace(m.input)
+		switch {
+		case value == "" || value == "none":
+			m.projectCtx = "none"
+			m.groupCtx = "none"
+		case strings.HasPrefix(value, "project:"):
+			id := strings.TrimSpace(strings.TrimPrefix(value, "project:"))
+			if id == "" {
+				m.message = "project id required"
+				return m, nil
+			}
+			m.projectCtx = id
+			m.groupCtx = "none"
+		case strings.HasPrefix(value, "group:"):
+			id := strings.TrimSpace(strings.TrimPrefix(value, "group:"))
+			if id == "" {
+				m.message = "group id required"
+				return m, nil
+			}
+			m.groupCtx = id
+			m.projectCtx = "none"
+		default:
+			m.message = "context must be project:<id>, group:<id>, or none"
+			return m, nil
+		}
+		m.view = "list"
+		m.editing = false
+		m.message = "context: project=" + m.projectCtx + " group=" + m.groupCtx
+		m.refresh()
+	case "esc":
+		m.view = "list"
+		m.editing = false
+	case "backspace":
+		runes := []rune(m.input)
+		if len(runes) > 0 {
+			m.input = string(runes[:len(runes)-1])
+		}
+	default:
+		if len([]rune(key.String())) == 1 && !strings.Contains(key.String(), "ctrl") {
+			m.input += key.String()
+		}
+	}
+	return m, nil
+}
+
 func (m tuiModel) updateCompare(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -439,7 +510,7 @@ func (m tuiModel) View() string {
 func (m tuiModel) helpForView() string {
 	switch m.view {
 	case "list":
-		return "j/k move | enter open | c/v compare | e export | r refresh | s stats | q quit"
+		return "j/k move | enter open | c/v compare | e export | r refresh | s stats | x context | q quit"
 	case "detail":
 		return "j/k scroll | pgup/pgdn page | g/G top/end | r refresh | R refs | t edit title | e export | b back | q back"
 	case "compare":
@@ -447,6 +518,8 @@ func (m tuiModel) helpForView() string {
 	case "stats":
 		return "j/k scroll | pgup/pgdn page | g/G top/end | b back | q back"
 	case "input":
+		return "enter save | esc cancel | backspace delete"
+	case "context":
 		return "enter save | esc cancel | backspace delete"
 	default:
 		return "q quit"
@@ -713,7 +786,18 @@ func (m tuiModel) viewCompare() string {
 
 func (m *tuiModel) refresh() {
 	now := time.Now().UTC()
-	summaries, err := m.client.ListTicketSummaries(context.Background(), now)
+	var summaries []missis.TicketSummary
+	var err error
+	if (m.projectCtx != "" && m.projectCtx != "none") || (m.groupCtx != "" && m.groupCtx != "none") {
+		summaries, err = m.client.ListTicketsFiltered(context.Background(), missis.ListFilter{
+			Project:     m.projectCtx,
+			Group:       m.groupCtx,
+			EffectiveAt: now,
+			KnownAt:     now,
+		})
+	} else {
+		summaries, err = m.client.ListTicketSummaries(context.Background(), now)
+	}
 	if err != nil {
 		m.message = "refresh failed: " + err.Error()
 		return

@@ -144,8 +144,16 @@ func (c *Client) ListTicketSummaries(ctx context.Context, effectiveAt time.Time)
 	return c.service.ListTicketSummaries(ctx, effectiveAt)
 }
 
+func (c *Client) ListEntities(ctx context.Context, kind model.Kind, filter ListFilter) ([]EntitySummary, error) {
+	return c.service.ListEntities(ctx, kind, filter)
+}
+
 func (c *Client) ShowTicket(ctx context.Context, ref string, opts ShowOptions) (TicketProjection, error) {
 	return c.service.ShowTicket(ctx, ref, opts)
+}
+
+func (c *Client) ShowEntity(ctx context.Context, ref string, opts ShowOptions) (TicketProjection, error) {
+	return c.service.ShowEntity(ctx, ref, opts)
 }
 
 func (c *Client) ShowHistory(ctx context.Context, ref string, opts HistoryOptions) ([]EventView, error) {

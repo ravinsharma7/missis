@@ -164,7 +164,7 @@ Rules:
 The effective scope chain for a ticket, in v1, is deterministic:
 
 ```text
-home-project (via home-project link) -> its groups (canonical-ID order)
+has-home (via has-home link) -> its groups (canonical-ID order)
 ```
 
 Overlapping or alternative memberships (spec 14.2) are out of v1 scope and
@@ -369,7 +369,7 @@ Resolution outcomes:
 | Subtree inheritance instead of wildcard segments | `*` is not a legal path segment (spec 7.4); inheritance covers the same need with legal keys and simpler matching. |
 | Declarations on scope entities, never in ticket content | Avoids self-governance and namespace pollution; tickets stay open-world content. |
 | No inference fallback and no built-in global defaults | A shared guessing heuristic invites divergent implementations and code drift; explicit kinds (declared or writer-supplied) are the single source of truth. |
-| v1 scope chain: home-project → groups (canonical-ID order) | Deterministic and implementable; overlapping-membership ordering is a later extension (spec 14.2). |
+| v1 scope chain: has-home → groups (canonical-ID order) | Deterministic and implementable; overlapping-membership ordering is a later extension (spec 14.2). |
 | Reserved `schema/type/<ticket-type>/<key-prefix>` subtree for type-qualified declarations | A ticket type name would otherwise be ambiguous with an ordinary key prefix. |
 | Composite kinds restricted to base kinds in v1 | Keeps the grammar small and unambiguous; nested composites are a later extension. |
 | Final tie-break by canonical declaration order after the bitemporal winner | Guarantees identical resolution across sessions when two declarations tie on scope and time. |

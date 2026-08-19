@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,22 @@ func (s *Service) NewTicket(ctx context.Context, req missis.RequestContext, opts
 	}
 	if len(opts.Tags) > 0 {
 		events = append(events, missis.PartEvent(stream, "tag", opts.Tags, model.ValueKindList, actor, now, req.EffectiveAt, batchID))
+	}
+	if opts.Project != "" {
+		projectEvents, err := s.LoadStreamEvents(ctx, model.Ref{Kind: model.KindProject, Entity: opts.Project})
+		if err != nil {
+			return missis.NewTicketResult{}, keepStorage(err)
+		}
+		if len(projectEvents) == 0 {
+			return missis.NewTicketResult{}, validation("project does not exist: project:%s; create it with: missis new --kind project --id %s", opts.Project, opts.Project)
+		}
+		projectRef := model.Ref{Kind: model.KindProject, Entity: opts.Project}
+		events = append(events, missis.NewEvent(
+			stream, model.OpAssertLink,
+			model.Ref{Kind: model.KindTicket, Entity: string(ticketID)},
+			model.Value{Text: "has-home", Ref: &projectRef},
+			actor, now, req.EffectiveAt, batchID, "",
+		))
 	}
 	outcome, alias, err := s.AppendTicketBatch(ctx, events, req.IdempotencyKey, result)
 	if err != nil {
@@ -252,9 +269,6 @@ func (s *Service) ShowTicket(ctx context.Context, ref string, opts missis.ShowOp
 	if opts.KnownAt.IsZero() {
 		opts.KnownAt = opts.EffectiveAt
 	}
-	if strings.HasPrefix(ref, "project:") || strings.HasPrefix(ref, "group:") {
-		return s.showScope(ctx, ref, opts)
-	}
 	summary, err := s.findTicketSummary(ctx, ref)
 	if err != nil {
 		return missis.TicketProjection{}, err
@@ -278,20 +292,52 @@ func (s *Service) ShowTicket(ctx context.Context, ref string, opts missis.ShowOp
 	}, nil
 }
 
+func (s *Service) ShowEntity(ctx context.Context, ref string, opts missis.ShowOptions) (missis.TicketProjection, error) {
+	if opts.EffectiveAt.IsZero() {
+		opts.EffectiveAt = s.now()
+	}
+	if opts.KnownAt.IsZero() {
+		opts.KnownAt = opts.EffectiveAt
+	}
+	if !strings.HasPrefix(ref, "project:") && !strings.HasPrefix(ref, "group:") {
+		return missis.TicketProjection{}, invalidInput("ShowEntity requires a project or group reference")
+	}
+	return s.showScope(ctx, ref, opts)
+}
+
 func (s *Service) showScope(ctx context.Context, ref string, opts missis.ShowOptions) (missis.TicketProjection, error) {
 	stream, _, err := s.resolveStreamRef(ctx, ref, opts.EffectiveAt)
 	if err != nil {
 		return missis.TicketProjection{}, err
 	}
+	events, err := s.LoadStreamEvents(ctx, stream)
+	if err != nil {
+		return missis.TicketProjection{}, keepStorage(err)
+	}
 	proj, err := s.BitemporalStreamProjection(ctx, stream, opts.EffectiveAt, opts.KnownAt)
 	if err != nil {
 		return missis.TicketProjection{}, keepStorage(err)
 	}
+	title, status := projectionTitleStatus(proj)
+	var recordedAt time.Time
+	for _, event := range events {
+		if event.Operation != model.OpCreateEntity {
+			continue
+		}
+		if title == "" {
+			title = event.Value.Text
+		}
+		if recordedAt.IsZero() {
+			recordedAt = event.RecordedAt
+		}
+	}
 	return missis.TicketProjection{
-		Ref:   ref,
-		ID:    stream.Entity,
-		Title: stream.Entity,
-		Parts: partsFromProjection(proj),
+		Ref:        ref,
+		ID:         stream.Entity,
+		Title:      title,
+		Status:     status,
+		RecordedAt: recordedAt,
+		Parts:      partsFromProjection(proj),
 	}, nil
 }
 
@@ -317,20 +363,36 @@ func partsFromProjection(proj *model.Projection) map[string]missis.PartView {
 }
 
 func (s *Service) ShowHistory(ctx context.Context, ref string, opts missis.HistoryOptions) ([]missis.EventView, error) {
-	summary, err := s.findTicketSummary(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	events, err := s.LoadTicketEvents(ctx, model.TicketID(summary.ID))
-	if err != nil {
-		return nil, keepStorage(err)
-	}
 	if opts.EffectiveAt.IsZero() {
 		opts.EffectiveAt = s.now()
 	}
 	if opts.KnownAt.IsZero() {
 		opts.KnownAt = opts.EffectiveAt
 	}
+	var events []model.Event
+	if strings.HasPrefix(ref, "project:") || strings.HasPrefix(ref, "group:") {
+		stream, _, err := s.resolveStreamRef(ctx, ref, opts.EffectiveAt)
+		if err != nil {
+			return nil, err
+		}
+		events, err = s.LoadStreamEvents(ctx, stream)
+		if err != nil {
+			return nil, keepStorage(err)
+		}
+	} else {
+		summary, err := s.findTicketSummary(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		events, err = s.LoadTicketEvents(ctx, model.TicketID(summary.ID))
+		if err != nil {
+			return nil, keepStorage(err)
+		}
+	}
+	return historyViews(events, opts), nil
+}
+
+func historyViews(events []model.Event, opts missis.HistoryOptions) []missis.EventView {
 	out := make([]missis.EventView, 0, len(events))
 	for _, event := range events {
 		if event.EffectiveAt.After(opts.EffectiveAt) || event.RecordedAt.After(opts.KnownAt) {
@@ -357,7 +419,7 @@ func (s *Service) ShowHistory(ctx context.Context, ref string, opts missis.Histo
 			Reason:      event.Reason,
 		})
 	}
-	return out, nil
+	return out
 }
 
 func (s *Service) ShowEvent(ctx context.Context, alias string) (missis.EventView, error) {
@@ -511,6 +573,69 @@ func (s *Service) Search(ctx context.Context, opts missis.SearchOptions) ([]miss
 	})
 }
 
+func (s *Service) ListEntities(ctx context.Context, kind model.Kind, filter missis.ListFilter) ([]missis.EntitySummary, error) {
+	if kind != model.KindProject && kind != model.KindGroup {
+		return nil, invalidInput("kind must be project or group")
+	}
+	if filter.EffectiveAt.IsZero() {
+		filter.EffectiveAt = s.now()
+	}
+	if filter.KnownAt.IsZero() {
+		filter.KnownAt = filter.EffectiveAt
+	}
+	events, err := s.LoadEvents(ctx)
+	if err != nil {
+		return nil, keepStorage(err)
+	}
+	type entityMeta struct {
+		title      string
+		recordedAt time.Time
+	}
+	meta := make(map[string]entityMeta)
+	var ids []string
+	for _, event := range events {
+		if event.Stream.Kind != kind || event.Operation != model.OpCreateEntity {
+			continue
+		}
+		if _, ok := meta[event.Stream.Entity]; ok {
+			continue
+		}
+		meta[event.Stream.Entity] = entityMeta{title: event.Value.Text, recordedAt: event.RecordedAt}
+		ids = append(ids, event.Stream.Entity)
+	}
+	sort.Strings(ids)
+	out := make([]missis.EntitySummary, 0, len(ids))
+	for _, id := range ids {
+		stream := model.Ref{Kind: kind, Entity: id}
+		proj, err := s.BitemporalStreamProjection(ctx, stream, filter.EffectiveAt, filter.KnownAt)
+		if err != nil {
+			return nil, keepStorage(err)
+		}
+		title, status := projectionTitleStatus(proj)
+		if title == "" {
+			title = meta[id].title
+		}
+		summary := missis.EntitySummary{
+			Ref:        string(kind) + ":" + id,
+			ID:         string(kind) + ":" + id,
+			Title:      title,
+			Status:     status,
+			RecordedAt: meta[id].recordedAt,
+		}
+		if filter.Status != "" && !csvContains(filter.Status, summary.Status) {
+			continue
+		}
+		if filter.Query != "" {
+			text := summary.Title + " " + projectionText(proj)
+			if !matchesAllTokens(text, filter.Query) {
+				continue
+			}
+		}
+		out = append(out, summary)
+	}
+	return out, nil
+}
+
 func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFilter) ([]missis.TicketSummary, error) {
 	if filter.EffectiveAt.IsZero() {
 		filter.EffectiveAt = s.now()
@@ -530,19 +655,22 @@ func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFil
 		}
 	}
 	projectTicketIDs := make(map[model.TicketID]bool)
-	if filter.Project != "" {
-		for _, projectID := range strings.Split(filter.Project, ",") {
-			links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: strings.TrimSpace(projectID)}, filter.EffectiveAt, filter.KnownAt)
-			if err != nil {
-				return nil, keepStorage(err)
-			}
-			for _, link := range links {
-				if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
-					projectTicketIDs[model.TicketID(link.To.Entity)] = true
+		if filter.Project != "" {
+			for _, projectID := range strings.Split(filter.Project, ",") {
+				links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: strings.TrimSpace(projectID)}, filter.EffectiveAt, filter.KnownAt)
+				if err != nil {
+					return nil, keepStorage(err)
+				}
+				for _, link := range links {
+					if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
+						projectTicketIDs[model.TicketID(link.To.Entity)] = true
+					}
+					if link.Relation == "home-of" && link.Direction == "derived-inverse" && link.To.Kind == model.KindTicket {
+						projectTicketIDs[model.TicketID(link.To.Entity)] = true
+					}
 				}
 			}
 		}
-	}
 	if filter.Group != "" {
 		for _, groupID := range strings.Split(filter.Group, ",") {
 			groupRef := model.Ref{Kind: model.KindGroup, Entity: strings.TrimSpace(groupID)}
@@ -552,6 +680,9 @@ func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFil
 			}
 			projectIDs := make(map[string]bool)
 			for _, link := range groupLinks {
+				if link.Direction == "asserted" && link.Relation == "contains" && link.To.Kind == model.KindTicket {
+					projectTicketIDs[model.TicketID(link.To.Entity)] = true
+				}
 				if link.Direction == "asserted" && (link.Relation == "contains" || link.Relation == "governs") && link.To.Kind == model.KindProject {
 					projectIDs[link.To.Entity] = true
 				}
@@ -563,6 +694,9 @@ func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFil
 				}
 				for _, link := range links {
 					if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
+						projectTicketIDs[model.TicketID(link.To.Entity)] = true
+					}
+					if link.Relation == "home-of" && link.Direction == "derived-inverse" && link.To.Kind == model.KindTicket {
 						projectTicketIDs[model.TicketID(link.To.Entity)] = true
 					}
 				}
@@ -831,8 +965,39 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 	if err != nil {
 		return missis.SetResult{}, err
 	}
+	exists, err := s.refExists(ctx, toRef)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
+	if !exists {
+		msg := fmt.Sprintf("link target does not exist: %s", opts.Target)
+		if toRef.Kind == model.KindProject || toRef.Kind == model.KindGroup {
+			msg += fmt.Sprintf("; create it with: missis new --kind %s --id %s", toRef.Kind, toRef.Entity)
+		}
+		return missis.SetResult{}, validation("%s", msg)
+	}
 	if err := s.validateLinkSchema(ctx, stream, toRef.Kind, opts.Relation, req.EffectiveAt, now); err != nil {
 		return missis.SetResult{}, err
+	}
+	if opts.Relation == "has-home" {
+		if fromRef.Kind != model.KindTicket || toRef.Kind != model.KindProject {
+			return missis.SetResult{}, validation("has-home requires a ticket source and a project target")
+		}
+		linkEvents, err := s.LoadLinkEvents(ctx)
+		if err != nil {
+			return missis.SetResult{}, keepStorage(err)
+		}
+		links, err := model.LinksForRef(linkEvents, fromRef, req.EffectiveAt, now)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		for _, link := range links {
+			if link.Relation == "has-home" && link.Direction == "asserted" && link.To.Kind == model.KindProject {
+				if opts.Add {
+					return missis.SetResult{}, validation("ticket already has a home project: project:%s; retract it before assigning a new one", link.To.Entity)
+				}
+			}
+		}
 	}
 	operation := model.OpAssertLink
 	if opts.Retract {
@@ -861,7 +1026,60 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 		last := outcome.Events[len(outcome.Events)-1]
 		result.Event = "@e" + strconv.FormatUint(last.AliasSeq, 10)
 	}
+	if opts.Retract && opts.Relation == "has-home" && len(outcome.Events) > 0 {
+		linkEvents, err := s.LoadLinkEvents(ctx)
+		if err != nil {
+			return missis.SetResult{}, keepStorage(err)
+		}
+		links, err := model.LinksForRef(linkEvents, fromRef, req.EffectiveAt, now)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		hasHome := false
+		for _, link := range links {
+			if link.Relation == "has-home" && link.Direction == "asserted" && link.To.Kind == model.KindProject {
+				hasHome = true
+				break
+			}
+		}
+		if !hasHome {
+			result.Warning = "ticket no longer has a home project (zero-home state is allowed; consider assigning one with: missis set <ref>/links --add has-home:project:<id>)"
+		}
+	}
 	return result, nil
+}
+
+func (s *Service) refExists(ctx context.Context, ref model.Ref) (bool, error) {
+	switch ref.Kind {
+	case model.KindProject, model.KindGroup:
+		events, err := s.LoadStreamEvents(ctx, ref)
+		if err != nil {
+			return false, keepStorage(err)
+		}
+		return len(events) > 0, nil
+	case model.KindTicket:
+		events, err := s.LoadTicketEvents(ctx, model.TicketID(ref.Entity))
+		if err != nil {
+			return false, keepStorage(err)
+		}
+		return len(events) > 0, nil
+	case model.KindPart, model.KindEvent:
+		events, err := s.LoadEvents(ctx)
+		if err != nil {
+			return false, keepStorage(err)
+		}
+		for _, event := range events {
+			if event.Target.Kind == ref.Kind && event.Target.Entity == ref.Entity {
+				return true, nil
+			}
+			if ref.Kind == model.KindEvent && event.ID == model.EventID(ref.Entity) {
+				return true, nil
+			}
+		}
+		return false, nil
+	default:
+		return false, nil
+	}
 }
 
 // ----- shared helpers -----

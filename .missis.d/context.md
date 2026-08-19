@@ -71,6 +71,13 @@ go run ./tools/store-gaps .missis-store/missis.db
   enforced for admins, so a push to main that fails CI is rejected (2026-08-18,
   ticket #53). v0.1.0 tagged; storage compatibility statement published in
   docs/storage-compatibility.md and cross-referenced from the spec.
+- v1 project/group membership landed (2026-08-19, #28 done): spec 14.8 plus
+  the `has-home` / `home-of` vocabulary pair (renamed from `home-project`);
+  link targets resolve at write time; context is client-side
+  (`MISSIS_PROJECT` / `MISSIS_GROUP`, TUI `x` keybinding); the companion doc
+  was retired and references repointed to spec section 14. Follow-ups: #66
+  evidence semantics, #73 import `--project`, #74 Phase 4 scope ops, #75
+  derived scope indexes.
 - GitHub API merges on protected main hit a GitHub-side quirk: strict required
   checks report "2 of 2 required status checks are expected" even when checks
   are green, and auto-merge stalls. Workaround: delete branch protection,
@@ -85,5 +92,6 @@ go run ./tools/store-gaps .missis-store/missis.db
 - Fork reconciliation/sync
 - Full high-level command orchestration in SDK
 - Runtime ontology loading and enforcement
-- Project/group navigation in TUI and CLI context
+- Phase 4 scope membership semantics (join-scope/leave-scope runtime, #74)
+- Scope read paths are O(ledger); derived entity indexes pending (#75)
 - Multistore/worktree navigation and comparison

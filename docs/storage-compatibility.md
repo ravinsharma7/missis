@@ -70,6 +70,17 @@ A single SQLite database file, holding:
   hash, schema version, and event count against the local manifest.
 - `tools/verify-restore.sh` verifies a local backup the same way.
 
+## Relation vocabulary
+
+- Relation names are payload text inside link events (`Value.Text`), so a
+  vocabulary change is a ledger-format concern, not just a code rename.
+- v0.1.x vocabulary change (2026-08-19, ticket #28): `home-project` was
+  renamed to `has-home` (asserted) with inverse `home-of`. No command created
+  `home-project` links before the rename, so existing stores are not
+  expected to contain the old name; if one is found, treat it as an unknown
+  relation until explicitly migrated.
+- Future vocabulary changes follow the versioning and migration policy above.
+
 ## Cross-platform behavior
 
 - The store file format is identical across operating systems; only the

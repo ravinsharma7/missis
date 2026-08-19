@@ -274,6 +274,12 @@ func readActivePointer() (project, group, focus, ticket string) {
 
 func outputContext(storePath string, jsonMode bool) {
 	project, group, focus, _ := readActivePointer()
+	if env := os.Getenv("MISSIS_PROJECT"); env != "" {
+		project = env
+	}
+	if env := os.Getenv("MISSIS_GROUP"); env != "" {
+		group = env
+	}
 	if jsonMode {
 		writeJSON(map[string]string{
 			"store":   storePath,
@@ -367,7 +373,7 @@ const getStartedText = `missis getting started
 6. Optional: consume via the Go SDK:
      import "github.com/ravinsharma7/missis/pkg/missis"
 
-See README.md and docs/projects-groups-and-scopes.md for details.
+See README.md and spec section 14 (Projects, groups, and scopes) for details.
 `
 
 func runPointer() int {
@@ -807,6 +813,7 @@ func runShow(args []string) int {
 		"direction": true, "depth": true, "relations": true, "format": true,
 		"project": true, "group": true,
 		"search": true, "status": true, "type": true, "tag": true,
+		"kind": true,
 	})
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -834,6 +841,7 @@ func runShow(args []string) int {
 		tagFilter   stringList
 		version     bool
 		context     bool
+		kind        string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -858,6 +866,7 @@ func runShow(args []string) int {
 	fs.Var(&tagFilter, "tag", "filter by tag")
 	fs.BoolVar(&version, "version", false, "show version")
 	fs.BoolVar(&context, "context", false, "show active project/group context")
+	fs.StringVar(&kind, "kind", "", "entity kind: project or group")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -968,10 +977,37 @@ func runShow(args []string) int {
 		}
 	}
 
-	if len(project) > 0 || len(group) > 0 || search != "" || len(status) > 0 || len(typeFilter) > 0 || len(tagFilter) > 0 {
+	if kind != "" {
+		if kind != "project" && kind != "group" {
+			printError(fmt.Errorf("invalid kind: %s; expected project or group", kind), exitInvalid, jsonMode, nil)
+			return exitInvalid
+		}
+		entities, err := client.ListEntities(ctx, model.Kind(kind), missis.ListFilter{
+			Status:      strings.Join(status, ","),
+			Query:       search,
+			EffectiveAt: effectiveTime,
+			KnownAt:     knownTime,
+		})
+		if err != nil {
+			printError(err, mapError(err), jsonMode, nil)
+			return mapError(err)
+		}
+		outputEntityList(entities, jsonMode)
+		return exitSuccess
+	}
+
+	filterProject := strings.Join(project, ",")
+	filterGroup := strings.Join(group, ",")
+	if filterProject == "" {
+		filterProject = os.Getenv("MISSIS_PROJECT")
+	}
+	if filterGroup == "" {
+		filterGroup = os.Getenv("MISSIS_GROUP")
+	}
+	if filterProject != "" || filterGroup != "" || search != "" || len(status) > 0 || len(typeFilter) > 0 || len(tagFilter) > 0 {
 		filtered, err := client.ListTicketsFiltered(ctx, missis.ListFilter{
-			Project:     strings.Join(project, ","),
-			Group:       strings.Join(group, ","),
+			Project:     filterProject,
+			Group:       filterGroup,
 			Status:      strings.Join(status, ","),
 			Type:        strings.Join(typeFilter, ","),
 			Tag:         strings.Join(tagFilter, ","),
@@ -1057,7 +1093,12 @@ func runShow(args []string) int {
 		return exitSuccess
 	}
 
-	proj, err := client.ShowTicket(ctx, ref, missis.ShowOptions{EffectiveAt: effectiveTime, KnownAt: knownTime})
+	var proj missis.TicketProjection
+	if strings.HasPrefix(ref, "project:") || strings.HasPrefix(ref, "group:") {
+		proj, err = client.ShowEntity(ctx, ref, missis.ShowOptions{EffectiveAt: effectiveTime, KnownAt: knownTime})
+	} else {
+		proj, err = client.ShowTicket(ctx, ref, missis.ShowOptions{EffectiveAt: effectiveTime, KnownAt: knownTime})
+	}
 	if err != nil {
 		printError(err, mapError(err), jsonMode, &ref)
 		return mapError(err)
@@ -1305,6 +1346,34 @@ func outputTicketList(summaries []missis.TicketSummary, jsonMode bool) {
 	}
 }
 
+func outputEntityList(entities []missis.EntitySummary, jsonMode bool) {
+	if jsonMode {
+		type entityJSON struct {
+			Ref        string `json:"ref"`
+			ID         string `json:"id"`
+			Title      string `json:"title"`
+			Status     string `json:"status"`
+			RecordedAt string `json:"recorded_at"`
+		}
+		items := make([]entityJSON, 0, len(entities))
+		for _, e := range entities {
+			items = append(items, entityJSON{
+				Ref:        e.Ref,
+				ID:         e.ID,
+				Title:      e.Title,
+				Status:     e.Status,
+				RecordedAt: e.RecordedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		writeJSON(map[string]any{"entities": items})
+		return
+	}
+	fmt.Printf("REF\tSTATUS\tTITLE\tRECORDED_AT\n")
+	for _, e := range entities {
+		fmt.Printf("%s\t%s\t%s\t%s\n", e.Ref, e.Status, e.Title, e.RecordedAt.UTC().Format(time.RFC3339))
+	}
+}
+
 func pathMatches(path string, filter []string) bool {
 	if len(filter) == 0 {
 		return true
@@ -1387,6 +1456,9 @@ func writeSetResult(result missis.SetResult, jsonMode bool) {
 		fmt.Printf(" %s", result.Event)
 	}
 	fmt.Println()
+	if result.Warning != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", result.Warning)
+	}
 }
 
 func mapError(err error) int {
