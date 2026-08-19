@@ -53,6 +53,9 @@ A single SQLite database file, holding:
   `max(effective_at, recorded_at, stream_sequence, event_id)` among candidates
   with `recorded_at <= K` and `effective_at <= V`; boundaries are inclusive;
   retraction opens an interval hole; supersession voids as of known time.
+- **Append batches are atomic, including across multiple streams** in one
+  transaction (ticket #77): a failed batch writes nothing, and per-stream
+  sequences are allocated independently.
 
 ## Derived data
 

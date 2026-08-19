@@ -27,6 +27,7 @@
 - [Data model, contracts, security, and persistence](#18-suggested-data-model)
 - [End-to-end scenarios and implementation sequence](#26-end-to-end-scenarios)
 - [Acceptance criteria](#29-acceptance-criteria)
+- [Guarantees and performance](#31-guarantees-and-performance)
 
 ## 1. Executive summary
 
@@ -1391,6 +1392,48 @@ issue show #184/hypothesis --lineage \
   --depth 4 \
   --relations derived-from,supports,contradicts,verified-by
 ```
+
+---
+
+## 9.8 Atomic link workflows and link-assertion preconditions
+
+### 9.8.1 MoveLink
+
+`MoveLink` moves an active membership assertion so its origin changes from
+`From` to `To` while the other endpoint stays `Target`. It appends
+`retract-link` + `assert-link` in one atomic batch (multi-stream batches are
+supported by the store; ticket #77).
+
+| Relation | Retracted assertion | Asserted assertion | Events live on |
+| --- | --- | --- | --- |
+| `has-home` | `(Target, has-home, From)` | `(Target, has-home, To)` | Target stream |
+| `contains` | `(From, contains, Target)` | `(To, contains, Target)` | From and To streams |
+| `governs` | `(From, governs, Target)` | `(To, governs, Target)` | From and To streams |
+
+Validation (nothing written on failure): the relation must be a membership
+relation (`has-home`, `contains`, `governs`); `From`, `To`, and `Target` must
+resolve to existing refs; `From` and `To` must differ; per-relation endpoint
+rules apply; an active assertion must exist; a caller-supplied `IfCurrent`
+alias must match the current assertion event, otherwise a conflict with retry
+guidance. The result reports the transition and never emits the zero-home
+warning, because the intermediate state does not exist.
+
+### 9.8.2 Link-assertion precondition
+
+The store precondition vocabulary has two forms:
+
+1. part/entity expected-current-event (`--if-current`);
+2. link-assertion expected-current-event: the batch applies only if the
+   active assertion of `(From, Relation, To)` is the expected event;
+   otherwise a conflict. Set semantics apply until evidence semantics (#66).
+
+`MoveLink` attaches the link-assertion precondition automatically, reading
+the current assertion at effective time; callers may override via
+`IfCurrent`. Unguarded moves are rejected with guidance rather than silently
+proceeding. Preconditions are per-request and never stored.
+
+The full guarantees and performance inventory lives in
+`docs/guarantees.md` (and the spec appendix, section 31).
 
 ---
 
@@ -4585,3 +4628,51 @@ Projection = current, temporal, search, lineage, or verification view
 ```
 
 The result is deliberately more capable than a conventional issue tracker while remaining simpler at the interface boundary. It is a temporal provenance ledger with a human-friendly and agent-friendly issue projection.
+
+---
+
+## 31. Guarantees and performance
+
+Guarantees differ by layer; consumers must not assume a guarantee from one
+layer at another. The full inventory lives in `docs/guarantees.md`; this
+appendix is the normative summary.
+
+### 31.1 Core and store
+
+- Events are immutable; per-stream sequences are unique and strictly
+  increasing; a gap is an integrity incident (10, ticket #41).
+- Bitemporal winner rule: latest effective time wins, recorded time breaks
+  ties (10.9, ticket #42). Canonical encoding v1 governs hashing (10.10,
+  ticket #45).
+- `AppendBatch` is atomic, including across multiple streams in one
+  transaction; failed batches write nothing; idempotency keys replay stored
+  results (ticket #63).
+- Derived tables are rebuildable with parity checks (ticket #51, #61).
+- Preconditions (9.8.2): part/entity expected-current-event and
+  link-assertion expected-current-event; mismatches are conflicts.
+
+### 31.2 Workflows and SDK
+
+- `NewTicket` with `--project P` asserts `has-home` atomically; missing
+  targets fail with guidance (14.8).
+- `SetLink` resolves targets at write time and enforces endpoint rules and
+  has-home uniqueness; last-home retraction warns.
+- `MoveLink` (9.8) is atomic, guarded, and reports the transition without a
+  zero-home warning.
+- Imports are all-or-nothing.
+- The SDK is stateless and ref-keyed; context is client-side.
+
+### 31.3 Performance
+
+`n` = ledger size. O(n) read paths (`ListEntities`, `refExists`,
+link-precondition evaluation, schema declaration resolution) are correct and
+are the targets of derived-index work (tickets #70, #75). Appends are
+amortized constant per event (ticket #61); multi-stream batches allocate
+per-stream sequences. Scope history is O(stream).
+
+## 32. Change log
+
+- 2026-08-19: added 9.8 (atomic link workflows and link-assertion
+  preconditions), 14.8 (v1 project/group membership), the `has-home` /
+  `home-of` vocabulary pair (9.2), and this guarantees appendix (31).
+  Companion docs: `docs/guarantees.md`, `docs/storage-compatibility.md`.

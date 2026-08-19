@@ -655,22 +655,22 @@ func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFil
 		}
 	}
 	projectTicketIDs := make(map[model.TicketID]bool)
-		if filter.Project != "" {
-			for _, projectID := range strings.Split(filter.Project, ",") {
-				links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: strings.TrimSpace(projectID)}, filter.EffectiveAt, filter.KnownAt)
-				if err != nil {
-					return nil, keepStorage(err)
+	if filter.Project != "" {
+		for _, projectID := range strings.Split(filter.Project, ",") {
+			links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: strings.TrimSpace(projectID)}, filter.EffectiveAt, filter.KnownAt)
+			if err != nil {
+				return nil, keepStorage(err)
+			}
+			for _, link := range links {
+				if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
+					projectTicketIDs[model.TicketID(link.To.Entity)] = true
 				}
-				for _, link := range links {
-					if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
-						projectTicketIDs[model.TicketID(link.To.Entity)] = true
-					}
-					if link.Relation == "home-of" && link.Direction == "derived-inverse" && link.To.Kind == model.KindTicket {
-						projectTicketIDs[model.TicketID(link.To.Entity)] = true
-					}
+				if link.Relation == "home-of" && link.Direction == "derived-inverse" && link.To.Kind == model.KindTicket {
+					projectTicketIDs[model.TicketID(link.To.Entity)] = true
 				}
 			}
 		}
+	}
 	if filter.Group != "" {
 		for _, groupID := range strings.Split(filter.Group, ",") {
 			groupRef := model.Ref{Kind: model.KindGroup, Entity: strings.TrimSpace(groupID)}
@@ -1047,6 +1047,138 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) MoveLink(ctx context.Context, req missis.RequestContext, opts missis.MoveLinkOptions) (missis.SetResult, error) {
+	req, now := s.normalize(req)
+	if opts.Relation != "has-home" && opts.Relation != "contains" && opts.Relation != "governs" {
+		return missis.SetResult{}, validation("move-link supports membership relations only: has-home, contains, governs")
+	}
+	fromRef, err := s.resolveAnyRef(ctx, opts.From, req.EffectiveAt)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
+	toRef, err := s.resolveAnyRef(ctx, opts.To, req.EffectiveAt)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
+	targetRef, err := s.resolveAnyRef(ctx, opts.Target, req.EffectiveAt)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
+	if fromRef.Kind == toRef.Kind && fromRef.Entity == toRef.Entity {
+		return missis.SetResult{}, validation("move-link source and destination must differ")
+	}
+	for _, ref := range []model.Ref{fromRef, toRef, targetRef} {
+		exists, err := s.refExists(ctx, ref)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		if !exists {
+			return missis.SetResult{}, validation("move-link target does not exist: %s", targetText(ref))
+		}
+	}
+	var originR, originA, retractOther, assertOther model.Ref
+	switch opts.Relation {
+	case "has-home":
+		if targetRef.Kind != model.KindTicket || fromRef.Kind != model.KindProject || toRef.Kind != model.KindProject {
+			return missis.SetResult{}, validation("has-home move requires a ticket target and project source/destination")
+		}
+		originR, originA = targetRef, targetRef
+		retractOther, assertOther = fromRef, toRef
+	case "contains":
+		if !isScopeRef(fromRef) || !isScopeRef(toRef) {
+			return missis.SetResult{}, validation("contains move requires project/group source and destination")
+		}
+		originR, originA = fromRef, toRef
+		retractOther, assertOther = targetRef, targetRef
+	case "governs":
+		if fromRef.Kind != model.KindGroup || toRef.Kind != model.KindGroup || targetRef.Kind != model.KindProject {
+			return missis.SetResult{}, validation("governs move requires group source/destination and project target")
+		}
+		originR, originA = fromRef, toRef
+		retractOther, assertOther = targetRef, targetRef
+	}
+
+	linkEvents, err := s.LoadLinkEvents(ctx)
+	if err != nil {
+		return missis.SetResult{}, keepStorage(err)
+	}
+	views, err := model.LinksForRef(linkEvents, originR, req.EffectiveAt, now)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
+	var currentEventID model.EventID
+	for _, view := range views {
+		if view.Direction == "asserted" && view.Relation == opts.Relation &&
+			view.To.Kind == retractOther.Kind && view.To.Entity == retractOther.Entity {
+			currentEventID = view.CreatedBy
+			break
+		}
+	}
+	if currentEventID == "" {
+		return missis.SetResult{}, validation("no active %s assertion from %s to %s; nothing to move", opts.Relation, opts.From, opts.Target)
+	}
+	expected := currentEventID
+	if opts.IfCurrent != "" {
+		ev, err := s.GetEventByAlias(ctx, opts.IfCurrent)
+		if err != nil {
+			return missis.SetResult{}, notFound("%v", err)
+		}
+		if ev.ID != currentEventID {
+			return missis.SetResult{}, conflict(fmt.Errorf("current %s assertion changed; re-read and retry", opts.Relation))
+		}
+		expected = ev.ID
+	}
+
+	originRCopy, originACopy := originR, originA
+	retractOtherCopy, assertOtherCopy := retractOther, assertOther
+	retractEvent := model.Event{
+		Stream:      originRCopy,
+		Operation:   model.OpRetractLink,
+		Target:      originRCopy,
+		Value:       model.Value{Text: opts.Relation, Ref: &retractOtherCopy},
+		RecordedAt:  now,
+		EffectiveAt: req.EffectiveAt,
+		Actor:       parseActor(req.Actor),
+		Reason:      opts.Reason,
+	}
+	assertEvent := model.Event{
+		Stream:      originACopy,
+		Operation:   model.OpAssertLink,
+		Target:      originACopy,
+		Value:       model.Value{Text: opts.Relation, Ref: &assertOtherCopy},
+		RecordedAt:  now,
+		EffectiveAt: req.EffectiveAt,
+		Actor:       parseActor(req.Actor),
+		Reason:      opts.Reason,
+	}
+	preconditions := []store.Precondition{{
+		Link: &store.LinkPrecondition{
+			From:                 originRCopy,
+			Relation:             opts.Relation,
+			To:                   retractOtherCopy,
+			ExpectedCurrentEvent: expected,
+		},
+	}}
+	result := missis.SetResult{
+		Ref:       opts.Target,
+		Operation: "move-link",
+		Value:     fmt.Sprintf("%s:%s->%s", opts.Relation, targetText(fromRef), targetText(toRef)),
+	}
+	outcome, err := s.AppendBatch(ctx, []model.Event{retractEvent, assertEvent}, req.IdempotencyKey, preconditions, &result)
+	if err != nil {
+		return missis.SetResult{}, keepStorage(err)
+	}
+	if len(outcome.Events) > 0 {
+		last := outcome.Events[len(outcome.Events)-1]
+		result.Event = "@e" + strconv.FormatUint(last.AliasSeq, 10)
+	}
+	return result, nil
+}
+
+func isScopeRef(ref model.Ref) bool {
+	return ref.Kind == model.KindProject || ref.Kind == model.KindGroup
 }
 
 func (s *Service) refExists(ctx context.Context, ref model.Ref) (bool, error) {

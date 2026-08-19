@@ -56,6 +56,7 @@ type Service interface {
 	ListTicketsFiltered(ctx context.Context, filter ListFilter) ([]TicketSummary, error)
 	Set(ctx context.Context, req RequestContext, mutation Mutation) (SetResult, error)
 	SetLink(ctx context.Context, req RequestContext, opts LinkOptions) (SetResult, error)
+	MoveLink(ctx context.Context, req RequestContext, opts MoveLinkOptions) (SetResult, error)
 	Manifest(ctx context.Context) (ManifestInfo, error)
 	BackupTo(ctx context.Context, dst string) error
 	Restore(ctx context.Context, backupPath, dst string) error

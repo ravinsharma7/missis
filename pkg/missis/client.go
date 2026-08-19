@@ -200,6 +200,22 @@ func (c *Client) SetLink(ctx context.Context, req RequestContext, opts LinkOptio
 	return c.service.SetLink(ctx, req, opts)
 }
 
+func (c *Client) MoveLink(ctx context.Context, req RequestContext, opts MoveLinkOptions) (SetResult, error) {
+	return c.service.MoveLink(ctx, req, opts)
+}
+
+// MoveHome moves a ticket's has-home link from one project to another in one
+// atomic batch. It is a convenience for MoveLink with relation has-home.
+func (c *Client) MoveHome(ctx context.Context, req RequestContext, ticketRef, fromProject, toProject, reason string) (SetResult, error) {
+	return c.service.MoveLink(ctx, req, MoveLinkOptions{
+		Relation: "has-home",
+		From:     "project:" + fromProject,
+		To:       "project:" + toProject,
+		Target:   ticketRef,
+		Reason:   reason,
+	})
+}
+
 func (c *Client) Manifest(ctx context.Context) (ManifestInfo, error) {
 	return c.service.Manifest(ctx)
 }

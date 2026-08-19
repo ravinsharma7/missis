@@ -169,6 +169,9 @@ See [docs/storage-compatibility.md](docs/storage-compatibility.md) for the
 on-disk format contract: forward-only schema migrations, the integrity
 guarantees, derived-table behavior, and the no-downgrade policy (ticket #53).
 
+Per-layer guarantees (core, store, service workflows, SDK) and performance at
+scale are documented in [docs/guarantees.md](docs/guarantees.md).
+
 Store discovery order:
 
 1. `--store <path>`
