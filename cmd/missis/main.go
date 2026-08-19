@@ -99,6 +99,8 @@ type errorResult struct {
 
 const modulePath = "github.com/ravinsharma7/missis"
 
+const unknownCommit = "unknown"
+
 const agentBriefCommands = `missis new "Title" [--priority X] [--type T]... [--tag T]... [--from FILE|--stdin] [--json]
 missis show [REF] [--json|--format markdown] [--search S] [--status S] [--type T] [--tag T]
 missis set <REF> <VALUE> [--add] [--retract [--recursive] [--reason R]] [--json]`
@@ -123,12 +125,13 @@ comment and silently runs the command without the ref or its flags.
 When asked to create a ticket without a title, derive one from the active
 focus and state the assumption; do not block on a clarifying question.`
 
-func buildVersion() (string, string) {
+func buildVersion() (string, string, string) {
 	version := "dev"
-	commit := "unknown"
+	commit := unknownCommit
+	note := ""
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return version, commit
+		return version, commit, "no build metadata embedded in this binary"
 	}
 	if info.Main.Version != "" && info.Main.Version != "(devel)" {
 		version = info.Main.Version
@@ -136,14 +139,44 @@ func buildVersion() (string, string) {
 	for _, setting := range info.Settings {
 		switch setting.Key {
 		case "vcs.revision":
-			commit = setting.Value
+			if setting.Value != "" {
+				commit = setting.Value
+			}
 		case "vcs.modified":
-			if setting.Value == "true" {
+			if commit != unknownCommit && setting.Value == "true" {
 				commit += "-dirty"
 			}
 		}
 	}
-	return version, commit
+	if commit == unknownCommit {
+		note = commitUnknownNote(info.Main.Version)
+	}
+	return version, commit, note
+}
+
+// commitUnknownNote picks the most specific explanation the build metadata
+// supports. A concrete module version (vX.Y.Z or a pseudo-version) with no
+// VCS settings means the binary came from a module download, e.g.
+// `go install module@version`: the proxy serves a zip with no git directory.
+// "(devel)" (or an empty main version) means a local source build, where the
+// missing hash is due to VCS stamping being disabled or absent from the
+// source directory. Go's build info does not record which of those two
+// sub-cases applies, so both are listed together.
+func commitUnknownNote(mainVersion string) string {
+	if mainVersion == "" || mainVersion == "(devel)" {
+		return "built from a source tree without git metadata (VCS stamping disabled or the source directory is not a git checkout)"
+	}
+	return "built from a module download (e.g. 'go install module@version'), which embeds no git metadata"
+}
+
+// commitLabel renders the commit for human-facing output, adding a short
+// explanation when the hash is unavailable so "unknown" is not presented
+// without context.
+func commitLabel(commit, note string) string {
+	if commit == unknownCommit {
+		return commit + " (" + note + ")"
+	}
+	return commit
 }
 
 // storePermissionWarnings reports observable permission problems on the store
@@ -190,24 +223,32 @@ func latestModuleVersion() (moduleVersion, error) {
 }
 
 func runSelfUpdateCheck(jsonMode bool) int {
-	currentVersion, currentCommit := buildVersion()
+	currentVersion, currentCommit, commitNote := buildVersion()
 	latest, err := latestModuleVersion()
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
 	if jsonMode {
-		writeJSON(map[string]string{
-			"current_version": currentVersion,
-			"current_commit":  currentCommit,
-			"latest_version":  latest.Version,
-			"latest_time":     latest.Time,
-		})
+		writeJSON(selfUpdateCheckJSON(currentVersion, currentCommit, commitNote, latest))
 		return exitSuccess
 	}
-	fmt.Printf("current version=%s commit=%s\n", currentVersion, currentCommit)
+	fmt.Printf("current version=%s commit=%s\n", currentVersion, commitLabel(currentCommit, commitNote))
 	fmt.Printf("latest version=%s time=%s\n", latest.Version, latest.Time)
 	return exitSuccess
+}
+
+func selfUpdateCheckJSON(currentVersion, currentCommit, commitNote string, latest moduleVersion) map[string]string {
+	m := map[string]string{
+		"current_version": currentVersion,
+		"current_commit":  currentCommit,
+		"latest_version":  latest.Version,
+		"latest_time":     latest.Time,
+	}
+	if currentCommit == unknownCommit {
+		m["current_commit_note"] = commitNote
+	}
+	return m
 }
 
 func runSelfUpdate(jsonMode bool) int {
@@ -235,15 +276,23 @@ func runSelfUpdate(jsonMode bool) int {
 }
 
 func printVersion(jsonMode bool) {
-	version, commit := buildVersion()
+	version, commit, commitNote := buildVersion()
 	if jsonMode {
-		writeJSON(map[string]string{
-			"version": version,
-			"commit":  commit,
-		})
+		writeJSON(versionJSON(version, commit, commitNote))
 		return
 	}
-	fmt.Printf("missis version=%s commit=%s\n", version, commit)
+	fmt.Printf("missis version=%s commit=%s\n", version, commitLabel(commit, commitNote))
+}
+
+func versionJSON(version, commit, commitNote string) map[string]string {
+	m := map[string]string{
+		"version": version,
+		"commit":  commit,
+	}
+	if commit == unknownCommit {
+		m["commit_note"] = commitNote
+	}
+	return m
 }
 
 func readActivePointer() (project, group, focus, ticket string) {
@@ -930,7 +979,7 @@ func runShow(args []string) int {
 		storeID, _ := client.StoreID()
 		headHash, _ := client.HeadHash()
 		eventCount, _ := client.EventCount()
-		version, commit := buildVersion()
+		version, commit, _ := buildVersion()
 		if jsonMode {
 			writeJSON(map[string]any{
 				"status":           "ok",
