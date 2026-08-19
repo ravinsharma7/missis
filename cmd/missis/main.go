@@ -1177,7 +1177,8 @@ func runSet(args []string) int {
 		"actor": true, "effective-at": true, "reason": true, "name": true,
 		"parent": true, "supersedes": true, "because": true,
 		"if-current": true, "idempotency-key": true, "store": true, "kind": true,
-		"from": true,
+		"assertion": true,
+		"from":      true,
 	})
 	fs := flag.NewFlagSet("set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -1199,6 +1200,7 @@ func runSet(args []string) int {
 		fromFile    string
 		stdin       bool
 		kind        string
+		assertion   string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&actor, "actor", "human/local", "actor reference")
@@ -1217,6 +1219,7 @@ func runSet(args []string) int {
 	fs.StringVar(&fromFile, "from", "", "import Markdown from file")
 	fs.BoolVar(&stdin, "stdin", false, "import Markdown from stdin")
 	fs.StringVar(&kind, "kind", "", "explicit value kind (required when no schema declaration matches)")
+	fs.StringVar(&assertion, "assertion", "", "assertion event alias to retract (optional; without it, all active assertions are retracted)")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -1277,7 +1280,7 @@ func runSet(args []string) int {
 			printError(fmt.Errorf("link value must be relation:ref"), exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
-		result, err := client.SetLink(ctx, req, missis.LinkOptions{Ref: ref, Relation: relation, Target: targetStr, Add: add, Retract: retract, Reason: reason})
+		result, err := client.SetLink(ctx, req, missis.LinkOptions{Ref: ref, Relation: relation, Target: targetStr, Add: add, Retract: retract, Reason: reason, Assertion: assertion})
 		if err != nil {
 			printError(err, mapError(err), jsonMode, &ref)
 			return mapError(err)
@@ -1626,6 +1629,14 @@ func outputReferences(links []missis.LinkView, jsonMode bool) {
 	if jsonMode {
 		items := make([]map[string]any, 0, len(links))
 		for _, link := range links {
+			assertions := make([]map[string]any, 0, len(link.Assertions))
+			for _, assertion := range link.Assertions {
+				assertions = append(assertions, map[string]any{
+					"created_by": assertion.CreatedBy,
+					"actor":      assertion.Actor,
+					"sources":    assertion.Sources,
+				})
+			}
 			items = append(items, map[string]any{
 				"from":       link.From,
 				"relation":   link.Relation,
@@ -1633,6 +1644,7 @@ func outputReferences(links []missis.LinkView, jsonMode bool) {
 				"direction":  link.Direction,
 				"origin":     link.Origin,
 				"created_by": link.CreatedBy,
+				"assertions": assertions,
 			})
 		}
 		writeJSON(map[string]any{"links": items})

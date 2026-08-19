@@ -487,15 +487,32 @@ func (s *Service) ShowReferences(ctx context.Context, ref string, opts missis.Sh
 			return nil, err
 		}
 		out = append(out, missis.LinkView{
-			From:      targetText(from),
-			Relation:  link.Relation,
-			To:        targetText(to),
-			Direction: link.Direction,
-			Origin:    link.Origin,
-			CreatedBy: string(link.CreatedBy),
+			From:       targetText(from),
+			Relation:   link.Relation,
+			To:         targetText(to),
+			Direction:  link.Direction,
+			Origin:     link.Origin,
+			CreatedBy:  string(link.CreatedBy),
+			Assertions: linkAssertionViews(link.Assertions),
 		})
 	}
 	return out, nil
+}
+
+func linkAssertionViews(assertions []model.LinkAssertionView) []missis.LinkAssertionView {
+	out := make([]missis.LinkAssertionView, 0, len(assertions))
+	for _, assertion := range assertions {
+		sources := make([]string, 0, len(assertion.Sources))
+		for _, source := range assertion.Sources {
+			sources = append(sources, targetText(source.Ref))
+		}
+		out = append(out, missis.LinkAssertionView{
+			CreatedBy: string(assertion.CreatedBy),
+			Actor:     assertion.Actor.ID,
+			Sources:   sources,
+		})
+	}
+	return out
 }
 
 // currentDisplayRef resolves a part ref to its current path at the effective
@@ -999,42 +1016,64 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 		if fromRef.Kind != model.KindTicket || toRef.Kind != model.KindProject {
 			return missis.SetResult{}, validation("has-home requires a ticket source and a project target")
 		}
-		linkEvents, err := s.LoadLinkEvents(ctx)
-		if err != nil {
-			return missis.SetResult{}, keepStorage(err)
-		}
-		links, err := model.LinksForRef(linkEvents, fromRef, req.EffectiveAt, now)
-		if err != nil {
-			return missis.SetResult{}, err
-		}
-		for _, link := range links {
-			if link.Relation == "has-home" && link.Direction == "asserted" && link.To.Kind == model.KindProject {
-				if opts.Add {
+		if opts.Add {
+			linkEvents, err := s.LoadLinkEvents(ctx)
+			if err != nil {
+				return missis.SetResult{}, keepStorage(err)
+			}
+			links, err := model.LinksForRef(linkEvents, fromRef, req.EffectiveAt, now)
+			if err != nil {
+				return missis.SetResult{}, err
+			}
+			for _, link := range links {
+				if link.Relation == "has-home" && link.Direction == "asserted" && link.To.Kind == model.KindProject && link.To.Entity != toRef.Entity {
 					return missis.SetResult{}, validation("ticket already has a home project: project:%s; retract it before assigning a new one", link.To.Entity)
 				}
 			}
 		}
 	}
+
 	operation := model.OpAssertLink
+	events := make([]model.Event, 0, 2)
 	if opts.Retract {
 		operation = model.OpRetractLink
-	}
-	event := model.Event{
-		Stream:      stream,
-		Operation:   operation,
-		Target:      fromRef,
-		Value:       model.Value{Text: opts.Relation, Ref: &toRef},
-		RecordedAt:  now,
-		EffectiveAt: req.EffectiveAt,
-		Actor:       parseActor(req.Actor),
-		Reason:      opts.Reason,
+		assertions, err := s.activeLinkAssertions(ctx, fromRef, toRef, opts.Relation, req.EffectiveAt, now)
+		if err != nil {
+			return missis.SetResult{}, err
+		}
+		if opts.Assertion != "" {
+			ev, err := s.GetEventByAlias(ctx, opts.Assertion)
+			if err != nil {
+				return missis.SetResult{}, notFound("%v", err)
+			}
+			active := false
+			for _, assertion := range assertions {
+				if assertion.CreatedBy == ev.ID {
+					active = true
+					break
+				}
+			}
+			if !active {
+				return missis.SetResult{}, conflict(fmt.Errorf("assertion %s is not an active %s from %s to %s; re-read and retry", opts.Assertion, opts.Relation, opts.Ref, opts.Target))
+			}
+			events = append(events, s.linkEventFor(model.OpRetractLink, fromRef, toRef, opts.Relation, opts.Reason, parseActor(req.Actor), now, req.EffectiveAt, ev.ID))
+		} else {
+			for _, assertion := range assertions {
+				events = append(events, s.linkEventFor(model.OpRetractLink, fromRef, toRef, opts.Relation, opts.Reason, parseActor(req.Actor), now, req.EffectiveAt, assertion.CreatedBy))
+			}
+			if len(events) == 0 {
+				return missis.SetResult{}, validation("no active %s assertion from %s to %s; nothing to retract", opts.Relation, opts.Ref, opts.Target)
+			}
+		}
+	} else {
+		events = append(events, s.linkEventFor(model.OpAssertLink, fromRef, toRef, opts.Relation, opts.Reason, parseActor(req.Actor), now, req.EffectiveAt, ""))
 	}
 	result := missis.SetResult{
 		Ref:       opts.Ref,
 		Operation: string(operation),
 		Value:     opts.Relation + ":" + opts.Target,
 	}
-	outcome, err := s.AppendBatch(ctx, []model.Event{event}, req.IdempotencyKey, nil, &result)
+	outcome, err := s.AppendBatch(ctx, events, req.IdempotencyKey, nil, &result)
 	if err != nil {
 		return missis.SetResult{}, keepStorage(err)
 	}
@@ -1116,73 +1155,49 @@ func (s *Service) MoveLink(ctx context.Context, req missis.RequestContext, opts 
 		retractOther, assertOther = targetRef, targetRef
 	}
 
-	linkEvents, err := s.LoadLinkEvents(ctx)
-	if err != nil {
-		return missis.SetResult{}, keepStorage(err)
-	}
-	views, err := model.LinksForRef(linkEvents, originR, req.EffectiveAt, now)
+	assertions, err := s.activeLinkAssertions(ctx, originR, retractOther, opts.Relation, req.EffectiveAt, now)
 	if err != nil {
 		return missis.SetResult{}, err
 	}
-	var currentEventID model.EventID
-	for _, view := range views {
-		if view.Direction == "asserted" && view.Relation == opts.Relation &&
-			view.To.Kind == retractOther.Kind && view.To.Entity == retractOther.Entity {
-			currentEventID = view.CreatedBy
-			break
-		}
-	}
-	if currentEventID == "" {
+	if len(assertions) == 0 {
 		return missis.SetResult{}, validation("no active %s assertion from %s to %s; nothing to move", opts.Relation, opts.From, opts.Target)
 	}
-	expected := currentEventID
 	if opts.IfCurrent != "" {
 		ev, err := s.GetEventByAlias(ctx, opts.IfCurrent)
 		if err != nil {
 			return missis.SetResult{}, notFound("%v", err)
 		}
-		if ev.ID != currentEventID {
+		active := false
+		for _, assertion := range assertions {
+			if assertion.CreatedBy == ev.ID {
+				active = true
+				break
+			}
+		}
+		if !active {
 			return missis.SetResult{}, conflict(fmt.Errorf("current %s assertion changed; re-read and retry", opts.Relation))
 		}
-		expected = ev.ID
 	}
 
-	originRCopy, originACopy := originR, originA
-	retractOtherCopy, assertOtherCopy := retractOther, assertOther
-	retractEvent := model.Event{
-		Stream:      originRCopy,
-		Operation:   model.OpRetractLink,
-		Target:      originRCopy,
-		Value:       model.Value{Text: opts.Relation, Ref: &retractOtherCopy},
-		RecordedAt:  now,
-		EffectiveAt: req.EffectiveAt,
-		Actor:       parseActor(req.Actor),
-		Reason:      opts.Reason,
-	}
-	assertEvent := model.Event{
-		Stream:      originACopy,
-		Operation:   model.OpAssertLink,
-		Target:      originACopy,
-		Value:       model.Value{Text: opts.Relation, Ref: &assertOtherCopy},
-		RecordedAt:  now,
-		EffectiveAt: req.EffectiveAt,
-		Actor:       parseActor(req.Actor),
-		Reason:      opts.Reason,
-	}
-	preconditions := []store.Precondition{{
-		Link: &store.LinkPrecondition{
-			From:                 originRCopy,
+	actor := parseActor(req.Actor)
+	events := make([]model.Event, 0, len(assertions)+1)
+	preconditions := make([]store.Precondition, 0, len(assertions))
+	for _, assertion := range assertions {
+		events = append(events, s.linkEventFor(model.OpRetractLink, originR, retractOther, opts.Relation, opts.Reason, actor, now, req.EffectiveAt, assertion.CreatedBy))
+		preconditions = append(preconditions, store.Precondition{Link: &store.LinkPrecondition{
+			From:                 originR,
 			Relation:             opts.Relation,
-			To:                   retractOtherCopy,
-			ExpectedCurrentEvent: expected,
-		},
-	}}
+			To:                   retractOther,
+			ExpectedCurrentEvent: assertion.CreatedBy,
+		}})
+	}
+	events = append(events, s.linkEventFor(model.OpAssertLink, originA, assertOther, opts.Relation, opts.Reason, actor, now, req.EffectiveAt, ""))
 	result := missis.SetResult{
 		Ref:       opts.Target,
 		Operation: "move-link",
 		Value:     fmt.Sprintf("%s:%s->%s", opts.Relation, targetText(fromRef), targetText(toRef)),
 	}
-	outcome, err := s.AppendBatch(ctx, []model.Event{retractEvent, assertEvent}, req.IdempotencyKey, preconditions, &result)
+	outcome, err := s.AppendBatch(ctx, events, req.IdempotencyKey, preconditions, &result)
 	if err != nil {
 		return missis.SetResult{}, keepStorage(err)
 	}
@@ -1195,6 +1210,41 @@ func (s *Service) MoveLink(ctx context.Context, req missis.RequestContext, opts 
 
 func isScopeRef(ref model.Ref) bool {
 	return ref.Kind == model.KindProject || ref.Kind == model.KindGroup
+}
+
+func (s *Service) activeLinkAssertions(ctx context.Context, origin, target model.Ref, relation string, effectiveAt, now time.Time) ([]model.LinkAssertionView, error) {
+	linkEvents, err := s.LoadLinkEvents(ctx)
+	if err != nil {
+		return nil, keepStorage(err)
+	}
+	views, err := model.LinksForRef(linkEvents, origin, effectiveAt, now)
+	if err != nil {
+		return nil, err
+	}
+	for _, view := range views {
+		if view.Direction == "asserted" && view.Relation == relation &&
+			view.To.Kind == target.Kind && view.To.Entity == target.Entity {
+			return view.Assertions, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *Service) linkEventFor(operation model.Operation, origin, target model.Ref, relation, reason string, actor model.ActorRef, now, effectiveAt time.Time, supersedes model.EventID) model.Event {
+	event := model.Event{
+		Stream:      origin,
+		Operation:   operation,
+		Target:      origin,
+		Value:       model.Value{Text: relation, Ref: &target},
+		RecordedAt:  now,
+		EffectiveAt: effectiveAt,
+		Actor:       actor,
+		Reason:      reason,
+	}
+	if supersedes != "" {
+		event.Causes = []model.Ref{{Kind: model.KindEvent, Entity: string(supersedes)}}
+	}
+	return event
 }
 
 func (s *Service) refExists(ctx context.Context, ref model.Ref) (bool, error) {

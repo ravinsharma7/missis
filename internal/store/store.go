@@ -1683,17 +1683,21 @@ func checkLinkPrecondition(allEvents []model.Event, link *LinkPrecondition) erro
 	if err != nil {
 		return err
 	}
-	var current model.EventID
 	for _, view := range views {
 		if view.Direction != "asserted" || view.Relation != link.Relation {
 			continue
 		}
-		if view.To.Kind == link.To.Kind && view.To.Entity == link.To.Entity {
-			current = view.CreatedBy
-			break
+		if view.To.Kind != link.To.Kind || view.To.Entity != link.To.Entity {
+			continue
 		}
+		for _, assertion := range view.Assertions {
+			if assertion.CreatedBy == link.ExpectedCurrentEvent {
+				return nil
+			}
+		}
+		return ErrConflict
 	}
-	if link.ExpectedCurrentEvent != "" && current != link.ExpectedCurrentEvent {
+	if link.ExpectedCurrentEvent != "" {
 		return ErrConflict
 	}
 	return nil

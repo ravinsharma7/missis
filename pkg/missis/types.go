@@ -155,12 +155,21 @@ type EventView struct {
 }
 
 type LinkView struct {
-	From      string
-	Relation  string
-	To        string
-	Direction string
-	Origin    string
-	CreatedBy string
+	From       string              `json:"from"`
+	Relation   string              `json:"relation"`
+	To         string              `json:"to"`
+	Direction  string              `json:"direction"`
+	Origin     string              `json:"origin"`
+	CreatedBy  string              `json:"created_by"`
+	Assertions []LinkAssertionView `json:"assertions,omitempty"`
+}
+
+// LinkAssertionView is one piece of evidence for a visible link relation
+// (ticket #66). A relation is visible while at least one assertion is active.
+type LinkAssertionView struct {
+	CreatedBy string   `json:"created_by"`
+	Actor     string   `json:"actor"`
+	Sources   []string `json:"sources"`
 }
 
 type LineageEdge struct {
@@ -242,12 +251,13 @@ type HistoryOptions struct {
 }
 
 type LinkOptions struct {
-	Ref      string
-	Relation string
-	Target   string
-	Add      bool
-	Retract  bool
-	Reason   string
+	Ref       string
+	Relation  string
+	Target    string
+	Add       bool
+	Retract   bool
+	Reason    string
+	Assertion string
 }
 
 type MoveLinkOptions struct {

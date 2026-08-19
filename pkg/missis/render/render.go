@@ -169,24 +169,26 @@ func ReferencesText(links []missis.LinkView) string {
 }
 
 type linkJSON struct {
-	From      string `json:"from"`
-	Relation  string `json:"relation"`
-	To        string `json:"to"`
-	Direction string `json:"direction"`
-	Origin    string `json:"origin"`
-	CreatedBy string `json:"created_by"`
+	From       string                     `json:"from"`
+	Relation   string                     `json:"relation"`
+	To         string                     `json:"to"`
+	Direction  string                     `json:"direction"`
+	Origin     string                     `json:"origin"`
+	CreatedBy  string                     `json:"created_by"`
+	Assertions []missis.LinkAssertionView `json:"assertions,omitempty"`
 }
 
 func ReferencesJSON(links []missis.LinkView) ([]byte, error) {
 	out := make([]linkJSON, 0, len(links))
 	for _, link := range links {
 		out = append(out, linkJSON{
-			From:      link.From,
-			Relation:  link.Relation,
-			To:        link.To,
-			Direction: link.Direction,
-			Origin:    link.Origin,
-			CreatedBy: link.CreatedBy,
+			From:       link.From,
+			Relation:   link.Relation,
+			To:         link.To,
+			Direction:  link.Direction,
+			Origin:     link.Origin,
+			CreatedBy:  link.CreatedBy,
+			Assertions: link.Assertions,
 		})
 	}
 	return json.Marshal(map[string]any{"links": out})

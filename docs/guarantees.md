@@ -28,7 +28,7 @@ costs at different scales.
 | Idempotency | A repeated append with the same idempotency key replays the stored result and events (ticket #63). |
 | Derived tables | `tickets`/`parts_current` are rebuildable from the ledger with parity checks (ticket #51, #61). |
 | Precondition form 1 (part/entity) | `Precondition{TargetEntity, ExpectedCurrentEvent}`: the mutation applies only if the part's current event matches (CLI `--if-current`). Mismatch = conflict. |
-| Precondition form 2 (link-assertion) | `LinkPrecondition{From, Relation, To, ExpectedCurrentEvent}`: the mutation applies only if the active assertion of that triple is the expected event (ticket #77). Mismatch = conflict. Set semantics until #66. |
+| Precondition form 2 (link-assertion) | `LinkPrecondition{From, Relation, To, ExpectedCurrentEvent}`: the mutation applies only if the expected event is still an active assertion of that triple (evidence semantics, ticket #66; preconditions from #77). Mismatch = conflict. |
 | Hash chain | Append order defines a SHA-256 chain; `show --health` verifies it (ticket #51). |
 
 ## 3. Service workflow guarantees
@@ -76,8 +76,9 @@ reads, matching the #51 snapshot pattern.
    current values.
 2. **Link-assertion expected-current-event** — `LinkPrecondition{From,
    Relation, To, ExpectedCurrentEvent}`. Applies to link retraction and
-   assertion; used automatically by `MoveLink` (ticket #77). Set semantics
-   until evidence semantics (#66) land.
+   assertion; used automatically by `MoveLink` (ticket #77). Evidence
+   semantics: passes while the expected event is an active assertion of the
+   triple (ticket #66).
 
 Preconditions are per-request and never stored; a caller may always pass a
 different expected event on the next call.

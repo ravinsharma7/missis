@@ -88,6 +88,12 @@ go run ./tools/store-gaps .missis-store/missis.db
   (t/p/g), entity create (`n`), entity detail via ShowEntity, and link
   actions on ticket detail (`l`: add/retract/move with conflict guidance).
   Smoke coverage extended to the scope views; #76/#77 done.
+- Evidence semantics for links landed (2026-08-20, #66): every assert-link
+  event is a distinct assertion; relations stay visible while any assertion
+  is active; retraction targets an assertion (retract-all default, CLI
+  `--assertion @eN`); MoveLink retracts all assertions of the old origin;
+  preconditions guard per-assertion; legacy set-semantics stores project
+  without rewrite.
 - GitHub API merges on protected main hit a GitHub-side quirk: strict required
   checks report "2 of 2 required status checks are expected" even when checks
   are green, and auto-merge stalls. Workaround: delete branch protection,

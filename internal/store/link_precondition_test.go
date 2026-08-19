@@ -22,12 +22,12 @@ func TestAppendBatchMultiStream(t *testing.T) {
 	events := []model.Event{
 		{
 			Stream: streamA, Operation: model.OpCreateEntity, Target: streamA,
-			Value: model.Value{Kind: model.ValueKindText, Text: "A"},
+			Value:      model.Value{Kind: model.ValueKindText, Text: "A"},
 			RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{ID: "human/local"},
 		},
 		{
 			Stream: streamB, Operation: model.OpCreateEntity, Target: streamB,
-			Value: model.Value{Kind: model.ValueKindText, Text: "B"},
+			Value:      model.Value{Kind: model.ValueKindText, Text: "B"},
 			RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{ID: "human/local"},
 		},
 	}
@@ -69,7 +69,7 @@ func TestLinkPrecondition(t *testing.T) {
 	linkEvent := func(op model.Operation, id model.EventID) model.Event {
 		return model.Event{
 			ID: id, Stream: from, Operation: op, Target: from,
-			Value: model.Value{Text: "contains", Ref: &to},
+			Value:      model.Value{Text: "contains", Ref: &to},
 			RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{ID: "human/local"},
 		}
 	}
@@ -99,5 +99,44 @@ func TestLinkPrecondition(t *testing.T) {
 		Link: &LinkPrecondition{From: from, Relation: "contains", To: to, ExpectedCurrentEvent: current},
 	}}, nil); err != ErrConflict {
 		t.Fatalf("stale precondition should conflict, got %v", err)
+	}
+}
+
+func TestLinkPreconditionMultipleAssertions(t *testing.T) {
+	t.Parallel()
+	s, err := Open(filepath.Join(t.TempDir(), "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	from := model.Ref{Kind: model.KindProject, Entity: "a"}
+	to := model.Ref{Kind: model.KindTicket, Entity: "ticket:01J5"}
+	assert := func() model.Event {
+		return model.Event{
+			Stream: from, Operation: model.OpAssertLink, Target: from,
+			Value:      model.Value{Text: "contains", Ref: &to},
+			RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{ID: "human/local"},
+		}
+	}
+	first, err := s.AppendBatch([]model.Event{assert()}, "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendBatch([]model.Event{assert()}, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A precondition on the first assertion passes while both are active.
+	retract := model.Event{
+		Stream: from, Operation: model.OpRetractLink, Target: from,
+		Value:      model.Value{Text: "contains", Ref: &to},
+		RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{ID: "human/local"},
+		Causes: []model.Ref{{Kind: model.KindEvent, Entity: string(first.Events[0].ID)}},
+	}
+	if _, err := s.AppendBatch([]model.Event{retract}, "", []Precondition{{
+		Link: &LinkPrecondition{From: from, Relation: "contains", To: to, ExpectedCurrentEvent: first.Events[0].ID},
+	}}, nil); err != nil {
+		t.Fatalf("precondition on an active assertion should pass: %v", err)
 	}
 }

@@ -1424,8 +1424,9 @@ The store precondition vocabulary has two forms:
 
 1. part/entity expected-current-event (`--if-current`);
 2. link-assertion expected-current-event: the batch applies only if the
-   active assertion of `(From, Relation, To)` is the expected event;
-   otherwise a conflict. Set semantics apply until evidence semantics (#66).
+   expected event is still an active assertion of `(From, Relation, To)`;
+   otherwise a conflict. Multiple assertions of the same triple coexist and
+   each may be guarded independently (evidence semantics, #66).
 
 `MoveLink` attaches the link-assertion precondition automatically, reading
 the current assertion at effective time; callers may override via

@@ -34,12 +34,23 @@ var relationInverses = map[string]string{
 }
 
 type LinkView struct {
-	From      Ref
-	Relation  string
-	To        Ref
-	Direction string
-	Origin    string
-	CreatedBy EventID
+	From       Ref
+	Relation   string
+	To         Ref
+	Direction  string
+	Origin     string
+	CreatedBy  EventID
+	Assertions []LinkAssertionView
+}
+
+// LinkAssertionView is one piece of evidence for a visible link relation.
+// A relation is visible while at least one assertion is active (not
+// retracted); multiple assertions of the same triple coexist (ticket #66).
+type LinkAssertionView struct {
+	CreatedBy   EventID
+	Actor       ActorRef
+	Sources     []SourceRef
+	RetractedBy *EventID
 }
 
 type LineageEdge struct {
@@ -78,14 +89,6 @@ func applyLinkEvent(proj *Projection, event Event) error {
 	linkID := LinkID(event.ID)
 	switch event.Operation {
 	case OpAssertLink:
-		for _, existing := range proj.Links {
-			if existing.RetractedBy == nil &&
-				refEqual(existing.From, event.Target) &&
-				existing.Relation == event.Value.Text &&
-				refEqual(existing.To, *event.Value.Ref) {
-				return fmt.Errorf("duplicate link already exists")
-			}
-		}
 		proj.Links[linkID] = &Link{
 			ID:          linkID,
 			From:        event.Target,
@@ -96,17 +99,24 @@ func applyLinkEvent(proj *Projection, event Event) error {
 			RetractedBy: nil,
 		}
 	case OpRetractLink:
+		targetID := retractionTarget(event)
 		for _, existing := range proj.Links {
-			if existing.RetractedBy == nil &&
-				refEqual(existing.From, event.Target) &&
-				existing.Relation == event.Value.Text &&
-				refEqual(existing.To, *event.Value.Ref) {
-				retractedBy := event.ID
-				existing.RetractedBy = &retractedBy
-				return nil
+			if existing.RetractedBy != nil ||
+				!refEqual(existing.From, event.Target) ||
+				existing.Relation != event.Value.Text ||
+				!refEqual(existing.To, *event.Value.Ref) {
+				continue
 			}
+			// Targeted retraction names the assertion event; legacy retracts
+			// (pre-#66) name no assertion and apply to the first active one.
+			if targetID != "" && existing.CreatedBy != targetID {
+				continue
+			}
+			retractedBy := event.ID
+			existing.RetractedBy = &retractedBy
+			return nil
 		}
-		return fmt.Errorf("link not found for retraction")
+		return fmt.Errorf("link assertion not found for retraction")
 	default:
 		return fmt.Errorf("unsupported link operation: %s", event.Operation)
 	}
@@ -114,85 +124,38 @@ func applyLinkEvent(proj *Projection, event Event) error {
 }
 
 func LinksForRef(events []Event, ref Ref, effectiveAt, knownAt time.Time) ([]LinkView, error) {
-	type linkKey struct {
-		from     string
-		relation string
-		to       string
-	}
-	type currentLink struct {
-		from      Ref
-		relation  string
-		to        Ref
-		createdBy EventID
-		retracted bool
-	}
-
-	filtered := make([]Event, 0, len(events))
-	for _, event := range events {
-		if event.Operation != OpAssertLink && event.Operation != OpRetractLink {
-			continue
-		}
-		if event.EffectiveAt.After(effectiveAt) || event.RecordedAt.After(knownAt) {
-			continue
-		}
-		filtered = append(filtered, event)
-	}
-	sortEventsByValidTime(filtered)
-
-	links := make(map[linkKey]currentLink)
-	for _, event := range filtered {
-		if event.Value.Ref == nil || !ValidRelation(event.Value.Text) {
-			continue
-		}
-		key := linkKey{
-			from:     CanonicalRefKey(event.Target),
-			relation: event.Value.Text,
-			to:       CanonicalRefKey(*event.Value.Ref),
-		}
-		switch event.Operation {
-		case OpAssertLink:
-			links[key] = currentLink{
-				from:      event.Target,
-				relation:  event.Value.Text,
-				to:        *event.Value.Ref,
-				createdBy: event.ID,
-			}
-		case OpRetractLink:
-			if current, ok := links[key]; ok {
-				current.retracted = true
-				links[key] = current
-			}
-		}
+	current, err := currentLinkViews(events, effectiveAt, knownAt)
+	if err != nil {
+		return nil, err
 	}
 
 	var views []LinkView
-	for _, link := range links {
-		if link.retracted {
-			continue
-		}
-		if refEqual(link.from, ref) {
+	for _, link := range current {
+		if refEqual(link.From, ref) {
 			views = append(views, LinkView{
-				From:      ref,
-				Relation:  link.relation,
-				To:        link.to,
-				Direction: "asserted",
-				Origin:    "asserted",
-				CreatedBy: link.createdBy,
+				From:       ref,
+				Relation:   link.Relation,
+				To:         link.To,
+				Direction:  "asserted",
+				Origin:     "asserted",
+				CreatedBy:  link.CreatedBy,
+				Assertions: link.Assertions,
 			})
 			continue
 		}
-		if refEqual(link.to, ref) {
-			inverse, ok := InverseRelation(link.relation)
+		if refEqual(link.To, ref) {
+			inverse, ok := InverseRelation(link.Relation)
 			if !ok {
 				continue
 			}
 			views = append(views, LinkView{
-				From:      ref,
-				Relation:  inverse,
-				To:        link.from,
-				Direction: "derived-inverse",
-				Origin:    "asserted",
-				CreatedBy: link.createdBy,
+				From:       ref,
+				Relation:   inverse,
+				To:         link.From,
+				Direction:  "derived-inverse",
+				Origin:     "asserted",
+				CreatedBy:  link.CreatedBy,
+				Assertions: link.Assertions,
 			})
 		}
 	}
@@ -315,12 +278,17 @@ func currentLinkViews(events []Event, effectiveAt, knownAt time.Time) ([]LinkVie
 		relation string
 		to       string
 	}
+	type assertionState struct {
+		createdBy   EventID
+		actor       ActorRef
+		sources     []SourceRef
+		retractedBy *EventID
+	}
 	type currentLink struct {
-		from      Ref
-		relation  string
-		to        Ref
-		createdBy EventID
-		retracted bool
+		from       Ref
+		relation   string
+		to         Ref
+		assertions []assertionState
 	}
 
 	filtered := make([]Event, 0, len(events))
@@ -335,7 +303,7 @@ func currentLinkViews(events []Event, effectiveAt, knownAt time.Time) ([]LinkVie
 	}
 	sortEventsByValidTime(filtered)
 
-	links := make(map[linkKey]currentLink)
+	links := make(map[linkKey]*currentLink)
 	for _, event := range filtered {
 		if event.Value.Ref == nil || !ValidRelation(event.Value.Text) {
 			continue
@@ -345,34 +313,61 @@ func currentLinkViews(events []Event, effectiveAt, knownAt time.Time) ([]LinkVie
 			relation: event.Value.Text,
 			to:       CanonicalRefKey(*event.Value.Ref),
 		}
+		current := links[key]
+		if current == nil {
+			current = &currentLink{from: event.Target, relation: event.Value.Text, to: *event.Value.Ref}
+			links[key] = current
+		}
 		switch event.Operation {
 		case OpAssertLink:
-			links[key] = currentLink{
-				from:      event.Target,
-				relation:  event.Value.Text,
-				to:        *event.Value.Ref,
+			current.assertions = append(current.assertions, assertionState{
 				createdBy: event.ID,
-			}
+				actor:     event.Actor,
+				sources:   event.Sources,
+			})
 		case OpRetractLink:
-			if current, ok := links[key]; ok {
-				current.retracted = true
-				links[key] = current
+			targetID := retractionTarget(event)
+			for i := range current.assertions {
+				assertion := &current.assertions[i]
+				if assertion.retractedBy != nil {
+					continue
+				}
+				if targetID != "" && assertion.createdBy != targetID {
+					continue
+				}
+				retractedBy := event.ID
+				assertion.retractedBy = &retractedBy
+				break
 			}
 		}
 	}
 
 	views := make([]LinkView, 0, len(links))
 	for _, link := range links {
-		if link.retracted {
+		active := make([]LinkAssertionView, 0, len(link.assertions))
+		var latest EventID
+		for _, assertion := range link.assertions {
+			if assertion.retractedBy != nil {
+				continue
+			}
+			active = append(active, LinkAssertionView{
+				CreatedBy: assertion.createdBy,
+				Actor:     assertion.actor,
+				Sources:   assertion.sources,
+			})
+			latest = assertion.createdBy
+		}
+		if len(active) == 0 {
 			continue
 		}
 		views = append(views, LinkView{
-			From:      link.from,
-			Relation:  link.relation,
-			To:        link.to,
-			Direction: "asserted",
-			Origin:    "asserted",
-			CreatedBy: link.createdBy,
+			From:       link.from,
+			Relation:   link.relation,
+			To:         link.to,
+			Direction:  "asserted",
+			Origin:     "asserted",
+			CreatedBy:  latest,
+			Assertions: active,
 		})
 	}
 	sort.Slice(views, func(i, j int) bool {
@@ -385,6 +380,21 @@ func currentLinkViews(events []Event, effectiveAt, knownAt time.Time) ([]LinkVie
 		return PresentationRefKey(views[i].To) < PresentationRefKey(views[j].To)
 	})
 	return views, nil
+}
+
+// retractionTarget names the assertion event a retract-link withdraws.
+// New retracts carry the target as an event-kind cause (ticket #66); legacy
+// pre-#66 retracts carry none and apply to the first active assertion.
+func retractionTarget(event Event) EventID {
+	for _, cause := range event.Causes {
+		if cause.Kind == KindEvent {
+			return EventID(cause.Entity)
+		}
+	}
+	if len(event.Supersedes) > 0 {
+		return event.Supersedes[0]
+	}
+	return ""
 }
 
 func refEqual(a, b Ref) bool {
