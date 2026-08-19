@@ -84,6 +84,10 @@ go run ./tools/store-gaps .missis-store/missis.db
   evaluation), multi-stream `AppendBatch`, and the `MoveHome` SDK
   convenience. Semantics documented in specs/link-workflows.subspec.md
   (transient); TUI membership UI and the guarantees doc remain (#77/#78).
+- TUI scope views landed (2026-08-19, #76/#77 step 3): kind toggle
+  (t/p/g), entity create (`n`), entity detail via ShowEntity, and link
+  actions on ticket detail (`l`: add/retract/move with conflict guidance).
+  Remaining for the arc: guarantees doc (#78) and subspec merges.
 - GitHub API merges on protected main hit a GitHub-side quirk: strict required
   checks report "2 of 2 required status checks are expected" even when checks
   are green, and auto-merge stalls. Workaround: delete branch protection,

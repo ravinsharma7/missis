@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
@@ -15,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -32,6 +35,7 @@ const (
 
 type detailState struct {
 	summary  missis.TicketSummary
+	entity   *missis.EntitySummary
 	lines    []string
 	offset   int
 	showRefs bool
@@ -42,8 +46,10 @@ type refreshMsg struct{}
 type tuiModel struct {
 	client      *missis.Client
 	summaries   []missis.TicketSummary
+	entities    []missis.EntitySummary
 	selected    int
 	view        string
+	kind        string
 	detail      *detailState
 	compareA    *missis.TicketSummary
 	compareB    *missis.TicketSummary
@@ -55,6 +61,7 @@ type tuiModel struct {
 	statsOffset int
 	editing     bool
 	input       string
+	inputMode   string
 	projectCtx  string
 	groupCtx    string
 }
@@ -97,6 +104,7 @@ func newModel() (*tuiModel, error) {
 		client:     client,
 		summaries:  summaries,
 		view:       "list",
+		kind:       "tickets",
 		projectCtx: projectCtx,
 		groupCtx:   groupCtx,
 	}, nil
@@ -202,6 +210,20 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampListOffset()
 		}
 	case "enter", " ":
+		if m.isEntityList() {
+			if len(m.entities) == 0 {
+				return m, nil
+			}
+			ent := m.entities[m.selected]
+			lines, err := entityLines(m.client, ent, m.renderWidth())
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			m.detail = &detailState{entity: &ent, lines: lines}
+			m.view = "detail"
+			return m, nil
+		}
 		if len(m.summaries) == 0 {
 			return m, nil
 		}
@@ -243,6 +265,25 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		m.refresh()
+	case "t":
+		m.kind = "tickets"
+		m.refresh()
+		m.message = "tickets"
+	case "p":
+		m.kind = "projects"
+		m.refresh()
+		m.message = "projects"
+	case "g":
+		m.kind = "groups"
+		m.refresh()
+		m.message = "groups"
+	case "n":
+		if m.kind == "projects" || m.kind == "groups" {
+			m.inputMode = "create"
+			m.input = ""
+			m.view = "input"
+			m.message = ""
+		}
 	case "s":
 		m.view = "stats"
 		m.statsOffset = 0
@@ -299,6 +340,10 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail = nil
 		m.message = ""
 	case "e":
+		if m.detail.entity != nil {
+			m.message = "export is ticket-only"
+			return m, nil
+		}
 		dst, err := exportTicket(m.client, m.detail.summary)
 		if err != nil {
 			m.err = err
@@ -306,6 +351,10 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = "exported " + m.detail.summary.Ref + " -> " + dst
 		}
 	case "t":
+		if m.detail.entity != nil {
+			m.message = "title edit is ticket-only"
+			return m, nil
+		}
 		m.editing = true
 		m.input = m.detail.summary.Title
 		m.view = "input"
@@ -313,17 +362,16 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 	case "R":
 		m.detail.showRefs = !m.detail.showRefs
-		var err error
-		if m.detail.showRefs {
-			m.detail.lines, err = referenceLines(m.client, m.detail.summary)
-		} else {
-			m.detail.lines, err = ticketLines(m.client, m.detail.summary, m.renderWidth())
+		m.refreshDetail()
+	case "l":
+		if m.detail.entity != nil {
+			m.message = "link actions are ticket-only"
+			return m, nil
 		}
-		if err != nil {
-			m.err = err
-		} else {
-			m.detail.offset = 0
-		}
+		m.inputMode = "link"
+		m.input = ""
+		m.view = "input"
+		m.message = ""
 	}
 	return m, nil
 }
@@ -335,37 +383,22 @@ func (m tuiModel) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch key.String() {
 	case "enter":
-		if m.detail == nil {
-			m.view = "detail"
-			m.editing = false
-			return m, nil
+		switch m.inputMode {
+		case "create":
+			return m.submitCreate()
+		case "link":
+			return m.submitLinkAction()
+		default:
+			return m.submitTitle()
 		}
-		title := strings.TrimSpace(m.input)
-		if title == "" {
-			m.view = "detail"
-			m.editing = false
-			return m, nil
-		}
-		if err := setTicketTitle(m.client, m.detail.summary, title); err != nil {
-			m.err = err
-			m.view = "detail"
-			m.editing = false
-			return m, nil
-		}
-		m.detail.summary.Title = title
-		lines, err := ticketLines(m.client, m.detail.summary, m.renderWidth())
-		if err != nil {
-			m.err = err
-		} else {
-			m.detail.lines = lines
-			m.clampDetailOffset()
-		}
-		m.view = "detail"
-		m.editing = false
-		m.message = "title updated"
 	case "esc":
-		m.view = "detail"
+		if m.inputMode == "create" {
+			m.view = "list"
+		} else {
+			m.view = "detail"
+		}
 		m.editing = false
+		m.inputMode = ""
 	case "backspace":
 		runes := []rune(m.input)
 		if len(runes) > 0 {
@@ -376,6 +409,98 @@ func (m tuiModel) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input += key.String()
 		}
 	}
+	return m, nil
+}
+
+func (m tuiModel) submitTitle() (tea.Model, tea.Cmd) {
+	if m.detail == nil || m.detail.entity != nil {
+		m.view = "detail"
+		m.editing = false
+		return m, nil
+	}
+	title := strings.TrimSpace(m.input)
+	if title == "" {
+		m.view = "detail"
+		m.editing = false
+		return m, nil
+	}
+	if err := setTicketTitle(m.client, m.detail.summary, title); err != nil {
+		m.err = err
+		m.view = "detail"
+		m.editing = false
+		return m, nil
+	}
+	m.detail.summary.Title = title
+	m.refreshDetail()
+	m.view = "detail"
+	m.editing = false
+	m.inputMode = ""
+	m.message = "title updated"
+	return m, nil
+}
+
+func (m tuiModel) submitCreate() (tea.Model, tea.Cmd) {
+	kind, id, title, err := parseCreateEntity(m.input)
+	if err != nil {
+		m.message = err.Error()
+		return m, nil
+	}
+	if _, err := m.client.NewEntity(context.Background(), missis.RequestContext{Actor: "tui"}, missis.EntityOptions{Kind: kind, ID: id, Title: title}); err != nil {
+		m.message = err.Error()
+		return m, nil
+	}
+	m.view = "list"
+	m.editing = false
+	m.inputMode = ""
+	m.message = "created " + kind + ":" + id
+	m.refresh()
+	return m, nil
+}
+
+func (m tuiModel) submitLinkAction() (tea.Model, tea.Cmd) {
+	act, err := parseLinkAction(m.input)
+	if err != nil {
+		m.message = err.Error()
+		return m, nil
+	}
+	if m.detail == nil || m.detail.entity != nil {
+		m.message = "link actions apply to tickets"
+		m.view = "detail"
+		m.editing = false
+		m.inputMode = ""
+		return m, nil
+	}
+	req := missis.RequestContext{Actor: "tui"}
+	switch act.Action {
+	case "add", "retract":
+		_, err = m.client.SetLink(context.Background(), req, missis.LinkOptions{
+			Ref:      m.detail.summary.Ref + "/links",
+			Relation: act.Relation,
+			Target:   act.Target,
+			Add:      act.Action == "add",
+			Retract:  act.Action == "retract",
+			Reason:   act.Reason,
+		})
+	case "move":
+		home := currentHomeProject(m.client, m.detail.summary.Ref)
+		if home == "" {
+			m.message = "ticket has no home project; nothing to move"
+			return m, nil
+		}
+		_, err = m.client.MoveHome(context.Background(), req, m.detail.summary.Ref, home, strings.TrimPrefix(act.Target, "project:"), act.Reason)
+	}
+	if err != nil {
+		m.message = err.Error()
+		if strings.Contains(err.Error(), "re-read and retry") || strings.Contains(err.Error(), "conflict") {
+			m.refreshDetail()
+		}
+		return m, nil
+	}
+	m.message = "link updated"
+	m.refreshDetail()
+	m.view = "detail"
+	m.editing = false
+	m.inputMode = ""
 	return m, nil
 }
 
@@ -496,7 +621,14 @@ func (m tuiModel) View() string {
 	case "stats":
 		body = m.viewStats()
 	case "input":
-		body = "Edit title: " + m.input + "▌"
+		switch m.inputMode {
+		case "create":
+			body = "Create (kind:id Title): " + m.input + "▌"
+		case "link":
+			body = "Link (add|retract relation:target [reason], move project:<id> [reason]): " + m.input + "▌"
+		default:
+			body = "Edit title: " + m.input + "▌"
+		}
 	default:
 		body = "unknown view"
 	}
@@ -510,9 +642,9 @@ func (m tuiModel) View() string {
 func (m tuiModel) helpForView() string {
 	switch m.view {
 	case "list":
-		return "j/k move | enter open | c/v compare | e export | r refresh | s stats | x context | q quit"
+		return "j/k move | enter open | t/p/g kinds | n create | c/v compare | e export | r refresh | s stats | x context | q quit"
 	case "detail":
-		return "j/k scroll | pgup/pgdn page | g/G top/end | r refresh | R refs | t edit title | e export | b back | q back"
+		return "j/k scroll | pgup/pgdn page | g/G top/end | r refresh | R refs | t edit title | l links | e export | b back | q back"
 	case "compare":
 		return "b back | q quit"
 	case "stats":
@@ -526,17 +658,32 @@ func (m tuiModel) helpForView() string {
 	}
 }
 
+func (m tuiModel) isEntityList() bool {
+	return m.kind == "projects" || m.kind == "groups"
+}
+
 func (m tuiModel) viewList() string {
 	width, _ := m.effectiveSize()
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("missis tickets | project: %s | group: %s", m.projectCtx, m.groupCtx)))
+	label := "tickets"
+	if m.kind == "projects" {
+		label = "projects"
+	}
+	if m.kind == "groups" {
+		label = "groups"
+	}
+	b.WriteString(titleStyle.Render(fmt.Sprintf("missis %s | project: %s | group: %s", label, m.projectCtx, m.groupCtx)))
 	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("  %-6s %-10s %s\n", "REF", "STATUS", "TITLE"))
 	visible := m.listVisibleRows()
 	start := m.listOffset
 	end := start + visible
-	if end > len(m.summaries) {
-		end = len(m.summaries)
+	count := len(m.summaries)
+	if m.isEntityList() {
+		count = len(m.entities)
+	}
+	if end > count {
+		end = count
 	}
 	// cursor (2) + ref (6) + gap (1) + status (10) + gap (1)
 	titleWidth := width - 20
@@ -544,10 +691,14 @@ func (m tuiModel) viewList() string {
 		titleWidth = 1
 	}
 	for i := start; i < end; i++ {
-		summary := m.summaries[i]
-		ref := truncateCell(summary.Ref, 6)
-		status := truncateCell(summary.Status, 10)
-		title := summary.Title
+		var ref, status, title string
+		if !m.isEntityList() {
+			ref, status, title = m.summaries[i].Ref, m.summaries[i].Status, m.summaries[i].Title
+		} else {
+			ref, status, title = m.entities[i].Ref, m.entities[i].Status, m.entities[i].Title
+		}
+		ref = truncateCell(ref, 6)
+		status = truncateCell(status, 10)
 		if title == "" {
 			title = "<no title>"
 		}
@@ -568,7 +719,11 @@ func (m *tuiModel) clampListOffset() {
 		m.listOffset = 0
 	}
 	visible := m.listVisibleRows()
-	maxOffset := len(m.summaries) - visible
+	count := len(m.summaries)
+	if m.isEntityList() {
+		count = len(m.entities)
+	}
+	maxOffset := count - visible
 	if maxOffset < 0 {
 		maxOffset = 0
 	}
@@ -687,7 +842,12 @@ func (m tuiModel) viewDetail() string {
 		return ""
 	}
 	var b strings.Builder
+	ref := m.detail.summary.Ref
 	detailTitle := m.detail.summary.Title
+	if m.detail.entity != nil {
+		ref = m.detail.entity.Ref
+		detailTitle = m.detail.entity.Title
+	}
 	if detailTitle == "" {
 		detailTitle = "<no title>"
 	}
@@ -695,7 +855,7 @@ func (m tuiModel) viewDetail() string {
 	if m.detail.showRefs {
 		viewLabel = "  (references)"
 	}
-	b.WriteString(titleStyle.Render(m.detail.summary.Ref + "  " + detailTitle + viewLabel))
+	b.WriteString(titleStyle.Render(ref + "  " + detailTitle + viewLabel))
 	b.WriteString("\n\n")
 	noParts := len(m.detail.lines) <= 1 && !m.detail.showRefs
 	if noParts {
@@ -786,6 +946,37 @@ func (m tuiModel) viewCompare() string {
 
 func (m *tuiModel) refresh() {
 	now := time.Now().UTC()
+	if m.kind == "projects" || m.kind == "groups" {
+		kind := model.KindProject
+		if m.kind == "groups" {
+			kind = model.KindGroup
+		}
+		entities, err := m.client.ListEntities(context.Background(), kind, missis.ListFilter{EffectiveAt: now, KnownAt: now})
+		if err != nil {
+			m.message = "refresh failed: " + err.Error()
+			return
+		}
+		selectedRef := ""
+		if m.selected >= 0 && m.selected < len(m.entities) {
+			selectedRef = m.entities[m.selected].Ref
+		}
+		m.entities = entities
+		m.summaries = nil
+		m.compareA = nil
+		m.compareB = nil
+		m.selected = 0
+		for i := range m.entities {
+			if m.entities[i].Ref == selectedRef {
+				m.selected = i
+				break
+			}
+		}
+		if m.selected >= len(m.entities) {
+			m.selected = maxInt(0, len(m.entities)-1)
+		}
+		m.clampListOffset()
+		return
+	}
 	var summaries []missis.TicketSummary
 	var err error
 	if (m.projectCtx != "" && m.projectCtx != "none") || (m.groupCtx != "" && m.groupCtx != "none") {
@@ -979,8 +1170,12 @@ func ticketLines(client *missis.Client, summary missis.TicketSummary, width int)
 }
 
 func referenceLines(client *missis.Client, summary missis.TicketSummary) ([]string, error) {
+	return referenceLinesForRef(client, summary.Ref)
+}
+
+func referenceLinesForRef(client *missis.Client, ref string) ([]string, error) {
 	now := time.Now().UTC()
-	links, err := client.ShowReferences(context.Background(), summary.Ref, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
+	links, err := client.ShowReferences(context.Background(), ref, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		return nil, err
 	}
@@ -992,6 +1187,89 @@ func referenceLines(client *missis.Client, summary missis.TicketSummary) ([]stri
 		lines = append(lines, fmt.Sprintf("%s %s %s", link.Direction, link.Relation, link.To))
 	}
 	return lines, nil
+}
+
+func historyLinesForRef(client *missis.Client, ref string) ([]string, error) {
+	now := time.Now().UTC()
+	events, err := client.ShowHistory(context.Background(), ref, missis.HistoryOptions{EffectiveAt: now, KnownAt: now})
+	if err != nil {
+		return nil, err
+	}
+	if len(events) == 0 {
+		return []string{"<no history>"}, nil
+	}
+	lines := make([]string, 0, len(events))
+	for _, event := range events {
+		lines = append(lines, fmt.Sprintf("%s %s %s", event.Alias, event.Operation, event.Target))
+	}
+	return lines, nil
+}
+
+func entityLines(client *missis.Client, ent missis.EntitySummary, width int) ([]string, error) {
+	now := time.Now().UTC()
+	proj, err := client.ShowEntity(context.Background(), ent.Ref, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
+	if err != nil {
+		return nil, err
+	}
+	lines := []string{
+		"title: " + proj.Title,
+		"status: " + proj.Status,
+		"recorded: " + proj.RecordedAt.UTC().Format(time.RFC3339),
+	}
+	var roots []string
+	for path := range proj.Parts {
+		if strings.Contains(path, "/") {
+			continue
+		}
+		roots = append(roots, path)
+	}
+	sort.Strings(roots)
+	for _, path := range roots {
+		lines = append(lines, partSubtree(proj, path, 0, width)...)
+	}
+	return lines, nil
+}
+
+func currentHomeProject(client *missis.Client, ticketRef string) string {
+	now := time.Now().UTC()
+	links, err := client.ShowReferences(context.Background(), ticketRef, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
+	if err != nil {
+		return ""
+	}
+	for _, link := range links {
+		if link.Relation == "has-home" && link.Direction == "asserted" {
+			if project, ok := strings.CutPrefix(link.To, "project:"); ok {
+				return project
+			}
+			return link.To
+		}
+	}
+	return ""
+}
+
+func (m *tuiModel) refreshDetail() {
+	if m.detail == nil {
+		return
+	}
+	var lines []string
+	var err error
+	if m.detail.entity != nil {
+		if m.detail.showRefs {
+			lines, err = referenceLinesForRef(m.client, m.detail.entity.Ref)
+		} else {
+			lines, err = entityLines(m.client, *m.detail.entity, m.renderWidth())
+		}
+	} else if m.detail.showRefs {
+		lines, err = referenceLinesForRef(m.client, m.detail.summary.Ref)
+	} else {
+		lines, err = ticketLines(m.client, m.detail.summary, m.renderWidth())
+	}
+	if err != nil {
+		m.err = err
+	} else {
+		m.detail.lines = lines
+		m.clampDetailOffset()
+	}
 }
 
 func partSubtree(proj missis.TicketProjection, path string, depth int, width int) []string {
@@ -1442,6 +1720,76 @@ func isSeparatorRow(row []string) bool {
 		}
 	}
 	return true
+}
+
+func validVisibleTitle(title string) bool {
+	visible := 0
+	for _, r := range title {
+		if unicode.IsControl(r) || !unicode.IsPrint(r) {
+			return false
+		}
+		if !unicode.IsSpace(r) {
+			visible++
+		}
+	}
+	return visible > 0
+}
+
+func parseCreateEntity(input string) (kind, id, title string, err error) {
+	kind, rest, ok := strings.Cut(strings.TrimSpace(input), ":")
+	if !ok {
+		return "", "", "", errors.New("format: kind:id Title")
+	}
+	rest = strings.TrimSpace(rest)
+	split := strings.IndexFunc(rest, unicode.IsSpace)
+	if split < 0 {
+		return "", "", "", errors.New("format: kind:id Title")
+	}
+	id = strings.TrimSpace(rest[:split])
+	title = strings.TrimSpace(rest[split:])
+	if kind != "project" && kind != "group" {
+		return "", "", "", fmt.Errorf("invalid kind: %s; expected project or group", kind)
+	}
+	if err := model.ValidatePathSegments([]string{id}); err != nil {
+		return "", "", "", fmt.Errorf("invalid id: %v", err)
+	}
+	if !validVisibleTitle(title) {
+		return "", "", "", errors.New("title must contain at least one visible character")
+	}
+	return kind, id, title, nil
+}
+
+type linkAction struct {
+	Action   string
+	Relation string
+	Target   string
+	Reason   string
+}
+
+func parseLinkAction(input string) (linkAction, error) {
+	fields := strings.Fields(input)
+	if len(fields) < 2 {
+		return linkAction{}, errors.New("format: add|retract relation:target [reason], or move project:<id> [reason]")
+	}
+	action := fields[0]
+	rest := fields[1:]
+	reason := strings.Join(rest[1:], " ")
+	switch action {
+	case "add", "retract":
+		relation, target, ok := strings.Cut(rest[0], ":")
+		if !ok || relation == "" || target == "" {
+			return linkAction{}, errors.New("relation:target required")
+		}
+		return linkAction{Action: action, Relation: relation, Target: target, Reason: reason}, nil
+	case "move":
+		target := rest[0]
+		if !strings.HasPrefix(target, "project:") {
+			target = "project:" + target
+		}
+		return linkAction{Action: "move", Relation: "has-home", Target: target, Reason: reason}, nil
+	default:
+		return linkAction{}, fmt.Errorf("unknown action: %s; expected add, retract, or move", action)
+	}
 }
 
 func main() {
