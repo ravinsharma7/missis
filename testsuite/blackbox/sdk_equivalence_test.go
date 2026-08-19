@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -14,10 +15,10 @@ func TestCLIWritesSDKReads(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "cli.db")
 	first := newTicket(t, store, "CLI side")
 	second := newTicket(t, store, "Target")
-	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/status", "doing"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/status", "doing", "--kind", "status"); result.code != 0 {
 		t.Fatalf("set status: %d %s", result.code, result.stderr)
 	}
-	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "shared body"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "shared body", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set problem: %d %s", result.code, result.stderr)
 	}
 	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/links", "--add", "blocked-by:"+second["ref"].(string)); result.code != 0 {
@@ -78,10 +79,10 @@ func TestSDKWritesCLIReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: first.Ref + "/status", Value: "doing"}); err != nil {
+	if _, err := client.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: first.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: first.Ref + "/problem", Value: "shared body"}); err != nil {
+	if _, err := client.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: first.Ref + "/problem", Value: "shared body", Kind: model.ValueKindText}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.SetLink(ctx, missis.RequestContext{Actor: "test"}, missis.LinkOptions{Ref: first.Ref + "/links", Relation: "blocked-by", Target: second.Ref, Add: true}); err != nil {

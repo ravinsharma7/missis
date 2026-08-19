@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -72,19 +73,19 @@ func TestSetPartVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/problem", Value: "body"}); err != nil {
+	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/problem", Value: "body", Kind: model.ValueKindText}); err != nil {
 		t.Fatalf("set problem: %v", err)
 	}
 	if _, err := client.Set(ctx, req(), missis.AddValue{Target: created.Ref + "/type", Value: "sdk"}); err != nil {
 		t.Fatalf("add type: %v", err)
 	}
-	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/status", Value: "blocked"}); err == nil {
+	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/status", Value: "blocked", Kind: model.ValueKindStatus}); err == nil {
 		t.Fatal("expected blocked status to require reason")
 	}
-	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/status", Value: "doing"}); err != nil {
+	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus}); err != nil {
 		t.Fatalf("set doing: %v", err)
 	}
-	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/notes", Value: "scratch"}); err != nil {
+	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/notes", Value: "scratch", Kind: model.ValueKindText}); err != nil {
 		t.Fatalf("set notes: %v", err)
 	}
 	if _, err := client.Set(ctx, req(), missis.RetractValue{Target: created.Ref + "/notes", Reason: "moved"}); err != nil {
@@ -118,12 +119,12 @@ func TestSetPartPreconditionConflict(t *testing.T) {
 		t.Fatalf("status history = %d events", len(history))
 	}
 	oldAlias := history[0].Alias
-	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/status", Value: "doing"}); err != nil {
+	if _, err := client.Set(ctx, req(), missis.SetValue{Target: created.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus}); err != nil {
 		t.Fatal(err)
 	}
 	conflictReq := req()
 	conflictReq.IfCurrent = oldAlias
-	if _, err := client.Set(ctx, conflictReq, missis.SetValue{Target: created.Ref + "/status", Value: "done"}); err == nil {
+	if _, err := client.Set(ctx, conflictReq, missis.SetValue{Target: created.Ref + "/status", Value: "done", Kind: model.ValueKindStatus}); err == nil {
 		t.Fatal("expected optimistic concurrency conflict")
 	}
 }
@@ -235,10 +236,10 @@ func TestSearchAndFilters(t *testing.T) {
 	if _, err := client.NewTicket(ctx, req(), missis.NewTicketOptions{Title: "unrelated"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Set(ctx, req(), missis.SetValue{Target: first.Ref + "/problem", Value: "worker retry after shutdown"}); err != nil {
+	if _, err := client.Set(ctx, req(), missis.SetValue{Target: first.Ref + "/problem", Value: "worker retry after shutdown", Kind: model.ValueKindText}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Set(ctx, req(), missis.SetValue{Target: first.Ref + "/status", Value: "doing"}); err != nil {
+	if _, err := client.Set(ctx, req(), missis.SetValue{Target: first.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -313,7 +314,7 @@ func TestBitemporalShow(t *testing.T) {
 	future := time.Now().UTC().Add(time.Hour)
 	futureReq := req()
 	futureReq.EffectiveAt = future
-	if _, err := client.Set(ctx, futureReq, missis.SetValue{Target: created.Ref + "/status", Value: "doing"}); err != nil {
+	if _, err := client.Set(ctx, futureReq, missis.SetValue{Target: created.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus}); err != nil {
 		t.Fatal(err)
 	}
 	now, err := client.ShowTicket(ctx, created.Ref, missis.ShowOptions{})
@@ -350,11 +351,11 @@ func TestIdempotency(t *testing.T) {
 	}
 	setReq := req()
 	setReq.IdempotencyKey = "k-set"
-	setA, err := client.Set(ctx, setReq, missis.SetValue{Target: first.Ref + "/status", Value: "doing"})
+	setA, err := client.Set(ctx, setReq, missis.SetValue{Target: first.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus})
 	if err != nil {
 		t.Fatal(err)
 	}
-	setB, err := client.Set(ctx, setReq, missis.SetValue{Target: first.Ref + "/status", Value: "doing"})
+	setB, err := client.Set(ctx, setReq, missis.SetValue{Target: first.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus})
 	if err != nil {
 		t.Fatal(err)
 	}

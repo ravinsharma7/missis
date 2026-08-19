@@ -56,7 +56,7 @@ func TestMarkdownExport(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "missis.db")
 	first := newTicket(t, store, "Export")
 	second := newTicket(t, store, "Target")
-	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "problem body"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "problem body", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set problem: %d %s", result.code, result.stderr)
 	}
 	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/links", "--add", "blocked-by:"+second["ref"].(string)); result.code != 0 {

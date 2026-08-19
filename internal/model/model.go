@@ -71,21 +71,21 @@ type SourceRef struct {
 type ValueKind string
 
 const (
-	ValueKindText       ValueKind = "text"
-	ValueKindMarkdown   ValueKind = "markdown"
-	ValueKindScalar     ValueKind = "scalar"
-	ValueKindStatus     ValueKind = "status"
-	ValueKindPriority   ValueKind = "priority"
-	ValueKindMap        ValueKind = "map"
-	ValueKindList       ValueKind = "list"
-	ValueKindRef        ValueKind = "ref"
-	ValueKindCodeRef    ValueKind = "code-ref"
-	ValueKindGitRef     ValueKind = "git-ref"
-	ValueKindEvidence   ValueKind = "evidence"
+	ValueKindText         ValueKind = "text"
+	ValueKindMarkdown     ValueKind = "markdown"
+	ValueKindScalar       ValueKind = "scalar"
+	ValueKindStatus       ValueKind = "status"
+	ValueKindPriority     ValueKind = "priority"
+	ValueKindMap          ValueKind = "map"
+	ValueKindList         ValueKind = "list"
+	ValueKindRef          ValueKind = "ref"
+	ValueKindCodeRef      ValueKind = "code-ref"
+	ValueKindGitRef       ValueKind = "git-ref"
+	ValueKindEvidence     ValueKind = "evidence"
 	ValueKindVerification ValueKind = "verification"
-	ValueKindJSON       ValueKind = "json"
-	ValueKindArtifact   ValueKind = "artifact"
-	ValueKindAnnotation ValueKind = "annotation"
+	ValueKindJSON         ValueKind = "json"
+	ValueKindArtifact     ValueKind = "artifact"
+	ValueKindAnnotation   ValueKind = "annotation"
 )
 
 // Value is the payload stored on a part. Retracted is a projection flag, not
@@ -102,27 +102,27 @@ type Value struct {
 type Operation string
 
 const (
-	OpCreateEntity     Operation = "create-entity"
-	OpCreatePart       Operation = "create-part"
-	OpSetValue         Operation = "set-value"
-	OpAddValue         Operation = "add-value"
-	OpRetractValue     Operation = "retract-value"
-	OpRenamePart       Operation = "rename-part"
-	OpMovePart         Operation = "move-part"
-	OpAttachChild      Operation = "attach-child"
-	OpDetachChild      Operation = "detach-child"
-	OpRetractSubtree   Operation = "retract-subtree"
-	OpRestorePart      Operation = "restore-part"
-	OpAssertLink       Operation = "assert-link"
-	OpRetractLink      Operation = "retract-link"
-	OpAssignOntology   Operation = "assign-ontology"
-	OpRemoveOntology   Operation = "remove-ontology"
-	OpJoinScope        Operation = "join-scope"
-	OpLeaveScope       Operation = "leave-scope"
-	OpObserveEffect    Operation = "observe-effect"
-	OpAttachEvidence   Operation = "attach-evidence"
+	OpCreateEntity       Operation = "create-entity"
+	OpCreatePart         Operation = "create-part"
+	OpSetValue           Operation = "set-value"
+	OpAddValue           Operation = "add-value"
+	OpRetractValue       Operation = "retract-value"
+	OpRenamePart         Operation = "rename-part"
+	OpMovePart           Operation = "move-part"
+	OpAttachChild        Operation = "attach-child"
+	OpDetachChild        Operation = "detach-child"
+	OpRetractSubtree     Operation = "retract-subtree"
+	OpRestorePart        Operation = "restore-part"
+	OpAssertLink         Operation = "assert-link"
+	OpRetractLink        Operation = "retract-link"
+	OpAssignOntology     Operation = "assign-ontology"
+	OpRemoveOntology     Operation = "remove-ontology"
+	OpJoinScope          Operation = "join-scope"
+	OpLeaveScope         Operation = "leave-scope"
+	OpObserveEffect      Operation = "observe-effect"
+	OpAttachEvidence     Operation = "attach-evidence"
 	OpRecordVerification Operation = "record-verification"
-	OpSupersedeEvent   Operation = "supersede-event"
+	OpSupersedeEvent     Operation = "supersede-event"
 )
 
 type OntologyRef struct {
@@ -251,10 +251,10 @@ type GitRef struct {
 }
 
 type Evidence struct {
-	Ref       Ref
-	Kind      string
-	ClaimRefs []Ref
-	Sources   []SourceRef
+	Ref        Ref
+	Kind       string
+	ClaimRefs  []Ref
+	Sources    []SourceRef
 	ProducedBy Ref
 }
 
@@ -269,11 +269,11 @@ type VerificationResult struct {
 }
 
 type ProcessorInvocation struct {
-	ID          InvocationRef
-	Processor   string
-	Version     string
-	CodeHash    string
-	ConfigHash  string
+	ID         InvocationRef
+	Processor  string
+	Version    string
+	CodeHash   string
+	ConfigHash string
 
 	Inputs      []Ref
 	InputEvents []EventID
@@ -290,6 +290,7 @@ type ProcessorInvocation struct {
 // Projection is the derived current state for one ticket.
 type Projection struct {
 	TicketID TicketID
+	Stream   Ref
 
 	Parts map[PartID]*Part
 	Links map[LinkID]*Link
@@ -301,9 +302,9 @@ type Projection struct {
 
 // ResolvedPartPath is the result of resolving a human-readable part path.
 type ResolvedPartPath struct {
-	PartID     PartID
-	TicketID   TicketID
-	Segments   []string
+	PartID      PartID
+	TicketID    TicketID
+	Segments    []string
 	EffectiveAt time.Time
 	KnownAt     time.Time
 }

@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -143,7 +144,7 @@ func TestRefreshPicksUpExternalChanges(t *testing.T) {
 	}
 	m.compareA = &m.summaries[0]
 
-	if _, err := client.Set(context.Background(), missis.RequestContext{Actor: "test"}, missis.SetValue{Target: t1.Ref + "/title", Value: "one-updated"}); err != nil {
+	if _, err := client.Set(context.Background(), missis.RequestContext{Actor: "test"}, missis.SetValue{Target: t1.Ref + "/title", Value: "one-updated", Kind: model.ValueKindText}); err != nil {
 		t.Fatal(err)
 	}
 

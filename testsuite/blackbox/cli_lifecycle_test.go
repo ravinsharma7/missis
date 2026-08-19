@@ -19,7 +19,7 @@ func TestNewShowSetLifecycle(t *testing.T) {
 		t.Fatalf("expected one ticket, got %d", len(tickets))
 	}
 
-	set := runMissis(t, store, "set", "--json", ref+"/status", "doing")
+	set := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--kind", "status")
 	if set.code != 0 {
 		t.Fatalf("set failed: %d %s", set.code, set.stderr)
 	}

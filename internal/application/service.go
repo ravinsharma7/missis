@@ -188,12 +188,24 @@ func (s *Service) LoadTicketEvents(ctx context.Context, ticketID model.TicketID)
 	return s.store.LoadTicketEvents(ticketID)
 }
 
+func (s *Service) LoadStreamEvents(ctx context.Context, stream model.Ref) ([]model.Event, error) {
+	return s.store.LoadStreamEvents(stream)
+}
+
 func (s *Service) CurrentProjection(ctx context.Context, ticketID model.TicketID, effectiveAt time.Time) (*model.Projection, error) {
 	return s.store.CurrentProjection(ticketID, effectiveAt)
 }
 
+func (s *Service) CurrentStreamProjection(ctx context.Context, stream model.Ref, effectiveAt time.Time) (*model.Projection, error) {
+	return s.store.CurrentStreamProjection(stream, effectiveAt)
+}
+
 func (s *Service) BitemporalProjection(ctx context.Context, ticketID model.TicketID, effectiveAt, knownAt time.Time) (*model.Projection, error) {
 	return s.store.BitemporalProjection(ticketID, effectiveAt, knownAt)
+}
+
+func (s *Service) BitemporalStreamProjection(ctx context.Context, stream model.Ref, effectiveAt, knownAt time.Time) (*model.Projection, error) {
+	return s.store.BitemporalStreamProjection(stream, effectiveAt, knownAt)
 }
 
 func (s *Service) GetEventByAlias(ctx context.Context, alias string) (model.Event, error) {

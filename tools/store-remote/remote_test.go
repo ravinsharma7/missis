@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -24,7 +25,7 @@ func TestLocalRemoteUploadSkipForceAndVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: created.Ref + "/problem", Value: "body"}); err != nil {
+	if _, err := client.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: created.Ref + "/problem", Value: "body", Kind: model.ValueKindText}); err != nil {
 		t.Fatal(err)
 	}
 	manifest, err := client.Manifest(ctx)

@@ -11,13 +11,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"time"
 
 	stdctx "context"
 
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 	"github.com/ravinsharma7/missis/pkg/missis/render"
 )
@@ -1086,7 +1086,7 @@ func runSet(args []string) int {
 	args = reorderArgs(args, map[string]bool{
 		"actor": true, "effective-at": true, "reason": true, "name": true,
 		"parent": true, "supersedes": true, "because": true,
-		"if-current": true, "idempotency-key": true, "store": true,
+		"if-current": true, "idempotency-key": true, "store": true, "kind": true,
 		"from": true,
 	})
 	fs := flag.NewFlagSet("set", flag.ContinueOnError)
@@ -1108,6 +1108,7 @@ func runSet(args []string) int {
 		storeFlag   string
 		fromFile    string
 		stdin       bool
+		kind        string
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&actor, "actor", "human/local", "actor reference")
@@ -1125,6 +1126,7 @@ func runSet(args []string) int {
 	fs.StringVar(&storeFlag, "store", "", "store path")
 	fs.StringVar(&fromFile, "from", "", "import Markdown from file")
 	fs.BoolVar(&stdin, "stdin", false, "import Markdown from stdin")
+	fs.StringVar(&kind, "kind", "", "explicit value kind (required when no schema declaration matches)")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -1215,7 +1217,7 @@ func runSet(args []string) int {
 	case parent != "":
 		mutation = missis.MovePart{Target: ref, Parent: parent, Reason: reason}
 	case supersedes != "":
-		mutation = missis.SupersedeEvent{Target: ref, Value: value, Supersedes: supersedes, Reason: reason}
+		mutation = missis.SupersedeEvent{Target: ref, Value: value, Kind: model.ValueKind(kind), Supersedes: supersedes, Reason: reason}
 	case add:
 		mutation = missis.AddValue{Target: ref, Value: value, Reason: reason}
 	default:
@@ -1223,7 +1225,7 @@ func runSet(args []string) int {
 			printError(fmt.Errorf("value or mutation flag is required"), exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
-		mutation = missis.SetValue{Target: ref, Value: value, Reason: reason}
+		mutation = missis.SetValue{Target: ref, Value: value, Kind: model.ValueKind(kind), Reason: reason}
 	}
 	result, err := client.Set(ctx, req, mutation)
 	if err != nil {
@@ -1408,26 +1410,22 @@ func mapError(err error) int {
 
 func outputProjectionSDK(proj missis.TicketProjection, pathFilter []string, jsonMode bool) {
 	if !jsonMode {
-		fmt.Printf("%s  %s\n", proj.Ref, proj.Title)
-		fmt.Printf("status: %s\n", proj.Status)
-		paths := make([]string, 0, len(proj.Parts))
-		for path := range proj.Parts {
-			paths = append(paths, path)
+		if len(pathFilter) > 0 {
+			filtered := proj
+			filtered.Parts = make(map[string]missis.PartView, len(proj.Parts))
+			for path, part := range proj.Parts {
+				if pathMatches(path, pathFilter) {
+					filtered.Parts[path] = part
+				}
+			}
+			proj = filtered
 		}
-		sort.Strings(paths)
-		for _, path := range paths {
-			if path == "title" || path == "status" {
-				continue
-			}
-			if !pathMatches(path, pathFilter) {
-				continue
-			}
-			part := proj.Parts[path]
-			if part.Value == nil {
-				continue
-			}
-			fmt.Printf("%s: %v\n", path, part.Value)
+		out, err := render.ShowTicket(proj, "text")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "missis: %v\n", err)
+			os.Exit(exitInvalid)
 		}
+		fmt.Print(out)
 		return
 	}
 	parts := make(map[string]showPart)

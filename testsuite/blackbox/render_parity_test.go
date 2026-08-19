@@ -28,10 +28,10 @@ func TestRenderParityTextAndJSON(t *testing.T) {
 	first := newTicket(t, store, "Parity")
 	second := newTicket(t, store, "Target")
 	ref := first["ref"].(string)
-	if result := runMissis(t, store, "set", "--json", ref+"/status", "doing"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/status", "doing", "--kind", "status"); result.code != 0 {
 		t.Fatalf("set status: %d %s", result.code, result.stderr)
 	}
-	if result := runMissis(t, store, "set", "--json", ref+"/problem", "body text"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", ref+"/problem", "body text", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set problem: %d %s", result.code, result.stderr)
 	}
 	if result := runMissis(t, store, "set", "--json", ref+"/type", "--add", "bug"); result.code != 0 {

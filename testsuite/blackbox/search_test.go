@@ -11,10 +11,10 @@ func TestSearchAndMetadataFilters(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "missis.db")
 	first := newTicket(t, store, "retry race")
 	second := newTicket(t, store, "unrelated")
-	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "worker retry after shutdown"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/problem", "worker retry after shutdown", "--kind", "text"); result.code != 0 {
 		t.Fatalf("set problem: %d %s", result.code, result.stderr)
 	}
-	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/status", "doing"); result.code != 0 {
+	if result := runMissis(t, store, "set", "--json", first["ref"].(string)+"/status", "doing", "--kind", "status"); result.code != 0 {
 		t.Fatalf("set status: %d %s", result.code, result.stderr)
 	}
 	search := mustJSON(t, runMissis(t, store, "show", "--json", "--search", "retry"))

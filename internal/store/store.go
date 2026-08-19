@@ -1018,9 +1018,13 @@ func (s *Store) LoadLinkEvents() ([]model.Event, error) {
 }
 
 func (s *Store) LoadTicketEvents(ticketID model.TicketID) ([]model.Event, error) {
+	return s.LoadStreamEvents(model.Ref{Kind: model.KindTicket, Entity: string(ticketID)})
+}
+
+func (s *Store) LoadStreamEvents(stream model.Ref) ([]model.Event, error) {
 	rows, err := s.reader.Query(
 		`SELECT event_json, alias_seq FROM events WHERE stream_kind = ? AND stream_entity = ? ORDER BY sequence ASC`,
-		string(model.KindTicket), string(ticketID),
+		string(stream.Kind), stream.Entity,
 	)
 	if err != nil {
 		return nil, err
@@ -1044,19 +1048,27 @@ func (s *Store) LoadTicketEvents(ticketID model.TicketID) ([]model.Event, error)
 }
 
 func (s *Store) CurrentProjection(ticketID model.TicketID, effectiveAt time.Time) (*model.Projection, error) {
-	events, err := s.LoadTicketEvents(ticketID)
-	if err != nil {
-		return nil, err
-	}
-	return model.CurrentProjection(events, ticketID, effectiveAt)
+	return s.CurrentStreamProjection(model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, effectiveAt)
 }
 
 func (s *Store) BitemporalProjection(ticketID model.TicketID, effectiveAt, knownAt time.Time) (*model.Projection, error) {
-	events, err := s.LoadTicketEvents(ticketID)
+	return s.BitemporalStreamProjection(model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, effectiveAt, knownAt)
+}
+
+func (s *Store) CurrentStreamProjection(stream model.Ref, effectiveAt time.Time) (*model.Projection, error) {
+	events, err := s.LoadStreamEvents(stream)
 	if err != nil {
 		return nil, err
 	}
-	return model.BitemporalProjection(events, ticketID, effectiveAt, knownAt)
+	return model.ProjectStream(events, stream, effectiveAt, model.MaxRecordedAt(events))
+}
+
+func (s *Store) BitemporalStreamProjection(stream model.Ref, effectiveAt, knownAt time.Time) (*model.Projection, error) {
+	events, err := s.LoadStreamEvents(stream)
+	if err != nil {
+		return nil, err
+	}
+	return model.ProjectStream(events, stream, effectiveAt, knownAt)
 }
 
 func (s *Store) GetEventByAlias(alias string) (model.Event, error) {
