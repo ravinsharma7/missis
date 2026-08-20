@@ -2,28 +2,40 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+real_go="$(command -v go)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir -p "$tmp/scripts" "$tmp/.missis.d" "$tmp/backups" "$tmp/bin"
+mkdir -p "$tmp/scripts" "$tmp/backups" "$tmp/bin"
 cp "$repo_root/scripts/upload-backup.sh" "$tmp/scripts/upload-backup.sh"
 cp "$repo_root/scripts/download-backup.sh" "$tmp/scripts/download-backup.sh"
 
-store_id="store:TESTSTOREID"
-head_hash="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-backup_basename="${store_id//:/_}-${head_hash}.db"
-backup_path="$tmp/backups/$backup_basename"
-manifest_path="$tmp/.missis.d/manifest.json"
+store_path="$tmp/store.db"
+backup_path=""
 
-printf 'dummy backup\n' > "$backup_path"
-cat > "$manifest_path" <<EOF
-{
-  "store_id": "$store_id",
-  "head_hash": "$head_hash",
-  "event_count": 1,
-  "schema_version": "test"
-}
-EOF
+(
+  cd "$repo_root"
+  "$real_go" run ./cmd/missis new --store "$store_path" "rclone backup fixture" >/dev/null
+  backup_path="$tmp/backups/fixture.db"
+  MISSIS_STORE="$store_path" "$real_go" run ./tools/store-backup "$backup_path"
+  printf '%s\n' "$backup_path" > "$tmp/backup-path"
+)
+backup_path="$(<"$tmp/backup-path")"
+manifest_json="$(
+  cd "$repo_root"
+  "$real_go" run ./tools/store-manifest "$store_path"
+)"
+store_id="$(printf '%s\n' "$manifest_json" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"
+head_hash="$(printf '%s\n' "$manifest_json" | sed -n 's/.*"head_hash": "\([^"]*\)".*/\1/p')"
+
+if [ -z "$store_id" ] || [ -z "$head_hash" ]; then
+  echo "failed to read fixture manifest" >&2
+  exit 1
+fi
+expected_backup="$tmp/backups/${store_id//:/_}-${head_hash}.db"
+mv "$backup_path" "$expected_backup"
+backup_path="$expected_backup"
+"$real_go" -C "$repo_root" build -o "$tmp/bin/store-remote" ./tools/store-remote
 
 cat > "$tmp/bin/rclone" <<'EOF'
 #!/usr/bin/env bash
@@ -33,10 +45,12 @@ no_check=0
 source=""
 dest=""
 args=("$@")
+is_size=0
 for i in "${!args[@]}"; do
   case "${args[$i]}" in
     --config) config="${args[$((i+1))]}" ;;
     --s3-no-check-bucket) no_check=1 ;;
+    size) is_size=1 ;;
     copyto)
       source="${args[$((i+1))]}"
       dest="${args[$((i+2))]}"
@@ -52,6 +66,10 @@ done
     sed -E 's/(access_key_id|secret_access_key) = .*/\1 = <redacted>/' "$config"
   fi
 } >> "${RCLONE_TEST_LOG:?RCLONE_TEST_LOG is not set}"
+if [ "$is_size" = 1 ]; then
+  echo "directory not found" >&2
+  exit 1
+fi
 if [[ "$source" == missis:* ]]; then
   cp "${FAKE_RESTORE_SOURCE:?FAKE_RESTORE_SOURCE is not set}" "$dest"
 fi
@@ -60,18 +78,21 @@ chmod +x "$tmp/bin/rclone"
 
 cat > "$tmp/bin/go" <<EOF
 #!/usr/bin/env bash
-cat <<'JSON'
-{
-  "store_id": "$store_id",
-  "head_hash": "$head_hash",
-  "event_count": 1,
-  "schema_version": "test"
-}
-JSON
+set -euo pipefail
+if [ "\${1:-}" != run ] || [ "\${2:-}" != ./tools/store-remote ]; then
+  echo "unexpected go invocation: \$*" >&2
+  exit 1
+fi
+shift 2
+if [ "\${1:-}" = upload ]; then
+  set -- upload "$backup_path"
+fi
+exec "$tmp/bin/store-remote" "\$@"
 EOF
 chmod +x "$tmp/bin/go"
 
 export PATH="$tmp/bin:$PATH"
+export MISSIS_STORE="$store_path"
 export MISSIS_RCLONE_REMOTE="missis:"
 export RCLONE_CONFIG_MISSIS_TYPE="s3"
 export RCLONE_CONFIG_MISSIS_PROVIDER="Cloudflare"
@@ -107,7 +128,7 @@ run_download_case() {
   export RCLONE_TEST_LOG="$log"
   output="$(
     cd "$tmp"
-    bash scripts/download-backup.sh
+    bash scripts/download-backup.sh "$tmp/restored.db"
   )"
   echo "download_case=$name" >> "$log"
   grep -q 'no_check=1' "$log"
