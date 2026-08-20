@@ -409,7 +409,7 @@ func verifyHashesTx(tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	return verifyStoredHashChain(tx, events)
+	return verifyStoredHashChain(context.Background(), tx, events)
 }
 
 func isBusyError(err error) bool {
@@ -467,34 +467,46 @@ func (s *Store) CheckConsistencyContext(ctx context.Context) error {
 	}
 	byStream := make(map[string][]model.Event)
 	for _, event := range events {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		key := string(event.Stream.Kind) + ":" + event.Stream.Entity
 		byStream[key] = append(byStream[key], event)
 	}
 	for stream, streamEvents := range byStream {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// loadEventsTx returns events in acceptance (alias_seq) order, so the
 		// invariant is: sequence values are unique and strictly increasing in
 		// acceptance order. Gaps are allowed and reported separately by
 		// SequenceGaps as integrity incidents; they are not erased.
 		var previous uint64
 		for i, event := range streamEvents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if i > 0 && event.Sequence <= previous {
 				return fmt.Errorf("stream %s sequence out of order or duplicate: got %d after %d", stream, event.Sequence, previous)
 			}
 			previous = event.Sequence
 		}
 	}
-	if err := verifyDerivedVsLedger(tx, byStream); err != nil {
+	if err := verifyDerivedVsLedger(ctx, tx, byStream); err != nil {
 		return err
 	}
-	if err := verifyEventColumnsMatchPayload(tx); err != nil {
+	if err := verifyEventColumnsMatchPayload(ctx, tx); err != nil {
 		return err
 	}
-	rows, err := tx.Query(`SELECT key, event_ids_json FROM idempotency`)
+	rows, err := tx.QueryContext(ctx, `SELECT key, event_ids_json FROM idempotency`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var key, eventIDsJSON string
 		if err := rows.Scan(&key, &eventIDsJSON); err != nil {
 			return err
@@ -508,13 +520,13 @@ func (s *Store) CheckConsistencyContext(ctx context.Context) error {
 		return err
 	}
 	var hashCount int64
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM event_hashes`).Scan(&hashCount); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM event_hashes`).Scan(&hashCount); err != nil {
 		return err
 	}
 	if hashCount != int64(len(events)) {
 		return fmt.Errorf("event hash count mismatch: got %d, want %d", hashCount, len(events))
 	}
-	if err := verifyStoredHashChain(tx, events); err != nil {
+	if err := verifyStoredHashChain(ctx, tx, events); err != nil {
 		return err
 	}
 	return nil
@@ -524,11 +536,13 @@ func (s *Store) CheckConsistencyContext(ctx context.Context) error {
 // every stored (previous_hash, hash) row plus the final head hash. A mismatch
 // means either the event bytes or the integrity metadata changed outside the
 // append path.
-func verifyStoredHashChain(tx interface {
-	Query(string, ...any) (*sql.Rows, error)
-	QueryRow(string, ...any) *sql.Row
-}, events []model.Event) error {
-	rows, err := tx.Query(`
+type contextSQL interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func verifyStoredHashChain(ctx context.Context, tx contextSQL, events []model.Event) error {
+	rows, err := tx.QueryContext(ctx, `
 		SELECT h.previous_hash, h.hash
 		FROM event_hashes h
 		JOIN events e ON e.id = h.event_id
@@ -539,6 +553,9 @@ func verifyStoredHashChain(tx interface {
 	defer rows.Close()
 	previous := ""
 	for _, event := range events {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !rows.Next() {
 			if err := rows.Err(); err != nil {
 				return err
@@ -559,7 +576,7 @@ func verifyStoredHashChain(tx interface {
 		return err
 	}
 	var storedHead string
-	if err := tx.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&storedHead); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&storedHead); err != nil {
 		return err
 	}
 	if previous != storedHead {
@@ -572,10 +589,8 @@ func verifyStoredHashChain(tx interface {
 // with the authoritative event_json payload. The JSON payload is the single
 // source of truth; columns are indexes only, and any disagreement is an
 // integrity failure.
-func verifyEventColumnsMatchPayload(tx interface {
-	Query(string, ...any) (*sql.Rows, error)
-}) error {
-	rows, err := tx.Query(`
+func verifyEventColumnsMatchPayload(ctx context.Context, tx contextSQL) error {
+	rows, err := tx.QueryContext(ctx, `
 		SELECT
 			id,
 			stream_kind,
@@ -591,6 +606,9 @@ func verifyEventColumnsMatchPayload(tx interface {
 	}
 	defer rows.Close()
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var id, kind, entity, jsonID, jsonKind, jsonEntity string
 		var sequence, jsonSequence int64
 		if err := rows.Scan(&id, &kind, &entity, &sequence, &jsonID, &jsonKind, &jsonEntity, &jsonSequence); err != nil {
@@ -1119,6 +1137,9 @@ func (s *Store) LoadLinkEventsContext(ctx context.Context) ([]model.Event, error
 	defer rows.Close()
 	var events []model.Event
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var raw string
 		var aliasSeq uint64
 		if err := rows.Scan(&raw, &aliasSeq); err != nil {
@@ -1285,7 +1306,13 @@ func (s *Store) listTicketsByFoldContext(ctx context.Context, effectiveAt time.T
 		if err != nil {
 			return nil, err
 		}
-		number, _ := s.LookupTicketAliasContext(ctx, ticketID)
+		number, err := s.LookupTicketAliasContext(ctx, ticketID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			number = 0
+		}
 		summary := TicketSummary{ID: ticketID, Number: number}
 		if number > 0 {
 			summary.Ref = "#" + strconv.FormatUint(number, 10)
@@ -1622,8 +1649,11 @@ func rebuildDerived(db *sql.DB) error {
 
 // verifyDerivedVsLedger compares every ticket's derived rows against a fold
 // of its authoritative events.
-func verifyDerivedVsLedger(tx *sql.Tx, byStream map[string][]model.Event) error {
+func verifyDerivedVsLedger(ctx context.Context, tx contextSQL, byStream map[string][]model.Event) error {
 	for key, streamEvents := range byStream {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		kind, entity, ok := strings.Cut(key, ":")
 		if !ok || model.Kind(kind) != model.KindTicket {
 			continue
@@ -1645,7 +1675,7 @@ func verifyDerivedVsLedger(tx *sql.Tx, byStream map[string][]model.Event) error 
 			}
 		}
 		var dbTitle, dbStatus string
-		err = tx.QueryRow(`SELECT title, status FROM tickets WHERE ticket_id = ?`, string(ticketID)).Scan(&dbTitle, &dbStatus)
+		err = tx.QueryRowContext(ctx, `SELECT title, status FROM tickets WHERE ticket_id = ?`, string(ticketID)).Scan(&dbTitle, &dbStatus)
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("derived ticket row missing for %s", ticketID)
 		}
@@ -1655,12 +1685,16 @@ func verifyDerivedVsLedger(tx *sql.Tx, byStream map[string][]model.Event) error 
 		if dbTitle != title || dbStatus != status {
 			return fmt.Errorf("derived ticket mismatch for %s: title %q/%q status %q/%q", ticketID, dbTitle, title, dbStatus, status)
 		}
-		rows, err := tx.Query(`SELECT path, value_json, parent_id FROM parts_current WHERE ticket_id = ?`, string(ticketID))
+		rows, err := tx.QueryContext(ctx, `SELECT path, value_json, parent_id FROM parts_current WHERE ticket_id = ?`, string(ticketID))
 		if err != nil {
 			return err
 		}
 		gotParts := make(map[string][2]any)
 		for rows.Next() {
+			if err := ctx.Err(); err != nil {
+				rows.Close()
+				return err
+			}
 			var path string
 			var valueJSON any
 			var parentID any
@@ -1744,6 +1778,9 @@ func loadEventsContext(ctx context.Context, db contextQuerier) ([]model.Event, e
 	defer rows.Close()
 	var events []model.Event
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var raw string
 		var aliasSeq uint64
 		if err := rows.Scan(&raw, &aliasSeq); err != nil {

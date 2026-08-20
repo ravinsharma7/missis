@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -242,6 +244,35 @@ func TestCheckConsistencyHealthy(t *testing.T) {
 	defer s.Close()
 	if err := s.CheckConsistency(); err != nil {
 		t.Fatalf("empty store should be consistent: %v", err)
+	}
+}
+
+func TestCheckConsistencyHonorsCanceledContext(t *testing.T) {
+	t.Parallel()
+	s := openDerivedStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.CheckConsistencyContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("consistency error = %v, want context.Canceled", err)
+	}
+}
+
+func TestConsistencyQueriesHonorCanceledContext(t *testing.T) {
+	t.Parallel()
+	s := openDerivedStore(t)
+	tx, err := s.reader.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := verifyEventColumnsMatchPayload(ctx, tx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("column verification error = %v, want context.Canceled", err)
+	}
+	if err := verifyStoredHashChain(ctx, tx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("hash verification error = %v, want context.Canceled", err)
 	}
 }
 

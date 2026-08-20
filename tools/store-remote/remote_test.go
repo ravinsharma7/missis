@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,7 +62,7 @@ func TestLocalRemoteUploadSkipForceAndVerify(t *testing.T) {
 		t.Fatalf("forced upload: %v", err)
 	}
 
-	dst := filepath.Join(dir, "downloaded.db")
+	dst := filepath.Join(dir, "nested", "downloaded.db")
 	if err := downloadAndVerify(ctx, remote, manifest, dst); err != nil {
 		t.Fatalf("download verify: %v", err)
 	}
@@ -77,6 +78,27 @@ func TestLocalRemoteUploadSkipForceAndVerify(t *testing.T) {
 	}
 	if proj.Parts["problem"].Value != "body" {
 		t.Fatalf("downloaded projection = %+v", proj)
+	}
+}
+
+func TestLocalRemoteHonorsCanceledContext(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.db")
+	if err := os.WriteFile(src, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	remote := &localRemote{dir: filepath.Join(dir, "remote")}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := remote.Exists(ctx, "key"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Exists error = %v, want context.Canceled", err)
+	}
+	if err := remote.Upload(ctx, src, "key"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Upload error = %v, want context.Canceled", err)
+	}
+	if err := remote.Download(ctx, "key", filepath.Join(dir, "download", "copy.db")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Download error = %v, want context.Canceled", err)
 	}
 }
 

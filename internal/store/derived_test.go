@@ -113,12 +113,18 @@ func TestListTicketsHistoricalFallback(t *testing.T) {
 	if current[0].Status != "doing" {
 		t.Fatalf("current status = %q", current[0].Status)
 	}
+	if _, err := s.writer.Exec(`DELETE FROM ticket_aliases`); err != nil {
+		t.Fatal(err)
+	}
 	historical, err := s.ListTickets(t0.Add(30 * time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if historical[0].Status != "open" {
 		t.Fatalf("historical status = %q, want open", historical[0].Status)
+	}
+	if historical[0].Number != 0 || historical[0].Ref != "#"+shortID(id) {
+		t.Fatalf("historical fallback ref = %+v", historical[0])
 	}
 }
 

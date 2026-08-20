@@ -16,7 +16,7 @@ import (
 // fold of the stream's authoritative events, and that rejected appends leave
 // the store consistent.
 func FuzzDerivedProjectionMatchesLedger(f *testing.F) {
-	f.Add([]byte{2, 0, 0, 1, 1, 0, 2})       // set p0, retract p0
+	f.Add([]byte{2, 0, 0, 1, 1, 0, 2})          // set p0, retract p0
 	f.Add([]byte{3, 0, 2, 1, 1, 2, 1, 2, 2, 2}) // mixed set/retract/add
 
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -93,5 +93,5 @@ func verifyDerivedForTicket(ctx context.Context, s *Store, ticketID model.Ticket
 	byStream := map[string][]model.Event{
 		string(model.KindTicket) + ":" + string(ticketID): events,
 	}
-	return verifyDerivedVsLedger(tx, byStream)
+	return verifyDerivedVsLedger(ctx, tx, byStream)
 }

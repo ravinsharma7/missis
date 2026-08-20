@@ -96,7 +96,13 @@ func (r *localRemote) keyPath(key string) string {
 }
 
 func (r *localRemote) Exists(ctx context.Context, key string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	_, err := os.Stat(r.keyPath(key))
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
 	if err == nil {
 		return true, nil
 	}
@@ -107,15 +113,11 @@ func (r *localRemote) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 func (r *localRemote) Upload(ctx context.Context, src, key string) error {
-	dst := r.keyPath(key)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	return copyFile(src, dst)
+	return copyFile(ctx, src, r.keyPath(key))
 }
 
 func (r *localRemote) Download(ctx context.Context, key, dst string) error {
-	return copyFile(r.keyPath(key), dst)
+	return copyFile(ctx, r.keyPath(key), dst)
 }
 
 type rcloneRemote struct {
@@ -238,19 +240,79 @@ func (r *awsRemote) Download(ctx context.Context, key, dst string) error {
 	return r.run(ctx, "s3", "cp", r.target(key), dst)
 }
 
-func copyFile(src, dst string) error {
+func copyFile(ctx context.Context, src, dst string) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-	out, err := os.Create(dst)
+	defer func() {
+		if closeErr := in.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
+	tmpPath := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := copyWithContext(ctx, tmp, in); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	return out.Sync()
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return err
+	}
+	return nil
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if err := ctx.Err(); err != nil {
+				return total, err
+			}
+			written, writeErr := dst.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if readErr == io.EOF {
+			return total, nil
+		}
+		if readErr != nil {
+			return total, readErr
+		}
+	}
 }
