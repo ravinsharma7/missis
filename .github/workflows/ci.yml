@@ -25,8 +25,17 @@ jobs:
         run: go vet ./...
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.6.1 ./...
+      - name: shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+          shellcheck scripts/*.sh testsuite/scripts/*.sh testsuite/benchmarks/*.sh
       - name: test
         run: go test -count=1 ./...
+      - name: requirements coverage
+        run: go run ./tools/coverage --registry specs/requirements-registry.v3.json
+      - name: backup script harness
+        run: bash testsuite/scripts/test-rclone-backup.sh
       - name: TUI smoke
         run: go test -count=1 -run '^TestTUISmoke$' -v ./tools/ticket-tui
       - name: store diagnostic summary
@@ -71,6 +80,8 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test -count=1 ./...
+      - name: requirements coverage
+        run: go run ./tools/coverage --registry specs/requirements-registry.v3.json
       - name: TUI smoke
         run: go test -count=1 -run '^TestTUISmoke$' -v ./tools/ticket-tui
       - name: store diagnostic summary

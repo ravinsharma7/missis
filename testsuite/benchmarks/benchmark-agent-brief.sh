@@ -79,7 +79,7 @@ BIN_HEAD="$BIN_HEAD_DIR/missis"
 CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_RUN_ARGS="${CODEX_RUN_ARGS:---full-auto}"
 CATALOG_PATCHED=""
-CODEX_CATALOG_ARG=""
+CODEX_CATALOG_ARGS=()
 
 catalog_path() {
 	local catpath=""
@@ -103,7 +103,7 @@ prepare_catalog() {
 		# older codex CLIs cannot parse. Patch a temp copy so the run works.
 		CATALOG_PATCHED="$RUN_DIR/models-patched.json"
 		sed 's/"effort": "max"/"effort": "xhigh"/g' "$catpath" >"$CATALOG_PATCHED"
-		CODEX_CATALOG_ARG="-c model_catalog_json=$CATALOG_PATCHED"
+		CODEX_CATALOG_ARGS=(-c "model_catalog_json=$CATALOG_PATCHED")
 	fi
 }
 
@@ -148,10 +148,10 @@ MATRIX=(
 	"brief|1|1"
 )
 RESULT_ROWS=""
-POINTER_AGENTS_MD='## missis quick reference
+POINTER_AGENTS_MD="## missis quick reference
 
-Run `missis --ag-brief` before ticket work. It prints the exact command
-surface and rules from the CLI itself.'
+Run \`missis --ag-brief\` before ticket work. It prints the exact command
+surface and rules from the CLI itself."
 
 if [ "$PLAN_ONLY" = 1 ]; then
 	echo "provider: $PROVIDER_LABEL  model: $MODEL_LABEL  family: $FAMILY  effort: $EFFORT_LABEL"
@@ -203,6 +203,12 @@ echo "building missis from $REPO_DIR"
 git -C "$REPO_DIR" archive "$BASELINE_REF" | tar -x -C "$BIN_HEAD_DIR"
 (cd "$BIN_HEAD_DIR" && go build -o "$BIN_HEAD" ./cmd/missis)
 prepare_catalog
+CODEX_RUN_ARGS_ARRAY=()
+read -r -a CODEX_RUN_ARGS_ARRAY <<<"$CODEX_RUN_ARGS"
+CODEX_EXTRA_ARGS_ARRAY=()
+if [ -n "${CODEX_EXTRA_ARGS:-}" ]; then
+	read -r -a CODEX_EXTRA_ARGS_ARRAY <<<"$CODEX_EXTRA_ARGS"
+fi
 
 setup_project() {
 	local scratch="$1" use_pointer="$2" missis_bin="$3"
@@ -235,9 +241,9 @@ run_config() {
 		started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		start_ns="$(date +%s%N)"
 		code=0
-		PATH="$bin_dir:$PATH" timeout 900 "$CODEX_BIN" exec ${CODEX_CATALOG_ARG:-} \
-			${CODEX_RUN_ARGS:-} --skip-git-repo-check --ephemeral -C "$scratch" \
-			${CODEX_EXTRA_ARGS:-} "create a missis ticket" >"$log" 2>&1 || code=$?
+		PATH="$bin_dir:$PATH" timeout 900 "$CODEX_BIN" exec "${CODEX_CATALOG_ARGS[@]}" \
+			"${CODEX_RUN_ARGS_ARRAY[@]}" --skip-git-repo-check --ephemeral -C "$scratch" \
+			"${CODEX_EXTRA_ARGS_ARRAY[@]}" "create a missis ticket" >"$log" 2>&1 || code=$?
 		end_ns="$(date +%s%N)"
 		wall="$(awk "BEGIN { printf \"%.1f\", ($end_ns - $start_ns) / 1000000000 }")"
 		tickets="$("$BIN" show --json --store "$scratch/.missis-store/missis.db" 2>/dev/null | jq '.tickets | length' 2>/dev/null || echo 0)"
@@ -258,7 +264,7 @@ run_config() {
 echo "provider: $PROVIDER_LABEL  model: $MODEL_LABEL  family: $FAMILY  effort: $EFFORT_LABEL"
 echo "codex: $CODEX_BIN ($("$CODEX_BIN" --version 2>&1 | tail -1))"
 if [ -n "$CATALOG_PATCHED" ]; then
-echo "catalog: patched to $CATALOG_PATCHED (max->xhigh for CLI compat)"
+	echo "catalog: patched to $CATALOG_PATCHED (max->xhigh for CLI compat)"
 fi
 echo "temp root: $TEMP_ROOT"
 echo "logs: $LOG_DIR"
