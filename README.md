@@ -73,6 +73,10 @@ The fastest path is the CLI's own guide:
 missis --get-started
 ```
 
+For a new project where an agent is given setup instructions by URL, pass it
+the [URL-first agent setup guide](docs/agent-setup.md). Prefer an immutable
+GitHub tag or commit URL when the installation must be reproducible.
+
 Or, step by step:
 
 ```bash

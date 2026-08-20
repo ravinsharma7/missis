@@ -392,6 +392,10 @@ func runGetStarted() int {
 
 const getStartedText = `missis getting started
 
+URL-first setup for a new project:
+     https://github.com/ravinsharma7/missis/blob/main/docs/agent-setup.md
+     Prefer an immutable tag or commit in this URL for reproducibility.
+
 1. Install (from a checkout, or pin a commit for reproducibility):
      go install ./cmd/missis
      # or: go install github.com/ravinsharma7/missis/cmd/missis@<commit-sha>

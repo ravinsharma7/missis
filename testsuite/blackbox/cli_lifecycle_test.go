@@ -80,7 +80,7 @@ func TestGetStarted(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("--get-started failed: %d stderr=%s", result.code, result.stderr)
 	}
-	for _, want := range []string{"missis --init", "missis new", "missis set", "store-backup", "repair-store"} {
+	for _, want := range []string{"docs/agent-setup.md", "missis --init", "missis new", "missis set", "store-backup", "repair-store"} {
 		if !strings.Contains(result.stdout, want) {
 			t.Fatalf("--get-started output missing %q:\n%s", want, result.stdout)
 		}
