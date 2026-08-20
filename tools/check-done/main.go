@@ -36,11 +36,35 @@ func main() {
 		os.Exit(8)
 	}
 
-	var violations []string
-	doneCount := 0
+	doneCount, violations, inspectionErrors := inspectTickets(summaries, now, func(ref string, opts missis.ShowOptions) (missis.TicketProjection, error) {
+		return client.ShowTicket(ctx, ref, opts)
+	})
+	if len(inspectionErrors) > 0 {
+		for _, err := range inspectionErrors {
+			fmt.Fprintf(os.Stderr, "check-done: unable to inspect ticket: %v\n", err)
+		}
+		os.Exit(8)
+	}
+
+	if len(violations) > 0 {
+		for _, v := range violations {
+			fmt.Println(v)
+		}
+		fmt.Fprintln(os.Stderr, "done tickets must not carry follow-up 'next' parts; convert follow-ups to tickets or retract the part")
+		os.Exit(1)
+	}
+	fmt.Printf("check-done: %d done ticket(s), no outstanding follow-ups\n", doneCount)
+}
+
+func inspectTickets(
+	summaries []missis.TicketSummary,
+	effectiveAt time.Time,
+	show func(string, missis.ShowOptions) (missis.TicketProjection, error),
+) (doneCount int, violations []string, inspectionErrors []error) {
 	for _, summary := range summaries {
-		proj, err := client.ShowTicket(ctx, summary.Ref, missis.ShowOptions{EffectiveAt: now})
+		proj, err := show(summary.Ref, missis.ShowOptions{EffectiveAt: effectiveAt})
 		if err != nil {
+			inspectionErrors = append(inspectionErrors, fmt.Errorf("%s (%s): %w", summary.Ref, summary.Title, err))
 			continue
 		}
 		if proj.Status != "done" {
@@ -53,13 +77,5 @@ func main() {
 			}
 		}
 	}
-
-	if len(violations) > 0 {
-		for _, v := range violations {
-			fmt.Println(v)
-		}
-		fmt.Fprintln(os.Stderr, "done tickets must not carry follow-up 'next' parts; convert follow-ups to tickets or retract the part")
-		os.Exit(1)
-	}
-	fmt.Printf("check-done: %d done ticket(s), no outstanding follow-ups\n", doneCount)
+	return doneCount, violations, inspectionErrors
 }

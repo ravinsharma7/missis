@@ -24,52 +24,71 @@ type Registry struct {
 }
 
 func main() {
-	registryPath := flag.String("registry", "", "path to specs/requirements-registry.v3.json; enables two-way verification")
-	flag.Parse()
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "coverage: %v\n", err)
+		os.Exit(1)
+	}
+}
 
-	lines, err := scanAll()
+func run(args []string) error {
+	flags := flag.NewFlagSet("coverage", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	registryPath := flags.String("registry", "", "path to specs/requirements-registry.v3.json; enables two-way verification")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	lines, err := scanAll(".")
 	if err != nil {
-		panic(err)
+		return err
 	}
 	if *registryPath == "" {
 		for _, line := range lines {
 			fmt.Println(line)
 		}
-		return
+		return nil
 	}
-	if err := verifyRegistry(*registryPath, lines); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	return verifyRegistry(*registryPath, lines)
 }
 
-func scanAll() ([]string, error) {
+func scanAll(root string) ([]string, error) {
 	var lines []string
 	patterns := []string{
 		"testsuite/blackbox/*_test.go",
-		"implementation/model/*_test.go",
-		"implementation/store/*_test.go",
+		"internal/model/*_test.go",
+		"internal/store/*_test.go",
 	}
 	for _, pattern := range patterns {
-		files, err := filepath.Glob(pattern)
+		files, err := filepath.Glob(filepath.Join(root, pattern))
 		if err != nil {
 			return nil, err
 		}
 		for _, file := range files {
-			lines = append(lines, scanFile(file)...)
+			displayPath, err := filepath.Rel(root, file)
+			if err != nil {
+				return nil, err
+			}
+			fileLines, err := scanFile(file, displayPath)
+			if err != nil {
+				return nil, err
+			}
+			lines = append(lines, fileLines...)
 		}
 	}
 	return lines, nil
 }
 
-func scanFile(path string) []string {
+func scanFile(path, displayPath string) (out []string, err error) {
 	file, err := os.Open(path)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 
-	var out []string
 	scanner := bufio.NewScanner(file)
 	var (
 		currentTest string
@@ -79,7 +98,7 @@ func scanFile(path string) []string {
 	)
 	flush := func() {
 		if currentTest != "" && len(ids) > 0 {
-			out = append(out, fmt.Sprintf("%s:%d:%s:%s", path, currentLine, currentTest, strings.Join(ids, " ")))
+			out = append(out, fmt.Sprintf("%s:%d:%s:%s", displayPath, currentLine, currentTest, strings.Join(ids, " ")))
 		}
 		currentTest = ""
 		currentLine = 0
@@ -98,7 +117,7 @@ func scanFile(path string) []string {
 		}
 		if currentTest != "" && strings.Contains(line, "// covers") {
 			for _, token := range strings.Fields(line) {
-				token = strings.TrimSuffix(token, ",")
+				token = strings.Trim(token, ",:")
 				if strings.HasPrefix(token, "PH1-") || strings.HasPrefix(token, "N") {
 					ids = append(ids, token)
 				}
@@ -107,9 +126,9 @@ func scanFile(path string) []string {
 	}
 	flush()
 	if err := scanner.Err(); err != nil {
-		panic(err)
+		return nil, err
 	}
-	return out
+	return out, nil
 }
 
 func testName(line string) string {
@@ -141,7 +160,7 @@ func verifyRegistry(path string, lines []string) error {
 
 	referenced := map[string]map[string]bool{}
 	for _, line := range lines {
-		parts := strings.Split(line, ":")
+		parts := strings.SplitN(line, ":", 4)
 		if len(parts) != 4 {
 			continue
 		}
