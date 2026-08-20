@@ -184,6 +184,10 @@ func (c *Client) ListTicketsFiltered(ctx context.Context, filter ListFilter) ([]
 	return c.service.ListTicketsFiltered(ctx, filter)
 }
 
+func (c *Client) CountTicketsFiltered(ctx context.Context, filter ListFilter) (int, error) {
+	return c.service.CountTicketsFiltered(ctx, filter)
+}
+
 func (c *Client) Set(ctx context.Context, req RequestContext, mutation Mutation) (SetResult, error) {
 	return c.service.Set(ctx, req, mutation)
 }

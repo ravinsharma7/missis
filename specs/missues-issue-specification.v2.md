@@ -2732,22 +2732,36 @@ memberships must not make resolution nondeterministic (14.5, N081).
   membership links, references, history, and lineage.
 - List: `show --kind project|group` lists scope entities and combines with
   search and status filters; `show --project P` / `--group G` filter tickets.
+  `show --unscoped` selects tickets with neither project nor group view
+  membership.
 - Project view membership: tickets with an active asserted `contains` or
   `has-home` link from the project.
 - Group view membership (union, canonical order): tickets with a direct
   asserted `contains` link from the group, plus tickets in projects the group
   `contains` or `governs` (one hop).
-- Repeated filter values are unions; views reflect membership effective at
-  the requested time (14.6). Tickets remain independent entities across
+- Repeated filter values within one scope kind are unions. When both project
+  and group filters are present, the project candidate set and group candidate
+  set are intersected: `(projects union) AND (groups union)`. An empty scope
+  selection is an all-tickets view. The explicit unscoped selection is
+  mutually exclusive with project and group filters and matches only tickets
+  absent from both candidate sets. Views reflect membership effective at the
+  requested time (14.6), and tickets remain independent entities across
   projects (9.6).
+- The SDK `ListFilter` and `SearchOptions` expose typed `Projects` and
+  `Groups` collections. The legacy `Project` and `Group` string fields remain
+  accepted as one value or comma-separated compatibility inputs; typed and
+  legacy values are normalized together by trimming, ignoring empty values,
+  deduplicating, and sorting. Both filters also expose `Unscoped`; the SDK
+  exposes `CountTicketsFiltered` with the same semantics as listing.
 
 ### 14.8.6 Context is client-side
 
 Context is a client preference, not a model concept. `MISSIS_PROJECT` /
 `MISSIS_GROUP` act as default scope filters when no explicit `--project` /
-`--group` flag is given; explicit flags override. A TUI may switch context
-explicitly in-session. The active pointer file is never written implicitly by
-the command surface. The core and SDK remain stateless.
+`--group` / `--unscoped` selector is given; explicit selectors override. The
+`--unscoped` selector cannot be combined with project or group selectors. A TUI
+may switch context explicitly in-session. The active pointer file is never
+written implicitly by the command surface. The core and SDK remain stateless.
 
 ### 14.8.7 Changes and retraction
 

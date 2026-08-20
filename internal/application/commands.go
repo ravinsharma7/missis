@@ -330,6 +330,9 @@ func (s *Service) showScope(ctx context.Context, ref string, opts missis.ShowOpt
 	if err != nil {
 		return missis.TicketProjection{}, keepStorage(err)
 	}
+	if len(events) == 0 {
+		return missis.TicketProjection{}, notFound("reference not found: %s", ref)
+	}
 	proj, err := s.BitemporalStreamProjection(ctx, stream, opts.EffectiveAt, opts.KnownAt)
 	if err != nil {
 		return missis.TicketProjection{}, keepStorage(err)
@@ -595,6 +598,9 @@ func (s *Service) ResolveAnyRef(ctx context.Context, ref string, effectiveAt tim
 
 func (s *Service) Search(ctx context.Context, opts missis.SearchOptions) ([]missis.TicketSummary, error) {
 	return s.ListTicketsFiltered(ctx, missis.ListFilter{
+		Projects:    opts.Projects,
+		Groups:      opts.Groups,
+		Unscoped:    opts.Unscoped,
 		Project:     opts.Project,
 		Group:       opts.Group,
 		Status:      opts.Status,
@@ -669,6 +675,109 @@ func (s *Service) ListEntities(ctx context.Context, kind model.Kind, filter miss
 	return out, nil
 }
 
+func normalizeScopeValues(values []string, legacy string) []string {
+	seen := make(map[string]struct{}, len(values)+1)
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				seen[item] = struct{}{}
+			}
+		}
+	}
+	for _, item := range strings.Split(legacy, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			seen[item] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for item := range seen {
+		result = append(result, item)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func scopeEntityIDs(events []model.Event, kind model.Kind) []string {
+	seen := make(map[string]struct{})
+	for _, event := range events {
+		if event.Target.Kind == kind {
+			seen[event.Target.Entity] = struct{}{}
+		}
+		if event.Value.Ref != nil && event.Value.Ref.Kind == kind {
+			seen[event.Value.Ref.Entity] = struct{}{}
+		}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func projectViewTicketIDs(events []model.Event, projectIDs []string, effectiveAt, knownAt time.Time) (map[model.TicketID]bool, error) {
+	ticketIDs := make(map[model.TicketID]bool)
+	for _, projectID := range projectIDs {
+		links, err := model.LinksForRef(events, model.Ref{Kind: model.KindProject, Entity: projectID}, effectiveAt, knownAt)
+		if err != nil {
+			return nil, err
+		}
+		for _, link := range links {
+			if link.To.Kind != model.KindTicket {
+				continue
+			}
+			if link.Direction == "asserted" && link.Relation == "contains" {
+				ticketIDs[model.TicketID(link.To.Entity)] = true
+			}
+			if link.Direction == "derived-inverse" && link.Relation == "home-of" {
+				ticketIDs[model.TicketID(link.To.Entity)] = true
+			}
+		}
+	}
+	return ticketIDs, nil
+}
+
+func groupViewTicketIDs(events []model.Event, groupIDs []string, effectiveAt, knownAt time.Time) (map[model.TicketID]bool, error) {
+	ticketIDs := make(map[model.TicketID]bool)
+	for _, groupID := range groupIDs {
+		groupLinks, err := model.LinksForRef(events, model.Ref{Kind: model.KindGroup, Entity: groupID}, effectiveAt, knownAt)
+		if err != nil {
+			return nil, err
+		}
+		projectIDs := make(map[string]bool)
+		for _, link := range groupLinks {
+			if link.Direction != "asserted" {
+				continue
+			}
+			if link.Relation == "contains" && link.To.Kind == model.KindTicket {
+				ticketIDs[model.TicketID(link.To.Entity)] = true
+			}
+			if (link.Relation == "contains" || link.Relation == "governs") && link.To.Kind == model.KindProject {
+				projectIDs[link.To.Entity] = true
+			}
+		}
+		projectTicketIDs, err := projectViewTicketIDs(events, sortedStringKeys(projectIDs), effectiveAt, knownAt)
+		if err != nil {
+			return nil, err
+		}
+		for ticketID := range projectTicketIDs {
+			ticketIDs[ticketID] = true
+		}
+	}
+	return ticketIDs, nil
+}
+
+func sortedStringKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFilter) ([]missis.TicketSummary, error) {
 	if filter.EffectiveAt.IsZero() {
 		filter.EffectiveAt = s.now()
@@ -676,72 +785,72 @@ func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFil
 	if filter.KnownAt.IsZero() {
 		filter.KnownAt = filter.EffectiveAt
 	}
+	projects := normalizeScopeValues(filter.Projects, filter.Project)
+	groups := normalizeScopeValues(filter.Groups, filter.Group)
+	if filter.Unscoped && (len(projects) > 0 || len(groups) > 0) {
+		return nil, invalidInput("unscoped cannot be combined with project or group filters")
+	}
 	summaries, err := s.ListTicketSummaries(ctx, filter.EffectiveAt)
 	if err != nil {
 		return nil, err
 	}
 	var linkEvents []model.Event
-	if filter.Project != "" || filter.Group != "" {
+	if len(projects) > 0 || len(groups) > 0 || filter.Unscoped {
 		linkEvents, err = s.LoadLinkEvents(ctx)
 		if err != nil {
 			return nil, keepStorage(err)
 		}
 	}
 	projectTicketIDs := make(map[model.TicketID]bool)
-	if filter.Project != "" {
-		for _, projectID := range strings.Split(filter.Project, ",") {
-			links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: strings.TrimSpace(projectID)}, filter.EffectiveAt, filter.KnownAt)
-			if err != nil {
-				return nil, keepStorage(err)
-			}
-			for _, link := range links {
-				if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
-					projectTicketIDs[model.TicketID(link.To.Entity)] = true
-				}
-				if link.Relation == "home-of" && link.Direction == "derived-inverse" && link.To.Kind == model.KindTicket {
-					projectTicketIDs[model.TicketID(link.To.Entity)] = true
-				}
-			}
+	if len(projects) > 0 {
+		projectTicketIDs, err = projectViewTicketIDs(linkEvents, projects, filter.EffectiveAt, filter.KnownAt)
+		if err != nil {
+			return nil, keepStorage(err)
 		}
 	}
-	if filter.Group != "" {
-		for _, groupID := range strings.Split(filter.Group, ",") {
-			groupRef := model.Ref{Kind: model.KindGroup, Entity: strings.TrimSpace(groupID)}
-			groupLinks, err := model.LinksForRef(linkEvents, groupRef, filter.EffectiveAt, filter.KnownAt)
-			if err != nil {
-				return nil, keepStorage(err)
-			}
-			projectIDs := make(map[string]bool)
-			for _, link := range groupLinks {
-				if link.Direction == "asserted" && link.Relation == "contains" && link.To.Kind == model.KindTicket {
-					projectTicketIDs[model.TicketID(link.To.Entity)] = true
-				}
-				if link.Direction == "asserted" && (link.Relation == "contains" || link.Relation == "governs") && link.To.Kind == model.KindProject {
-					projectIDs[link.To.Entity] = true
-				}
-			}
-			for projectID := range projectIDs {
-				links, err := model.LinksForRef(linkEvents, model.Ref{Kind: model.KindProject, Entity: projectID}, filter.EffectiveAt, filter.KnownAt)
-				if err != nil {
-					return nil, keepStorage(err)
-				}
-				for _, link := range links {
-					if link.Relation == "contains" && link.Direction == "asserted" && link.To.Kind == model.KindTicket {
-						projectTicketIDs[model.TicketID(link.To.Entity)] = true
-					}
-					if link.Relation == "home-of" && link.Direction == "derived-inverse" && link.To.Kind == model.KindTicket {
-						projectTicketIDs[model.TicketID(link.To.Entity)] = true
-					}
-				}
+	groupTicketIDs := make(map[model.TicketID]bool)
+	if len(groups) > 0 {
+		groupTicketIDs, err = groupViewTicketIDs(linkEvents, groups, filter.EffectiveAt, filter.KnownAt)
+		if err != nil {
+			return nil, keepStorage(err)
+		}
+	}
+	var scopeTicketIDs map[model.TicketID]bool
+	switch {
+	case filter.Unscoped:
+		projectScoped, err := projectViewTicketIDs(linkEvents, scopeEntityIDs(linkEvents, model.KindProject), filter.EffectiveAt, filter.KnownAt)
+		if err != nil {
+			return nil, keepStorage(err)
+		}
+		groupScoped, err := groupViewTicketIDs(linkEvents, scopeEntityIDs(linkEvents, model.KindGroup), filter.EffectiveAt, filter.KnownAt)
+		if err != nil {
+			return nil, keepStorage(err)
+		}
+		scopeTicketIDs = make(map[model.TicketID]bool)
+		for _, summary := range summaries {
+			ticketID := model.TicketID(summary.ID)
+			if !projectScoped[ticketID] && !groupScoped[ticketID] {
+				scopeTicketIDs[ticketID] = true
 			}
 		}
+	case len(projects) > 0 && len(groups) > 0:
+		scopeTicketIDs = make(map[model.TicketID]bool)
+		for ticketID := range projectTicketIDs {
+			if groupTicketIDs[ticketID] {
+				scopeTicketIDs[ticketID] = true
+			}
+		}
+	case len(projects) > 0:
+		scopeTicketIDs = projectTicketIDs
+	case len(groups) > 0:
+		scopeTicketIDs = groupTicketIDs
 	}
 	result := make([]missis.TicketSummary, 0, len(summaries))
 	for _, summary := range summaries {
 		if filter.Status != "" && !csvContains(filter.Status, summary.Status) {
 			continue
 		}
-		if (filter.Project != "" || filter.Group != "") && !projectTicketIDs[model.TicketID(summary.ID)] {
+		if scopeTicketIDs != nil && !scopeTicketIDs[model.TicketID(summary.ID)] {
 			continue
 		}
 		proj, err := s.BitemporalProjection(ctx, model.TicketID(summary.ID), filter.EffectiveAt, filter.KnownAt)
@@ -763,6 +872,14 @@ func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFil
 		result = append(result, summary)
 	}
 	return result, nil
+}
+
+func (s *Service) CountTicketsFiltered(ctx context.Context, filter missis.ListFilter) (int, error) {
+	tickets, err := s.ListTicketsFiltered(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
+	return len(tickets), nil
 }
 
 // ----- mutation workflows -----

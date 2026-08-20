@@ -888,6 +888,7 @@ func runShow(args []string) int {
 		format      string
 		project     stringList
 		group       stringList
+		unscoped    bool
 		search      string
 		status      stringList
 		typeFilter  stringList
@@ -913,6 +914,7 @@ func runShow(args []string) int {
 	fs.StringVar(&format, "format", "", "output format: text, json, or markdown")
 	fs.Var(&project, "project", "show project scope")
 	fs.Var(&group, "group", "show group scope")
+	fs.BoolVar(&unscoped, "unscoped", false, "show tickets with no project or group scope")
 	fs.StringVar(&search, "search", "", "search query")
 	fs.Var(&status, "status", "filter by status")
 	fs.Var(&typeFilter, "type", "filter by type")
@@ -1049,18 +1051,27 @@ func runShow(args []string) int {
 		return exitSuccess
 	}
 
-	filterProject := strings.Join(project, ",")
-	filterGroup := strings.Join(group, ",")
-	if filterProject == "" {
-		filterProject = os.Getenv("MISSIS_PROJECT")
+	filterProjects := append([]string(nil), project...)
+	filterGroups := append([]string(nil), group...)
+	if unscoped && (len(filterProjects) > 0 || len(filterGroups) > 0) {
+		printError(fmt.Errorf("--unscoped cannot be combined with --project or --group"), exitInvalid, jsonMode, nil)
+		return exitInvalid
 	}
-	if filterGroup == "" {
-		filterGroup = os.Getenv("MISSIS_GROUP")
+	if !unscoped && len(filterProjects) == 0 {
+		if env := os.Getenv("MISSIS_PROJECT"); env != "" {
+			filterProjects = []string{env}
+		}
 	}
-	if filterProject != "" || filterGroup != "" || search != "" || len(status) > 0 || len(typeFilter) > 0 || len(tagFilter) > 0 {
+	if !unscoped && len(filterGroups) == 0 {
+		if env := os.Getenv("MISSIS_GROUP"); env != "" {
+			filterGroups = []string{env}
+		}
+	}
+	if unscoped || len(filterProjects) > 0 || len(filterGroups) > 0 || search != "" || len(status) > 0 || len(typeFilter) > 0 || len(tagFilter) > 0 {
 		filtered, err := client.ListTicketsFiltered(ctx, missis.ListFilter{
-			Project:     filterProject,
-			Group:       filterGroup,
+			Projects:    filterProjects,
+			Groups:      filterGroups,
+			Unscoped:    unscoped,
 			Status:      strings.Join(status, ","),
 			Type:        strings.Join(typeFilter, ","),
 			Tag:         strings.Join(tagFilter, ","),

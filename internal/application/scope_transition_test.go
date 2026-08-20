@@ -8,6 +8,21 @@ import (
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
+func TestShowEntityMissingErrors(t *testing.T) {
+	svc := openFixed(t, fixedClock{fixedNow()})
+	_, err := svc.ShowEntity(context.Background(), "project:nope", missis.ShowOptions{})
+	if err == nil {
+		t.Fatal("ShowEntity on a nonexistent project returned no error")
+	}
+	if !strings.Contains(err.Error(), "reference not found") {
+		t.Fatalf("ShowEntity missing error = %q, want reference not found", err)
+	}
+	_, err = svc.ShowEntity(context.Background(), "group:nope", missis.ShowOptions{})
+	if err == nil {
+		t.Fatal("ShowEntity on a nonexistent group returned no error")
+	}
+}
+
 func TestJoinScopeAndLeaveScope(t *testing.T) {
 	now := fixedNow()
 	svc := openFixed(t, fixedClock{now})

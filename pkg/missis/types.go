@@ -289,8 +289,15 @@ type LineageOptions struct {
 }
 
 type SearchOptions struct {
-	Query       string
-	Status      string
+	Query    string
+	Status   string
+	Projects []string
+	Groups   []string
+	// Unscoped selects tickets that match neither a project nor a group view.
+	// It is mutually exclusive with project and group inputs.
+	Unscoped bool
+	// Project and Group are compatibility inputs. They accept one value or
+	// comma-separated values and are merged with Projects and Groups.
 	Project     string
 	Group       string
 	Type        string
@@ -300,6 +307,15 @@ type SearchOptions struct {
 }
 
 type ListFilter struct {
+	// Projects and Groups are the typed multi-scope filter inputs. Values are
+	// unioned within each kind and intersected when both kinds are present.
+	Projects []string
+	Groups   []string
+	// Unscoped selects tickets that match neither a project nor a group view.
+	// It is mutually exclusive with project and group inputs.
+	Unscoped bool
+	// Project and Group are compatibility inputs. They accept one value or
+	// comma-separated values and are merged with Projects and Groups.
 	Project     string
 	Group       string
 	Status      string

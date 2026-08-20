@@ -54,6 +54,7 @@ type Service interface {
 	ResolveAnyRef(ctx context.Context, ref string, effectiveAt time.Time) (string, error)
 	Search(ctx context.Context, opts SearchOptions) ([]TicketSummary, error)
 	ListTicketsFiltered(ctx context.Context, filter ListFilter) ([]TicketSummary, error)
+	CountTicketsFiltered(ctx context.Context, filter ListFilter) (int, error)
 	Set(ctx context.Context, req RequestContext, mutation Mutation) (SetResult, error)
 	SetLink(ctx context.Context, req RequestContext, opts LinkOptions) (SetResult, error)
 	MoveLink(ctx context.Context, req RequestContext, opts MoveLinkOptions) (SetResult, error)

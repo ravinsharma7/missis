@@ -304,6 +304,148 @@ func TestProjectGroupFiltering(t *testing.T) {
 	}
 }
 
+func TestMultiScopeFilteringSDK(t *testing.T) {
+	client := testClient(t)
+	ctx := context.Background()
+	for _, entity := range []missis.EntityOptions{
+		{Kind: "project", ID: "p1", Title: "Project 1"},
+		{Kind: "project", ID: "p2", Title: "Project 2"},
+		{Kind: "group", ID: "g1", Title: "Group 1"},
+		{Kind: "group", ID: "g2", Title: "Group 2"},
+	} {
+		if _, err := client.NewEntity(ctx, req(), entity); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ticketA, err := client.NewTicket(ctx, req(), missis.NewTicketOptions{Title: "A", Project: "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketB, err := client.NewTicket(ctx, req(), missis.NewTicketOptions{Title: "B", Project: "p2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketC, err := client.NewTicket(ctx, req(), missis.NewTicketOptions{Title: "C"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketD, err := client.NewTicket(ctx, req(), missis.NewTicketOptions{Title: "D", Project: "p2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketE, err := client.NewTicket(ctx, req(), missis.NewTicketOptions{Title: "E"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []missis.LinkOptions{
+		{Ref: "group:g1/links", Relation: "contains", Target: "project:p1", Add: true},
+		{Ref: "group:g1/links", Relation: "contains", Target: "project:p2", Add: true},
+		{Ref: "group:g2/links", Relation: "contains", Target: "project:p2", Add: true},
+		{Ref: "group:g2/links", Relation: "contains", Target: ticketC.Ref, Add: true},
+	} {
+		if _, err := client.SetLink(ctx, req(), link); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	refs := func(items []missis.TicketSummary) map[string]bool {
+		result := make(map[string]bool, len(items))
+		for _, item := range items {
+			result[item.Ref] = true
+		}
+		return result
+	}
+	assertRefs := func(name string, got []missis.TicketSummary, want ...string) {
+		t.Helper()
+		gotRefs := refs(got)
+		if len(gotRefs) != len(want) {
+			t.Fatalf("%s refs = %v, want %v", name, gotRefs, want)
+		}
+		for _, ref := range want {
+			if !gotRefs[ref] {
+				t.Fatalf("%s refs = %v, missing %s", name, gotRefs, ref)
+			}
+		}
+	}
+
+	projects, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"p2", "p1", "p2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("project union", projects, ticketA.Ref, ticketB.Ref, ticketD.Ref)
+
+	groups, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Groups: []string{"g1", "g2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("group union", groups, ticketA.Ref, ticketB.Ref, ticketC.Ref, ticketD.Ref)
+
+	intersection, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"p2"}, Groups: []string{"g2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("project/group intersection", intersection, ticketB.Ref, ticketD.Ref)
+
+	legacy, err := client.ListTicketsFiltered(ctx, missis.ListFilter{
+		Projects: []string{"p1", "", " "},
+		Project:  " p2, p1, ",
+		Groups:   []string{"g1", ""},
+		Group:    "g1,,",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("typed and legacy merge", legacy, ticketA.Ref, ticketB.Ref, ticketD.Ref)
+
+	search, err := client.Search(ctx, missis.SearchOptions{Projects: []string{"p1"}, Groups: []string{"g1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("typed search", search, ticketA.Ref)
+
+	all, err := client.ListTicketsFiltered(ctx, missis.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("empty scope", all, ticketA.Ref, ticketB.Ref, ticketC.Ref, ticketD.Ref, ticketE.Ref)
+
+	unscoped, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Unscoped: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("unscoped", unscoped, ticketE.Ref)
+
+	searchUnscoped, err := client.Search(ctx, missis.SearchOptions{Unscoped: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("unscoped search", searchUnscoped, ticketE.Ref)
+
+	count, err := client.CountTicketsFiltered(ctx, missis.ListFilter{Unscoped: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != len(unscoped) {
+		t.Fatalf("unscoped count = %d, want %d", count, len(unscoped))
+	}
+	count, err = client.CountTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"p2"}, Groups: []string{"g2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != len(intersection) {
+		t.Fatalf("intersection count = %d, want %d", count, len(intersection))
+	}
+	if _, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Unscoped: true, Project: "p1"}); err == nil {
+		t.Fatal("expected unscoped and legacy project conflict")
+	}
+
+	unknown, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"missing"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("unknown scope", unknown)
+}
+
 func TestBitemporalShow(t *testing.T) {
 	client := testClient(t)
 	ctx := context.Background()

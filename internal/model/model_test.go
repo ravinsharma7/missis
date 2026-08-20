@@ -1,10 +1,33 @@
 package model
 
 import (
+	"sort"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestValidRelations(t *testing.T) {
+	relations := ValidRelations()
+	if len(relations) == 0 {
+		t.Fatal("ValidRelations returned an empty vocabulary")
+	}
+	if !sort.StringsAreSorted(relations) {
+		t.Errorf("ValidRelations not sorted: %v", relations)
+	}
+	seen := make(map[string]bool)
+	for _, relation := range relations {
+		seen[relation] = true
+		if !ValidRelation(relation) {
+			t.Errorf("ValidRelations contains %q but ValidRelation rejects it", relation)
+		}
+	}
+	for _, want := range []string{"has-home", "contains", "governs", "blocks", "supports", "related"} {
+		if !seen[want] {
+			t.Errorf("ValidRelations missing %q", want)
+		}
+	}
+}
 
 func TestProjectionRenameMoveRetract(t *testing.T) {
 	t.Parallel()

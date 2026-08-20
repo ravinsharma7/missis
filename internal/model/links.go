@@ -33,6 +33,7 @@ var relationInverses = map[string]string{
 	"home-of":         "has-home",
 	"member-of":       "has-member",
 	"has-member":      "member-of",
+	"related":         "related",
 }
 
 type LinkView struct {
@@ -78,6 +79,18 @@ func InverseRelation(relation string) (string, bool) {
 func ValidRelation(relation string) bool {
 	_, ok := relationInverses[relation]
 	return ok
+}
+
+// ValidRelations returns the built-in relation vocabulary in sorted order.
+// The vocabulary is the canonical source for link prompts and validation
+// messages; ontologies may add further relations at runtime.
+func ValidRelations() []string {
+	out := make([]string, 0, len(relationInverses))
+	for relation := range relationInverses {
+		out = append(out, relation)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func applyLinkEvent(proj *Projection, event Event) error {

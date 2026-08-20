@@ -45,8 +45,11 @@ func TestTUISmoke(t *testing.T) {
 	if out == "" {
 		t.Fatalf("tui smoke produced no output; stderr=%s", stderr.String())
 	}
-	if !strings.Contains(out, "missis tickets") {
+	if !strings.Contains(out, "missis / tickets") {
 		t.Fatalf("tui smoke output missing list header; stdout=%s stderr=%s", preview(out), stderr.String())
+	}
+	if !strings.Contains(out, "n create ticket") {
+		t.Fatalf("tui smoke output missing ticket create hint; stdout=%s stderr=%s", preview(out), stderr.String())
 	}
 }
 
@@ -93,12 +96,14 @@ func TestTUISmokeScopeViews(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"--smoke", "--view", "list", "--kind", "projects"}, "missis projects"},
-		{[]string{"--smoke", "--view", "list", "--kind", "groups"}, "missis groups"},
+		{[]string{"--smoke", "--view", "list", "--kind", "projects"}, "missis / projects"},
+		{[]string{"--smoke", "--view", "list", "--kind", "groups"}, "missis / groups"},
+		{[]string{"--smoke", "--view", "list", "--kind", "projects"}, "MEMBERS"},
 		{[]string{"--smoke", "--view", "detail", "--kind", "projects"}, "project:safedesign"},
 		{[]string{"--smoke", "--view", "detail"}, "#1"},
-		{[]string{"--smoke", "--view", "create", "--kind", "projects"}, "Create (kind:id Title)"},
-		{[]string{"--smoke", "--view", "link"}, "Link (add|retract"},
+		{[]string{"--smoke", "--view", "create", "--kind", "projects"}, "Create project (project:<id> <Title>"},
+		{[]string{"--smoke", "--view", "link"}, "link (add|retract"},
+		{[]string{"--smoke", "--view", "context"}, "Select ticket-list scope"},
 	}
 	for _, frame := range frames {
 		cmd := exec.CommandContext(ctx, bin, frame.args...)

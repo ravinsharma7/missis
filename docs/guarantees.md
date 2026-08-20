@@ -62,6 +62,13 @@ cannot be retracted because they are never stored.
 
 - Stateless: the SDK carries no hidden context; context is a client-side
   preference (`MISSIS_PROJECT` / `MISSIS_GROUP`), never a model concept.
+- Multi-scope filters: `ListFilter` and `SearchOptions` accept typed project
+  and group collections; values union within each kind and intersect across
+  project and group kinds. Empty scope means all tickets; `Unscoped` selects
+  tickets in neither project nor group views and cannot be combined with
+  scope values. `CountTicketsFiltered` uses the same semantics. Legacy
+  comma-separated string fields remain compatible and are normalized with
+  typed values.
 - Ref-keyed: every read and mutation is addressed by explicit refs
   (ticket, part, project, group, event); resolution is deterministic.
 - The SDK facade (`pkg/missis`) is the only public surface; `internal/*` is
