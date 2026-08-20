@@ -33,7 +33,7 @@ A single SQLite database file, holding:
   created before migration 0004.
 - **Upgrades are in place:** an older store is migrated and backfilled on first
   open by a newer binary. Always back up first
-  (`tools/store-backup`, then `tools/store-remote upload`).
+  (`missis-tools backup`, then `missis-tools remote upload`).
 - **There is no downgrade path.** Once a store has been opened by a newer
   version, an older binary may not be able to read it. Forward-compatible with
   later versions; not backward-compatible with earlier binaries after
@@ -67,8 +67,8 @@ A single SQLite database file, holding:
 
 ## Backup and restore
 
-- `tools/store-backup` writes a consistent copy.
-- `tools/store-remote upload/download/verify` uses content-addressed keys
+- `missis-tools backup` writes a consistent copy.
+- `missis-tools remote upload/download` uses content-addressed keys
   (`<store_id>/<head_hash>.db`), and download verifies store identity, head
   hash, schema version, and event count against the local manifest.
 - `tools/verify-restore.sh` verifies a local backup the same way.

@@ -23,8 +23,8 @@ https://raw.githubusercontent.com/ravinsharma7/missis/<ref>/docs/agent-setup.md
 ```
 
 Use an immutable tag or commit for `<ref>` when reproducibility matters. The
-`main` branch is convenient for discovery but can change over time. The Missis
-version installed below should use the same tag or commit when that ref is
+`main` branch is convenient for discovery but can change over time. Both Missis
+binaries installed below should use the same tag or commit when that ref is
 published as a Go module version.
 
 ## Prerequisites
@@ -65,19 +65,23 @@ The required setup must:
 
 ## Required setup: POSIX shell
 
-The following example uses the published `v0.1.0` release. If this guide was
-opened at another immutable tag or commit, replace `v0.1.0` with the matching
+The following example targets the `v0.2.0` release. If this guide was
+opened at another immutable tag or commit, replace `v0.2.0` with the matching
 published ref before running the install command.
 
 Run the install commands outside the target project if you prefer, then
 return to the target project for initialization:
 
 ```bash
-go install github.com/ravinsharma7/missis/cmd/missis@v0.1.0
+export MISSIS_REF=v0.2.0
+go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
+go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
 export PATH="$(go env GOPATH)/bin:$PATH"
 
 command -v missis
+command -v missis-tools
 missis --version
+missis-tools --help
 ```
 
 Confirm the current directory is the intended target, then initialize it:
@@ -123,12 +127,15 @@ store is authoritative for tickets; use `missis show` to inspect it.
 For Windows PowerShell, use the corresponding commands:
 
 ```powershell
-$env:MISSIS_REF = "v0.1.0"
+$env:MISSIS_REF = "v0.2.0"
 go install "github.com/ravinsharma7/missis/cmd/missis@$env:MISSIS_REF"
+go install "github.com/ravinsharma7/missis/tools/missis-tools@$env:MISSIS_REF"
 $env:Path = "$(go env GOPATH)\bin;$env:Path"
 
 Get-Command missis
+Get-Command missis-tools
 missis --version
+missis-tools --help
 Get-Location
 ```
 
@@ -160,11 +167,28 @@ Missis checkout, not from the target project:
 
 ```bash
 go install ./cmd/missis
+go install ./tools/missis-tools
 ```
 
 Then put the resulting Go bin directory on `PATH`, return to the target
 project, and follow the required initialization and verification steps above.
 This alternative still requires a compatible Go toolchain.
+
+`missis --self-update` updates only the domain CLI. When upgrading a project,
+install `missis` and `missis-tools` again with the same tag or commit so the
+two binaries remain aligned.
+
+## Optional mise setup
+
+A separate project that already uses mise can install both Go CLIs from its
+own `mise.toml`:
+
+```toml
+[tools]
+go = "1.26"
+"go:github.com/ravinsharma7/missis/cmd/missis" = "v0.2.0"
+"go:github.com/ravinsharma7/missis/tools/missis-tools" = "v0.2.0"
+```
 
 ## Optional agent integrations
 

@@ -1,7 +1,8 @@
 # Ticket TUI Cheatsheet
 
-The TUI (`go run ./tools/ticket-tui`) is keyboard-driven. Press `?` from a
-regular view to open the in-app cheatsheet; inside text prompts it is typed, and
+The TUI (`missis-tools tui`) is keyboard-driven. From a Missis checkout, use
+`go run ./tools/missis-tools tui`. Press `?` from a regular view to open the
+in-app cheatsheet; inside text prompts it is typed, and
 the ticket-filter picker and help view leave it inert. The in-app cheatsheet is
 generated from the same key map as the bottom help bar, so it cannot drift from
 the actual bindings. This document is the human-readable equivalent.

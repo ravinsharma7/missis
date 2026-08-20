@@ -9,4 +9,4 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
-go run ./tools/store-remote download "$1"
+go run ./tools/missis-tools remote download "$1"

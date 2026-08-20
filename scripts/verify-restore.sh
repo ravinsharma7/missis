@@ -14,7 +14,7 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 cp "$backup" "$tmpdir/restore.db"
 
-restored="$(MISSIS_STORE="$tmpdir/restore.db" go run ./tools/store-manifest)"
+restored="$(MISSIS_STORE="$tmpdir/restore.db" go run ./tools/missis-tools manifest)"
 restored_id="$(printf '%s' "$restored" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"
 restored_head="$(printf '%s' "$restored" | sed -n 's/.*"head_hash": "\([^"]*\)".*/\1/p')"
 

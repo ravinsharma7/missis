@@ -48,7 +48,7 @@ Run these to verify the current setup:
 
 ```bash
 missis show --health
-go run ./tools/store-gaps .missis-store/missis.db
+missis-tools gaps .missis-store/missis.db
 ```
 
 ## Recent decisions

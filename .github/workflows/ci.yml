@@ -32,12 +32,14 @@ jobs:
           shellcheck scripts/*.sh testsuite/scripts/*.sh testsuite/benchmarks/*.sh
       - name: test
         run: go test -count=1 ./...
+      - name: consolidated tools build
+        run: go build ./tools/missis-tools
       - name: requirements coverage
         run: go run ./tools/coverage --registry specs/requirements-registry.v3.json
       - name: backup script harness
         run: bash testsuite/scripts/test-rclone-backup.sh
       - name: TUI smoke
-        run: go test -count=1 -run '^TestTUISmoke$' -v ./tools/ticket-tui
+        run: go test -count=1 -run '^TestRunTUISmoke$' -v ./tools/missis-tools
       - name: store diagnostic summary
         shell: bash
         run: |
@@ -82,8 +84,10 @@ jobs:
         run: go test -count=1 ./...
       - name: requirements coverage
         run: go run ./tools/coverage --registry specs/requirements-registry.v3.json
+      - name: consolidated tools build
+        run: go build ./tools/missis-tools
       - name: TUI smoke
-        run: go test -count=1 -run '^TestTUISmoke$' -v ./tools/ticket-tui
+        run: go test -count=1 -run '^TestRunTUISmoke$' -v ./tools/missis-tools
       - name: store diagnostic summary
         shell: bash
         run: |

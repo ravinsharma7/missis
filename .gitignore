@@ -1,4 +1,5 @@
 /missis
+/bin/
 .missis-store/
 backups/
 .env.local

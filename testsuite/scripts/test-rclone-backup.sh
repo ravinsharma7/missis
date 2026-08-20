@@ -17,13 +17,13 @@ backup_path=""
   cd "$repo_root"
   "$real_go" run ./cmd/missis new --store "$store_path" "rclone backup fixture" >/dev/null
   backup_path="$tmp/backups/fixture.db"
-  MISSIS_STORE="$store_path" "$real_go" run ./tools/store-backup "$backup_path"
+  MISSIS_STORE="$store_path" "$real_go" run ./tools/missis-tools backup "$backup_path"
   printf '%s\n' "$backup_path" > "$tmp/backup-path"
 )
 backup_path="$(<"$tmp/backup-path")"
 manifest_json="$(
   cd "$repo_root"
-  "$real_go" run ./tools/store-manifest "$store_path"
+  "$real_go" run ./tools/missis-tools manifest "$store_path"
 )"
 store_id="$(printf '%s\n' "$manifest_json" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"
 head_hash="$(printf '%s\n' "$manifest_json" | sed -n 's/.*"head_hash": "\([^"]*\)".*/\1/p')"
@@ -35,7 +35,7 @@ fi
 expected_backup="$tmp/backups/${store_id//:/_}-${head_hash}.db"
 mv "$backup_path" "$expected_backup"
 backup_path="$expected_backup"
-"$real_go" -C "$repo_root" build -o "$tmp/bin/store-remote" ./tools/store-remote
+"$real_go" -C "$repo_root" build -o "$tmp/bin/missis-tools" ./tools/missis-tools
 
 cat > "$tmp/bin/rclone" <<'EOF'
 #!/usr/bin/env bash
@@ -79,15 +79,22 @@ chmod +x "$tmp/bin/rclone"
 cat > "$tmp/bin/go" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "\${1:-}" != run ] || [ "\${2:-}" != ./tools/store-remote ]; then
+if [ "\${1:-}" != run ] || [ "\${2:-}" != ./tools/missis-tools ]; then
   echo "unexpected go invocation: \$*" >&2
   exit 1
 fi
 shift 2
-if [ "\${1:-}" = upload ]; then
-  set -- upload "$backup_path"
+if [ "\${1:-}" != remote ]; then
+  echo "unexpected missis-tools invocation: \$*" >&2
+  exit 1
 fi
-exec "$tmp/bin/store-remote" "\$@"
+shift
+if [ "\${1:-}" = upload ]; then
+  set -- remote upload "$backup_path"
+else
+  set -- remote "\$@"
+fi
+exec "$tmp/bin/missis-tools" "\$@"
 EOF
 chmod +x "$tmp/bin/go"
 

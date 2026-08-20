@@ -408,9 +408,13 @@ URL-first setup for a new project:
      https://github.com/ravinsharma7/missis/blob/main/docs/agent-setup.md
      Prefer an immutable tag or commit in this URL for reproducibility.
 
-1. Install (from a checkout, or pin a commit for reproducibility):
-     go install ./cmd/missis
-     # or: go install github.com/ravinsharma7/missis/cmd/missis@<commit-sha>
+1. Install both CLIs at the same ref (from a checkout, or pin a tag/commit):
+     export MISSIS_REF=v0.2.0
+     go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
+     go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
+     # local checkout alternative:
+     # go install ./cmd/missis
+     # go install ./tools/missis-tools
      export PATH="$(go env GOPATH)/bin:$PATH"
 
 2. Initialize in your project:
@@ -428,12 +432,14 @@ URL-first setup for a new project:
      missis set '#1/notes' "revised text"            # overwrites current value
      missis set '#1/notes' --retract --reason "moved elsewhere"
 
-5. Backup, manifest, health, repair:
+5. Backup, manifest, health, repair, and remote sync:
      MISSIS_STORE="$PWD/.missis-store/missis.db" \
-       go run ./tools/store-backup "$PWD/backups/missis.db"
-     go run ./tools/store-manifest
-     go run ./tools/store-gaps .missis-store/missis.db
-     go run ./tools/repair-store .missis-store/missis.db
+       missis-tools backup "$PWD/backups/missis.db"
+     missis-tools manifest
+     missis-tools gaps .missis-store/missis.db
+     missis-tools repair .missis-store/missis.db
+     missis-tools remote upload
+     missis-tools remote download "$PWD/backups/restored.db"
 
 6. Optional: consume via the Go SDK:
      import "github.com/ravinsharma7/missis/pkg/missis"

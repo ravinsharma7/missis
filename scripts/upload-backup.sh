@@ -4,4 +4,4 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-go run ./tools/store-remote upload
+go run ./tools/missis-tools remote upload

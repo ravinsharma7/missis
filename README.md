@@ -36,6 +36,7 @@ From a local checkout:
 
 ```bash
 go install ./cmd/missis
+go install ./tools/missis-tools
 ```
 
 From the published module:
@@ -47,8 +48,9 @@ go install github.com/ravinsharma7/missis/cmd/missis@latest
 For reproducible installs, pin a tag or commit instead of relying on `latest`:
 
 ```bash
-go install github.com/ravinsharma7/missis/cmd/missis@v0.1.0
-go install github.com/ravinsharma7/missis/cmd/missis@<commit-sha>
+export MISSIS_REF=v0.2.0
+go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
+go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
 ```
 
 Go places the binary in `$(go env GOPATH)/bin`. Make sure that directory is on
@@ -63,6 +65,7 @@ Verify which version is installed:
 ```bash
 missis show --version
 missis show --health
+missis-tools --help
 ```
 
 ## Getting started
@@ -97,11 +100,14 @@ missis set '#1/notes' --retract --reason "moved elsewhere"
 
 # Backup, manifest, health, repair
 MISSIS_STORE="$PWD/.missis-store/missis.db" \
-  go run ./tools/store-backup "$PWD/backups/missis.db"
-go run ./tools/store-manifest
-go run ./tools/store-gaps .missis-store/missis.db
-go run ./tools/repair-store .missis-store/missis.db
+  missis-tools backup "$PWD/backups/missis.db"
+missis-tools manifest
+missis-tools gaps .missis-store/missis.db
+missis-tools repair .missis-store/missis.db
 ```
+
+The examples above use the installed `missis-tools` binary. When working from
+the Missis checkout itself, use `go run ./tools/missis-tools ...` instead.
 
 For how tickets, parts, tags, links, projects, and groups relate, see
 spec section 14 ([Projects, groups, and scopes](specs/missues-issue-specification.v2.md#14-projects-groups-and-scopes)).
@@ -143,6 +149,9 @@ Update the installed binary:
 missis --self-update
 ```
 
+`missis --self-update` updates only `missis`. Reinstall `missis` and
+`missis-tools` at the same tag or commit when upgrading both commands.
+
 Initialize a local missis project:
 
 ```bash
@@ -161,6 +170,7 @@ internal/                     model, store, and application packages
 pkg/missis/                   reusable Go SDK facade
 cmd/missis/                   command-line binary
 tools/                        development and maintenance tools
+tools/missis-tools/           consolidated maintenance-tools binary
 ```
 
 Store permissions are private-by-default on POSIX (0700 directory, 0600 file).
@@ -206,13 +216,15 @@ layer.
 ## Maintenance tools
 
 ```bash
-go run ./tools/store-gaps <store.db>
-go run ./tools/repair-store <store.db>
-go run ./tools/store-manifest
+missis-tools gaps <store.db>
+missis-tools repair <store.db>
+missis-tools manifest
+missis-tools remote upload
+missis-tools remote download <destination>
 ```
 
-`repair-store` verifies store consistency and reports sequence gaps. It never
-repairs in place: accepted events are immutable, so recovery from gaps means
+`missis-tools repair` verifies store consistency and reports sequence gaps. It
+never repairs in place: accepted events are immutable, so recovery from gaps means
 restoring a backup or creating a new store.
 
 Backup and remote scripts live in `scripts/`.
@@ -220,17 +232,33 @@ Backup and remote scripts live in `scripts/`.
 Install reusable tools globally:
 
 ```bash
-bash scripts/install-tools.sh
+MISSIS_REF=v0.2.0 bash scripts/install-tools.sh
 ```
+
+Omit `MISSIS_REF` for the convenience default of `latest`. Set
+`MISSIS_INSTALL_LEGACY_TOOLS=1` to install the compatibility wrappers at that
+same ref.
 
 Or install one tool directly:
 
 ```bash
-go install github.com/ravinsharma7/missis/tools/ticket-tui@latest
-go install github.com/ravinsharma7/missis/tools/repair-store@latest
-go install github.com/ravinsharma7/missis/tools/store-gaps@latest
-go install github.com/ravinsharma7/missis/tools/store-manifest@latest
-go install github.com/ravinsharma7/missis/tools/store-backup@latest
+go install github.com/ravinsharma7/missis/tools/missis-tools@v0.2.0
+```
+
+The legacy tools remain individually installable during the migration:
+
+```bash
+for tool in ticket-tui repair-store store-gaps store-manifest store-backup store-remote; do
+  go install "github.com/ravinsharma7/missis/tools/$tool@v0.2.0"
+done
+```
+
+To choose a custom executable name, build from a checkout:
+
+```bash
+go build -o ./bin/missis-gaps ./tools/store-gaps
+go build -o ./bin/missis-repair ./tools/repair-store
+go build -o ./bin/missis-tools ./tools/missis-tools
 ```
 
 # Viewing tickets
@@ -258,8 +286,19 @@ missis show '#16' --format markdown
 For an interactive terminal UI, use:
 
 ```bash
-go run ./tools/ticket-tui
+missis-tools tui
 ```
 
-The TUI is also a development tool, not a public `missis` command. It can list
-tickets, open a ticket, export Markdown, and compare two tickets.
+The TUI is also a maintenance tool, not a public `missis` command. From the
+Missis checkout, use `go run ./tools/missis-tools tui`. It can list tickets,
+open a ticket, export Markdown, and compare two tickets.
+
+Separate projects using mise can install both binaries from their own
+`mise.toml`:
+
+```toml
+[tools]
+go = "1.26"
+"go:github.com/ravinsharma7/missis/cmd/missis" = "v0.2.0"
+"go:github.com/ravinsharma7/missis/tools/missis-tools" = "v0.2.0"
+```

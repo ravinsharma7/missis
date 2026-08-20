@@ -1,0 +1,14 @@
+[tools]
+go = "1.26"
+
+[tasks.build-tools]
+description = "Build the consolidated maintenance-tools binary"
+run = "go build -o ./bin/missis-tools ./tools/missis-tools"
+
+[tasks.install-tools]
+description = "Install the consolidated maintenance-tools binary"
+run = "go install ./tools/missis-tools"
+
+[tasks.test-tools]
+description = "Run the full Go test suite"
+run = "go test ./..."
