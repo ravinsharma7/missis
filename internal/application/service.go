@@ -3,8 +3,10 @@ package application
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/ravinsharma7/missis/internal/model"
@@ -16,11 +18,14 @@ import (
 // owns store access and all New/Show/Set orchestration; the public facade in
 // pkg/missis delegates to it.
 type Service struct {
-	store    *store.Store
-	path     string
-	supplied string
-	source   missis.DiscoverySource
-	clock    missis.Clock
+	store      *store.Store
+	path       string
+	supplied   string
+	source     missis.DiscoverySource
+	clock      missis.Clock
+	diagCloser io.Closer
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // Open resolves the store (flag/env/marker/default) and opens the service.
@@ -52,20 +57,25 @@ func openResolved(resolved missis.ResolvedStore, clock missis.Clock) (*Service, 
 		s   *store.Store
 		err error
 	)
-	if diag := storeDiagnosticsFromEnv(); diag != nil {
+	diag, diagCloser := storeDiagnosticsFromEnv()
+	if diag != nil {
 		s, err = store.OpenWithDiag(resolved.Path, diag)
 	} else {
 		s, err = store.Open(resolved.Path)
 	}
 	if err != nil {
+		if diagCloser != nil {
+			_ = diagCloser.Close()
+		}
 		return nil, err
 	}
 	return &Service{
-		store:    s,
-		path:     resolved.Path,
-		supplied: resolved.Supplied,
-		source:   resolved.Source,
-		clock:    clock,
+		store:      s,
+		path:       resolved.Path,
+		supplied:   resolved.Supplied,
+		source:     resolved.Source,
+		clock:      clock,
+		diagCloser: diagCloser,
 	}, nil
 }
 
@@ -74,22 +84,22 @@ func openResolved(resolved missis.ResolvedStore, clock missis.Clock) (*Service, 
 // "stderr" to write to stderr. Unset, "0", or "false" disables. CI sets it
 // unconditionally so every run captures structured evidence; the store itself
 // stays free of environment reads.
-func storeDiagnosticsFromEnv() store.Diagnostics {
+func storeDiagnosticsFromEnv() (store.Diagnostics, io.Closer) {
 	value := os.Getenv("MISSIS_STORE_DIAG")
 	switch value {
 	case "", "0", "false":
-		return nil
+		return nil, nil
 	case "1", "true", "stderr":
-		return store.NewJSONLinesDiagnostics(os.Stderr)
+		return store.NewJSONLinesDiagnostics(os.Stderr), nil
 	}
 	if err := os.MkdirAll(filepath.Dir(value), 0o700); err != nil {
-		return nil
+		return nil, nil
 	}
 	f, err := os.OpenFile(value, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return store.NewJSONLinesDiagnostics(f)
+	return store.NewJSONLinesDiagnostics(f), f
 }
 
 // realClock is the production clock.
@@ -121,7 +131,17 @@ func (s *Service) normalize(req missis.RequestContext) (missis.RequestContext, t
 }
 
 func (s *Service) Close() error {
-	return s.store.Close()
+	s.closeOnce.Do(func() {
+		storeErr := s.store.Close()
+		if s.diagCloser != nil {
+			diagErr := s.diagCloser.Close()
+			if storeErr == nil {
+				storeErr = diagErr
+			}
+		}
+		s.closeErr = storeErr
+	})
+	return s.closeErr
 }
 
 func (s *Service) Store() *store.Store {
@@ -144,80 +164,99 @@ func (s *Service) StoreID() (string, error) {
 	return s.store.StoreID()
 }
 
+func (s *Service) StoreIDContext(ctx context.Context) (string, error) {
+	return s.store.StoreIDContext(ctx)
+}
+
 func (s *Service) HeadHash() (string, error) {
 	return s.store.HeadHash()
+}
+
+func (s *Service) HeadHashContext(ctx context.Context) (string, error) {
+	return s.store.HeadHashContext(ctx)
 }
 
 func (s *Service) EventCount() (int64, error) {
 	return s.store.EventCount()
 }
 
+func (s *Service) EventCountContext(ctx context.Context) (int64, error) {
+	return s.store.EventCountContext(ctx)
+}
+
 func (s *Service) SchemaVersion() (string, error) {
 	return s.store.SchemaVersion()
 }
 
+func (s *Service) SchemaVersionContext(ctx context.Context) (string, error) {
+	return s.store.SchemaVersionContext(ctx)
+}
+
 func (s *Service) CheckConsistency(ctx context.Context) error {
-	return s.store.CheckConsistency()
+	return s.store.CheckConsistencyContext(ctx)
 }
 
 func (s *Service) Backup(ctx context.Context, dst string) error {
-	return s.store.Backup(dst)
+	return s.store.BackupContext(ctx, dst)
 }
 
 func (s *Service) SequenceGaps(ctx context.Context) ([]store.SequenceGap, error) {
-	return s.store.SequenceGaps()
+	return s.store.SequenceGapsContext(ctx)
 }
 
 func (s *Service) RepairSequenceGaps(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return s.store.RepairSequenceGaps()
 }
 
 func (s *Service) RebuildProjection(ctx context.Context) error {
-	return s.store.RebuildProjection()
+	return s.store.RebuildProjectionContext(ctx)
 }
 
 func (s *Service) LoadEvents(ctx context.Context) ([]model.Event, error) {
-	return s.store.LoadEvents()
+	return s.store.LoadEventsContext(ctx)
 }
 
 func (s *Service) LoadLinkEvents(ctx context.Context) ([]model.Event, error) {
-	return s.store.LoadLinkEvents()
+	return s.store.LoadLinkEventsContext(ctx)
 }
 
 func (s *Service) LoadTicketEvents(ctx context.Context, ticketID model.TicketID) ([]model.Event, error) {
-	return s.store.LoadTicketEvents(ticketID)
+	return s.store.LoadTicketEventsContext(ctx, ticketID)
 }
 
 func (s *Service) LoadStreamEvents(ctx context.Context, stream model.Ref) ([]model.Event, error) {
-	return s.store.LoadStreamEvents(stream)
+	return s.store.LoadStreamEventsContext(ctx, stream)
 }
 
 func (s *Service) CurrentProjection(ctx context.Context, ticketID model.TicketID, effectiveAt time.Time) (*model.Projection, error) {
-	return s.store.CurrentProjection(ticketID, effectiveAt)
+	return s.store.CurrentProjectionContext(ctx, ticketID, effectiveAt)
 }
 
 func (s *Service) CurrentStreamProjection(ctx context.Context, stream model.Ref, effectiveAt time.Time) (*model.Projection, error) {
-	return s.store.CurrentStreamProjection(stream, effectiveAt)
+	return s.store.CurrentStreamProjectionContext(ctx, stream, effectiveAt)
 }
 
 func (s *Service) BitemporalProjection(ctx context.Context, ticketID model.TicketID, effectiveAt, knownAt time.Time) (*model.Projection, error) {
-	return s.store.BitemporalProjection(ticketID, effectiveAt, knownAt)
+	return s.store.BitemporalProjectionContext(ctx, ticketID, effectiveAt, knownAt)
 }
 
 func (s *Service) BitemporalStreamProjection(ctx context.Context, stream model.Ref, effectiveAt, knownAt time.Time) (*model.Projection, error) {
-	return s.store.BitemporalStreamProjection(stream, effectiveAt, knownAt)
+	return s.store.BitemporalStreamProjectionContext(ctx, stream, effectiveAt, knownAt)
 }
 
 func (s *Service) GetEventByAlias(ctx context.Context, alias string) (model.Event, error) {
-	return s.store.GetEventByAlias(alias)
+	return s.store.GetEventByAliasContext(ctx, alias)
 }
 
 func (s *Service) ListTickets(ctx context.Context, effectiveAt time.Time) ([]store.TicketSummary, error) {
-	return s.store.ListTickets(effectiveAt)
+	return s.store.ListTicketsContext(ctx, effectiveAt)
 }
 
 func (s *Service) AppendBatch(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []store.Precondition, result any) (store.AppendOutcome, error) {
-	outcome, err := s.store.AppendBatch(events, idempotencyKey, preconditions, result)
+	outcome, err := s.store.AppendBatchContext(ctx, events, idempotencyKey, preconditions, result)
 	if errors.Is(err, store.ErrConflict) {
 		return outcome, conflict(err)
 	}
@@ -225,7 +264,7 @@ func (s *Service) AppendBatch(ctx context.Context, events []model.Event, idempot
 }
 
 func (s *Service) AppendTicketBatch(ctx context.Context, events []model.Event, idempotencyKey string, result any) (store.AppendOutcome, uint64, error) {
-	outcome, alias, err := s.store.AppendTicketBatch(events, idempotencyKey, result)
+	outcome, alias, err := s.store.AppendTicketBatchContext(ctx, events, idempotencyKey, result)
 	if errors.Is(err, store.ErrConflict) {
 		return outcome, alias, conflict(err)
 	}
@@ -233,13 +272,21 @@ func (s *Service) AppendTicketBatch(ctx context.Context, events []model.Event, i
 }
 
 func (s *Service) LookupTicketAlias(ctx context.Context, ticketID model.TicketID) (uint64, error) {
-	return s.store.LookupTicketAlias(ticketID)
+	return s.store.LookupTicketAliasContext(ctx, ticketID)
 }
 
 func (s *Service) LookupIdempotency(key string, result any) (bool, error) {
 	return s.store.LookupIdempotency(key, result)
 }
 
+func (s *Service) LookupIdempotencyContext(ctx context.Context, key string, result any) (bool, error) {
+	return s.store.LookupIdempotencyContext(ctx, key, result)
+}
+
 func (s *Service) UpdateIdempotencyResult(key string, result any) error {
 	return s.store.UpdateIdempotencyResult(key, result)
+}
+
+func (s *Service) UpdateIdempotencyResultContext(ctx context.Context, key string, result any) error {
+	return s.store.UpdateIdempotencyResultContext(ctx, key, result)
 }

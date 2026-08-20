@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -77,6 +78,52 @@ func TestDeterministicBitemporalAndDefaults(t *testing.T) {
 	}
 	if future.Status != "doing" {
 		t.Fatalf("future status = %q", future.Status)
+	}
+}
+
+func TestDiagnosticsFileClosesWithService(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "diag.jsonl")
+	t.Setenv("MISSIS_STORE_DIAG", path)
+	svc, err := OpenPathWithClock(filepath.Join(t.TempDir(), "missis.db"), fixedClock{fixedNow()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("diagnostics file should be released on close: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCanceledContextStopsStoreReadsAndWrites(t *testing.T) {
+	svc := openFixed(t, fixedClock{fixedNow()})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := svc.LoadEvents(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled load error = %v, want context.Canceled", err)
+	}
+	if _, err := svc.Manifest(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled manifest error = %v, want context.Canceled", err)
+	}
+	before, err := svc.EventCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendBatch(ctx, []model.Event{{Operation: model.OpCreateEntity}}, "", nil, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled append error = %v, want context.Canceled", err)
+	}
+	after, err := svc.EventCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("canceled append changed event count: before=%d after=%d", before, after)
 	}
 }
 

@@ -11,19 +11,19 @@ import (
 
 // Manifest returns the current store fingerprint.
 func (s *Service) Manifest(ctx context.Context) (missis.ManifestInfo, error) {
-	storeID, err := s.StoreID()
+	storeID, err := s.StoreIDContext(ctx)
 	if err != nil {
 		return missis.ManifestInfo{}, err
 	}
-	headHash, err := s.HeadHash()
+	headHash, err := s.HeadHashContext(ctx)
 	if err != nil {
 		return missis.ManifestInfo{}, err
 	}
-	eventCount, err := s.EventCount()
+	eventCount, err := s.EventCountContext(ctx)
 	if err != nil {
 		return missis.ManifestInfo{}, err
 	}
-	schemaVersion, err := s.SchemaVersion()
+	schemaVersion, err := s.SchemaVersionContext(ctx)
 	if err != nil {
 		return missis.ManifestInfo{}, err
 	}

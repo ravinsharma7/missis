@@ -162,38 +162,73 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) StoreID() (string, error) {
+	return s.StoreIDContext(context.Background())
+}
+
+func (s *Store) StoreIDContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	var storeID string
-	err := s.reader.QueryRow(`SELECT store_id FROM store_meta WHERE singleton = 1`).Scan(&storeID)
+	err := s.reader.QueryRowContext(ctx, `SELECT store_id FROM store_meta WHERE singleton = 1`).Scan(&storeID)
 	return storeID, err
 }
 
 func (s *Store) HeadHash() (string, error) {
+	return s.HeadHashContext(context.Background())
+}
+
+func (s *Store) HeadHashContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	var headHash string
-	err := s.reader.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&headHash)
+	err := s.reader.QueryRowContext(ctx, `SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&headHash)
 	return headHash, err
 }
 
 func (s *Store) EventCount() (int64, error) {
+	return s.EventCountContext(context.Background())
+}
+
+func (s *Store) EventCountContext(ctx context.Context) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	var count int64
-	err := s.reader.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count)
+	err := s.reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&count)
 	return count, err
 }
 
 func (s *Store) SchemaVersion() (string, error) {
+	return s.SchemaVersionContext(context.Background())
+}
+
+func (s *Store) SchemaVersionContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	var version string
-	err := s.reader.QueryRow(`SELECT COALESCE(MAX(version), '') FROM schema_migrations`).Scan(&version)
+	err := s.reader.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), '') FROM schema_migrations`).Scan(&version)
 	version = strings.TrimSuffix(version, ".sql")
 	return version, err
 }
 
 func (s *Store) Backup(dst string) error {
+	return s.BackupContext(context.Background(), dst)
+}
+
+func (s *Store) BackupContext(ctx context.Context, dst string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if dir := filepath.Dir(dst); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	quoted := strings.ReplaceAll(dst, "'", "''")
-	_, err := s.writer.Exec(`VACUUM INTO '` + quoted + `'`)
+	quoted := strings.ReplaceAll(filepath.Clean(dst), "'", "''")
+	_, err := s.writer.ExecContext(ctx, `VACUUM INTO '`+quoted+`'`)
 	return err
 }
 
@@ -207,14 +242,28 @@ func (s *Store) AllocateTicketAlias(ticketID model.TicketID) (uint64, error) {
 }
 
 func (s *Store) LookupTicketAlias(ticketID model.TicketID) (uint64, error) {
+	return s.LookupTicketAliasContext(context.Background(), ticketID)
+}
+
+func (s *Store) LookupTicketAliasContext(ctx context.Context, ticketID model.TicketID) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	var number uint64
-	err := s.reader.QueryRow(`SELECT number FROM ticket_aliases WHERE ticket_id = ?`, string(ticketID)).Scan(&number)
+	err := s.reader.QueryRowContext(ctx, `SELECT number FROM ticket_aliases WHERE ticket_id = ?`, string(ticketID)).Scan(&number)
 	return number, err
 }
 
 func (s *Store) LookupIdempotency(key string, result any) (bool, error) {
+	return s.LookupIdempotencyContext(context.Background(), key, result)
+}
+
+func (s *Store) LookupIdempotencyContext(ctx context.Context, key string, result any) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	var resultJSON string
-	err := s.reader.QueryRow(`SELECT result_json FROM idempotency WHERE key = ?`, key).Scan(&resultJSON)
+	err := s.reader.QueryRowContext(ctx, `SELECT result_json FROM idempotency WHERE key = ?`, key).Scan(&resultJSON)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -230,6 +279,13 @@ func (s *Store) LookupIdempotency(key string, result any) (bool, error) {
 }
 
 func (s *Store) UpdateIdempotencyResult(key string, result any) error {
+	return s.UpdateIdempotencyResultContext(context.Background(), key, result)
+}
+
+func (s *Store) UpdateIdempotencyResultContext(ctx context.Context, key string, result any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if key == "" {
 		return nil
 	}
@@ -237,7 +293,7 @@ func (s *Store) UpdateIdempotencyResult(key string, result any) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.writer.Exec(`UPDATE idempotency SET result_json = ? WHERE key = ?`, string(raw), key)
+	_, err = s.writer.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE key = ?`, string(raw), key)
 	return err
 }
 
@@ -356,30 +412,6 @@ func verifyHashesTx(tx *sql.Tx) error {
 	return verifyStoredHashChain(tx, events)
 }
 
-func rebuildHashesTx(tx *sql.Tx, events []model.Event) error {
-	if _, err := tx.Exec(`DELETE FROM event_hashes`); err != nil {
-		return err
-	}
-	previous := ""
-	for _, event := range events {
-		hash := computeEventHash(event, previous)
-		if _, err := tx.Exec(
-			`INSERT INTO event_hashes (event_id, previous_hash, hash) VALUES (?, ?, ?)`,
-			event.ID, previous, hash,
-		); err != nil {
-			return err
-		}
-		previous = hash
-	}
-	if _, err := tx.Exec(
-		`UPDATE store_meta SET head_hash = ?, updated_at = ? WHERE singleton = 1`,
-		previous, time.Now().UTC().Format(time.RFC3339Nano),
-	); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func isBusyError(err error) bool {
 	if err == nil {
 		return false
@@ -398,8 +430,8 @@ func isRetryableAppendError(err error) bool {
 	return strings.Contains(text, "unique constraint failed: events.stream_kind, events.stream_entity, events.sequence")
 }
 
-func insertTicketAliasTx(tx *sql.Tx, ticketID model.TicketID) (uint64, error) {
-	result, err := tx.Exec(`INSERT INTO ticket_aliases (ticket_id) VALUES (?)`, string(ticketID))
+func insertTicketAliasTxContext(ctx context.Context, tx *sql.Tx, ticketID model.TicketID) (uint64, error) {
+	result, err := tx.ExecContext(ctx, `INSERT INTO ticket_aliases (ticket_id) VALUES (?)`, string(ticketID))
 	if err != nil {
 		return 0, err
 	}
@@ -407,22 +439,29 @@ func insertTicketAliasTx(tx *sql.Tx, ticketID model.TicketID) (uint64, error) {
 	return uint64(id), err
 }
 
-func aliasForTicketTx(tx *sql.Tx, ticketID model.TicketID) (uint64, error) {
+func aliasForTicketTxContext(ctx context.Context, tx *sql.Tx, ticketID model.TicketID) (uint64, error) {
 	var number uint64
-	err := tx.QueryRow(`SELECT number FROM ticket_aliases WHERE ticket_id = ?`, string(ticketID)).Scan(&number)
+	err := tx.QueryRowContext(ctx, `SELECT number FROM ticket_aliases WHERE ticket_id = ?`, string(ticketID)).Scan(&number)
 	return number, err
 }
 
 func (s *Store) CheckConsistency() error {
+	return s.CheckConsistencyContext(context.Background())
+}
+
+func (s *Store) CheckConsistencyContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Run the whole check against one read snapshot so a concurrent append
 	// committing between statements cannot produce a spurious mismatch.
-	tx, err := s.reader.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	tx, err := s.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	events, err := loadEventsTx(tx)
+	events, err := loadEventsContext(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -577,7 +616,11 @@ type SequenceGap struct {
 }
 
 func (s *Store) SequenceGaps() ([]SequenceGap, error) {
-	events, err := s.LoadEvents()
+	return s.SequenceGapsContext(context.Background())
+}
+
+func (s *Store) SequenceGapsContext(ctx context.Context) ([]SequenceGap, error) {
+	events, err := s.LoadEventsContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -632,15 +675,30 @@ func (s *Store) RepairSequenceGaps() error {
 }
 
 func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, preconditions []Precondition, result any) (AppendOutcome, error) {
-	outcome, _, err := s.appendBatchWithRetry(events, idempotencyKey, preconditions, result, false)
+	outcome, _, err := s.appendBatchWithRetry(context.Background(), events, idempotencyKey, preconditions, result, false)
+	return outcome, err
+}
+
+func (s *Store) AppendBatchContext(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any) (AppendOutcome, error) {
+	if err := ctx.Err(); err != nil {
+		return AppendOutcome{}, err
+	}
+	outcome, _, err := s.appendBatchWithRetry(ctx, events, idempotencyKey, preconditions, result, false)
 	return outcome, err
 }
 
 func (s *Store) AppendTicketBatch(events []model.Event, idempotencyKey string, result any) (AppendOutcome, uint64, error) {
-	return s.appendBatchWithRetry(events, idempotencyKey, nil, result, true)
+	return s.appendBatchWithRetry(context.Background(), events, idempotencyKey, nil, result, true)
 }
 
-func (s *Store) appendBatchWithRetry(events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool) (AppendOutcome, uint64, error) {
+func (s *Store) AppendTicketBatchContext(ctx context.Context, events []model.Event, idempotencyKey string, result any) (AppendOutcome, uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return AppendOutcome{}, 0, err
+	}
+	return s.appendBatchWithRetry(ctx, events, idempotencyKey, nil, result, true)
+}
+
+func (s *Store) appendBatchWithRetry(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool) (AppendOutcome, uint64, error) {
 	var (
 		outcome AppendOutcome
 		alias   uint64
@@ -656,7 +714,7 @@ func (s *Store) appendBatchWithRetry(events []model.Event, idempotencyKey string
 		for i := range attemptEvents {
 			attemptEvents[i].Sequence = originalSequences[i]
 		}
-		outcome, alias, err = s.appendBatchOnce(attemptEvents, idempotencyKey, preconditions, result, allocateAlias)
+		outcome, alias, err = s.appendBatchOnce(ctx, attemptEvents, idempotencyKey, preconditions, result, allocateAlias)
 		if err == nil || !isRetryableAppendError(err) {
 			if err != nil {
 				s.emit("append-attempt", map[string]any{
@@ -676,17 +734,23 @@ func (s *Store) appendBatchWithRetry(events []model.Event, idempotencyKey string
 			"retryable": true,
 			"sleep_ms":  sleepMS,
 		})
-		time.Sleep(time.Duration(sleepMS) * time.Millisecond)
+		timer := time.NewTimer(time.Duration(sleepMS) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return outcome, alias, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return outcome, alias, err
 }
 
-func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool) (AppendOutcome, uint64, error) {
+func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool) (AppendOutcome, uint64, error) {
 	if len(events) == 0 {
 		return AppendOutcome{}, 0, fmt.Errorf("event batch is empty")
 	}
 
-	tx, err := s.writer.Begin()
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return AppendOutcome{}, 0, err
 	}
@@ -695,20 +759,20 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 	if idempotencyKey != "" {
 		var resultJSON string
 		var eventIDsJSON string
-		err := tx.QueryRow(`SELECT result_json, event_ids_json FROM idempotency WHERE key = ?`, idempotencyKey).Scan(&resultJSON, &eventIDsJSON)
+		err := tx.QueryRowContext(ctx, `SELECT result_json, event_ids_json FROM idempotency WHERE key = ?`, idempotencyKey).Scan(&resultJSON, &eventIDsJSON)
 		if err == nil {
 			if result != nil && resultJSON != "" {
 				if err := json.Unmarshal([]byte(resultJSON), result); err != nil {
 					return AppendOutcome{}, 0, err
 				}
 			}
-			replayedEvents, err := eventsByIDsJSON(tx, eventIDsJSON)
+			replayedEvents, err := eventsByIDsJSONContext(ctx, tx, eventIDsJSON)
 			if err != nil {
 				return AppendOutcome{}, 0, err
 			}
 			var replayAlias uint64
 			if allocateAlias {
-				replayAlias, err = aliasForTicketTx(tx, model.TicketID(events[0].Stream.Entity))
+				replayAlias, err = aliasForTicketTxContext(ctx, tx, model.TicketID(events[0].Stream.Entity))
 				if err != nil {
 					return AppendOutcome{}, 0, err
 				}
@@ -725,7 +789,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 	// Windows). If every event ID in this batch already exists and matches,
 	// treat the append as a successful replay instead of surfacing a
 	// UNIQUE events.id failure (ticket #63).
-	if replayed, outcome, replayAlias, err := s.replayExistingBatchTx(tx, events, allocateAlias); err != nil {
+	if replayed, outcome, replayAlias, err := s.replayExistingBatchTxContext(ctx, tx, events, allocateAlias); err != nil {
 		return AppendOutcome{}, 0, err
 	} else if replayed {
 		return outcome, replayAlias, nil
@@ -749,7 +813,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		if len(order) != 1 || order[0].kind != string(model.KindTicket) {
 			return AppendOutcome{}, 0, fmt.Errorf("ticket alias requires a single ticket stream")
 		}
-		alias, err = insertTicketAliasTx(tx, model.TicketID(order[0].entity))
+		alias, err = insertTicketAliasTxContext(ctx, tx, model.TicketID(order[0].entity))
 		if err != nil {
 			return AppendOutcome{}, 0, err
 		}
@@ -757,7 +821,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 
 	existingByStream := make(map[streamKey][]model.Event, len(order))
 	for _, key := range order {
-		existing, err := loadStreamEventsTx(tx, key.kind, key.entity)
+		existing, err := loadStreamEventsTxContext(ctx, tx, key.kind, key.entity)
 		if err != nil {
 			return AppendOutcome{}, 0, err
 		}
@@ -770,7 +834,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 	var allEvents []model.Event
 	for _, precondition := range preconditions {
 		if precondition.Link != nil {
-			allEvents, err = loadAllEventsTx(tx)
+			allEvents, err = loadAllEventsTxContext(ctx, tx)
 			if err != nil {
 				return AppendOutcome{}, 0, err
 			}
@@ -788,7 +852,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 	for _, key := range order {
 		group := streams[key]
 		existing := existingByStream[key]
-		nextSequence, err := allocateSequenceTx(tx, key.kind, key.entity, uint64(len(group)))
+		nextSequence, err := allocateSequenceTxContext(ctx, tx, key.kind, key.entity, uint64(len(group)))
 		if err != nil {
 			return AppendOutcome{}, 0, err
 		}
@@ -819,14 +883,14 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 			if err != nil {
 				return AppendOutcome{}, 0, err
 			}
-			if _, err := tx.Exec(
+			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO events (id, stream_kind, stream_entity, sequence, event_json) VALUES (?, ?, ?, ?, ?)`,
 				event.ID, key.kind, key.entity, event.Sequence, eventJSON,
 			); err != nil {
 				return AppendOutcome{}, 0, err
 			}
 			var aliasSeq uint64
-			if err := tx.QueryRow(`SELECT alias_seq FROM events WHERE id = ?`, event.ID).Scan(&aliasSeq); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT alias_seq FROM events WHERE id = ?`, event.ID).Scan(&aliasSeq); err != nil {
 				return AppendOutcome{}, 0, err
 			}
 			event.AliasSeq = aliasSeq
@@ -837,12 +901,12 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 	}
 
 	var previousHash string
-	if err := tx.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&previousHash); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&previousHash); err != nil {
 		return AppendOutcome{}, 0, err
 	}
 	for _, event := range appended {
 		hash := computeEventHash(event, previousHash)
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO event_hashes (event_id, previous_hash, hash) VALUES (?, ?, ?)`,
 			event.ID, previousHash, hash,
 		); err != nil {
@@ -850,7 +914,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		}
 		previousHash = hash
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE store_meta SET head_hash = ?, updated_at = ? WHERE singleton = 1`,
 		previousHash, now.Format(time.RFC3339Nano),
 	); err != nil {
@@ -860,7 +924,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 		if key.kind != string(model.KindTicket) {
 			continue
 		}
-		if err := upsertTicketDerivedTx(tx, model.TicketID(key.entity), runningByStream[key], alias); err != nil {
+		if err := upsertTicketDerivedTxContext(ctx, tx, model.TicketID(key.entity), runningByStream[key], alias); err != nil {
 			return AppendOutcome{}, 0, err
 		}
 	}
@@ -879,7 +943,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 			}
 			resultJSON = string(raw)
 		}
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO idempotency (key, event_ids_json, result_json, created_at) VALUES (?, ?, ?, ?)`,
 			idempotencyKey, string(idsJSON), resultJSON, now.Format(time.RFC3339Nano),
 		); err != nil {
@@ -901,7 +965,7 @@ func (s *Store) appendBatchOnce(events []model.Event, idempotencyKey string, pre
 // replayExistingBatchTx reports whether every event in the batch already
 // exists with identical content, and if so returns the stored events as a
 // replay outcome. A mismatch (same ID, different content) is an error.
-func (s *Store) replayExistingBatchTx(tx *sql.Tx, events []model.Event, allocateAlias bool) (bool, AppendOutcome, uint64, error) {
+func (s *Store) replayExistingBatchTxContext(ctx context.Context, tx *sql.Tx, events []model.Event, allocateAlias bool) (bool, AppendOutcome, uint64, error) {
 	existing := make([]model.Event, 0, len(events))
 	streamEntity := ""
 	if len(events) > 0 {
@@ -910,7 +974,7 @@ func (s *Store) replayExistingBatchTx(tx *sql.Tx, events []model.Event, allocate
 	for _, event := range events {
 		var raw string
 		var aliasSeq uint64
-		err := tx.QueryRow(`SELECT event_json, alias_seq FROM events WHERE id = ?`, string(event.ID)).Scan(&raw, &aliasSeq)
+		err := tx.QueryRowContext(ctx, `SELECT event_json, alias_seq FROM events WHERE id = ?`, string(event.ID)).Scan(&raw, &aliasSeq)
 		if err == sql.ErrNoRows {
 			s.emit("append-replay", map[string]any{
 				"decision":   "absent",
@@ -945,7 +1009,7 @@ func (s *Store) replayExistingBatchTx(tx *sql.Tx, events []model.Event, allocate
 	var alias uint64
 	if allocateAlias {
 		var err error
-		alias, err = aliasForTicketTx(tx, model.TicketID(events[0].Stream.Entity))
+		alias, err = aliasForTicketTxContext(ctx, tx, model.TicketID(events[0].Stream.Entity))
 		if err != nil {
 			return false, AppendOutcome{}, 0, err
 		}
@@ -1026,11 +1090,25 @@ func valuesEqual(a, b model.Value) bool {
 }
 
 func (s *Store) LoadEvents() ([]model.Event, error) {
-	return loadEventsTx(s.reader)
+	return s.LoadEventsContext(context.Background())
+}
+
+func (s *Store) LoadEventsContext(ctx context.Context) ([]model.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return loadEventsContext(ctx, s.reader)
 }
 
 func (s *Store) LoadLinkEvents() ([]model.Event, error) {
-	rows, err := s.reader.Query(
+	return s.LoadLinkEventsContext(context.Background())
+}
+
+func (s *Store) LoadLinkEventsContext(ctx context.Context) ([]model.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT event_json, alias_seq FROM events
 		 WHERE json_extract(event_json, '$.Operation') IN ('assert-link', 'retract-link', 'join-scope', 'leave-scope')
 		 ORDER BY alias_seq ASC`,
@@ -1057,11 +1135,22 @@ func (s *Store) LoadLinkEvents() ([]model.Event, error) {
 }
 
 func (s *Store) LoadTicketEvents(ticketID model.TicketID) ([]model.Event, error) {
-	return s.LoadStreamEvents(model.Ref{Kind: model.KindTicket, Entity: string(ticketID)})
+	return s.LoadTicketEventsContext(context.Background(), ticketID)
+}
+
+func (s *Store) LoadTicketEventsContext(ctx context.Context, ticketID model.TicketID) ([]model.Event, error) {
+	return s.LoadStreamEventsContext(ctx, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)})
 }
 
 func (s *Store) LoadStreamEvents(stream model.Ref) ([]model.Event, error) {
-	rows, err := s.reader.Query(
+	return s.LoadStreamEventsContext(context.Background(), stream)
+}
+
+func (s *Store) LoadStreamEventsContext(ctx context.Context, stream model.Ref) ([]model.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT event_json, alias_seq FROM events WHERE stream_kind = ? AND stream_entity = ? ORDER BY sequence ASC`,
 		string(stream.Kind), stream.Entity,
 	)
@@ -1087,15 +1176,27 @@ func (s *Store) LoadStreamEvents(stream model.Ref) ([]model.Event, error) {
 }
 
 func (s *Store) CurrentProjection(ticketID model.TicketID, effectiveAt time.Time) (*model.Projection, error) {
-	return s.CurrentStreamProjection(model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, effectiveAt)
+	return s.CurrentProjectionContext(context.Background(), ticketID, effectiveAt)
+}
+
+func (s *Store) CurrentProjectionContext(ctx context.Context, ticketID model.TicketID, effectiveAt time.Time) (*model.Projection, error) {
+	return s.CurrentStreamProjectionContext(ctx, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, effectiveAt)
 }
 
 func (s *Store) BitemporalProjection(ticketID model.TicketID, effectiveAt, knownAt time.Time) (*model.Projection, error) {
-	return s.BitemporalStreamProjection(model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, effectiveAt, knownAt)
+	return s.BitemporalProjectionContext(context.Background(), ticketID, effectiveAt, knownAt)
+}
+
+func (s *Store) BitemporalProjectionContext(ctx context.Context, ticketID model.TicketID, effectiveAt, knownAt time.Time) (*model.Projection, error) {
+	return s.BitemporalStreamProjectionContext(ctx, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, effectiveAt, knownAt)
 }
 
 func (s *Store) CurrentStreamProjection(stream model.Ref, effectiveAt time.Time) (*model.Projection, error) {
-	events, err := s.LoadStreamEvents(stream)
+	return s.CurrentStreamProjectionContext(context.Background(), stream, effectiveAt)
+}
+
+func (s *Store) CurrentStreamProjectionContext(ctx context.Context, stream model.Ref, effectiveAt time.Time) (*model.Projection, error) {
+	events, err := s.LoadStreamEventsContext(ctx, stream)
 	if err != nil {
 		return nil, err
 	}
@@ -1103,7 +1204,11 @@ func (s *Store) CurrentStreamProjection(stream model.Ref, effectiveAt time.Time)
 }
 
 func (s *Store) BitemporalStreamProjection(stream model.Ref, effectiveAt, knownAt time.Time) (*model.Projection, error) {
-	events, err := s.LoadStreamEvents(stream)
+	return s.BitemporalStreamProjectionContext(context.Background(), stream, effectiveAt, knownAt)
+}
+
+func (s *Store) BitemporalStreamProjectionContext(ctx context.Context, stream model.Ref, effectiveAt, knownAt time.Time) (*model.Projection, error) {
+	events, err := s.LoadStreamEventsContext(ctx, stream)
 	if err != nil {
 		return nil, err
 	}
@@ -1111,6 +1216,13 @@ func (s *Store) BitemporalStreamProjection(stream model.Ref, effectiveAt, knownA
 }
 
 func (s *Store) GetEventByAlias(alias string) (model.Event, error) {
+	return s.GetEventByAliasContext(context.Background(), alias)
+}
+
+func (s *Store) GetEventByAliasContext(ctx context.Context, alias string) (model.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return model.Event{}, err
+	}
 	if !strings.HasPrefix(alias, "@e") {
 		return model.Event{}, fmt.Errorf("invalid event alias: %s", alias)
 	}
@@ -1119,7 +1231,7 @@ func (s *Store) GetEventByAlias(alias string) (model.Event, error) {
 		return model.Event{}, fmt.Errorf("invalid event alias: %s", alias)
 	}
 	var raw string
-	err = s.reader.QueryRow(`SELECT event_json FROM events WHERE alias_seq = ?`, number).Scan(&raw)
+	err = s.reader.QueryRowContext(ctx, `SELECT event_json FROM events WHERE alias_seq = ?`, number).Scan(&raw)
 	if err != nil {
 		return model.Event{}, err
 	}
@@ -1132,23 +1244,30 @@ func (s *Store) GetEventByAlias(alias string) (model.Event, error) {
 }
 
 func (s *Store) ListTickets(effectiveAt time.Time) ([]TicketSummary, error) {
+	return s.ListTicketsContext(context.Background(), effectiveAt)
+}
+
+func (s *Store) ListTicketsContext(ctx context.Context, effectiveAt time.Time) ([]TicketSummary, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if effectiveAt.IsZero() {
 		effectiveAt = time.Now().UTC()
 	}
-	maxRecorded, err := s.MaxRecordedAt()
+	maxRecorded, err := s.MaxRecordedAtContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if !maxRecorded.IsZero() && effectiveAt.Before(maxRecorded) {
 		// Historical list: fold from the ledger because the derived tables
 		// only hold the current projection.
-		return s.listTicketsByFold(effectiveAt)
+		return s.listTicketsByFoldContext(ctx, effectiveAt)
 	}
-	return s.listTicketsFromDerived()
+	return s.listTicketsFromDerivedContext(ctx)
 }
 
-func (s *Store) listTicketsByFold(effectiveAt time.Time) ([]TicketSummary, error) {
-	events, err := s.LoadEvents()
+func (s *Store) listTicketsByFoldContext(ctx context.Context, effectiveAt time.Time) ([]TicketSummary, error) {
+	events, err := s.LoadEventsContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1166,7 +1285,7 @@ func (s *Store) listTicketsByFold(effectiveAt time.Time) ([]TicketSummary, error
 		if err != nil {
 			return nil, err
 		}
-		number, _ := s.LookupTicketAlias(ticketID)
+		number, _ := s.LookupTicketAliasContext(ctx, ticketID)
 		summary := TicketSummary{ID: ticketID, Number: number}
 		if number > 0 {
 			summary.Ref = "#" + strconv.FormatUint(number, 10)
@@ -1194,8 +1313,8 @@ func (s *Store) listTicketsByFold(effectiveAt time.Time) ([]TicketSummary, error
 	return summaries, nil
 }
 
-func (s *Store) listTicketsFromDerived() ([]TicketSummary, error) {
-	rows, err := s.reader.Query(`SELECT ticket_id, alias, title, status, recorded_at FROM tickets ORDER BY alias ASC`)
+func (s *Store) listTicketsFromDerivedContext(ctx context.Context) ([]TicketSummary, error) {
+	rows, err := s.reader.QueryContext(ctx, `SELECT ticket_id, alias, title, status, recorded_at FROM tickets ORDER BY alias ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1233,8 +1352,15 @@ func (s *Store) listTicketsFromDerived() ([]TicketSummary, error) {
 // MaxRecordedAt returns the latest recorded_at across the ledger, or the zero
 // time when the ledger is empty.
 func (s *Store) MaxRecordedAt() (time.Time, error) {
+	return s.MaxRecordedAtContext(context.Background())
+}
+
+func (s *Store) MaxRecordedAtContext(ctx context.Context) (time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
 	var raw string
-	err := s.reader.QueryRow(`SELECT event_json FROM events ORDER BY alias_seq DESC LIMIT 1`).Scan(&raw)
+	err := s.reader.QueryRowContext(ctx, `SELECT event_json FROM events ORDER BY alias_seq DESC LIMIT 1`).Scan(&raw)
 	if err == sql.ErrNoRows {
 		return time.Time{}, nil
 	}
@@ -1248,8 +1374,8 @@ func (s *Store) MaxRecordedAt() (time.Time, error) {
 	return event.RecordedAt, nil
 }
 
-func loadStreamEventsTx(tx *sql.Tx, streamKind, streamEntity string) ([]model.Event, error) {
-	rows, err := tx.Query(
+func loadStreamEventsTxContext(ctx context.Context, tx *sql.Tx, streamKind, streamEntity string) ([]model.Event, error) {
+	rows, err := tx.QueryContext(ctx,
 		`SELECT event_json, alias_seq FROM events WHERE stream_kind = ? AND stream_entity = ? ORDER BY sequence ASC`,
 		streamKind, streamEntity,
 	)
@@ -1274,9 +1400,16 @@ func loadStreamEventsTx(tx *sql.Tx, streamKind, streamEntity string) ([]model.Ev
 	return events, rows.Err()
 }
 
-// upsertTicketDerivedTx folds one ticket's stream and writes its current
-// summary and parts into the derived tables inside the append transaction.
-func upsertTicketDerivedTx(tx *sql.Tx, ticketID model.TicketID, events []model.Event, alias uint64) error {
+// loadStreamEventsTx is retained for package-local projection tests and
+// recovery helpers; context-aware callers use loadStreamEventsTxContext.
+func loadStreamEventsTx(tx *sql.Tx, streamKind, streamEntity string) ([]model.Event, error) {
+	return loadStreamEventsTxContext(context.Background(), tx, streamKind, streamEntity)
+}
+
+// upsertTicketDerivedTxContext folds one ticket's stream and writes its
+// current summary and parts into the derived tables inside the append
+// transaction.
+func upsertTicketDerivedTxContext(ctx context.Context, tx *sql.Tx, ticketID model.TicketID, events []model.Event, alias uint64) error {
 	proj, err := model.CurrentProjection(events, ticketID, model.MaxRecordedAt(events))
 	if err != nil {
 		return err
@@ -1293,7 +1426,7 @@ func upsertTicketDerivedTx(tx *sql.Tx, ticketID model.TicketID, events []model.E
 		}
 	}
 	if alias == 0 {
-		if n, err := aliasForTicketTx(tx, ticketID); err == nil {
+		if n, err := aliasForTicketTxContext(ctx, tx, ticketID); err == nil {
 			alias = n
 		} else {
 			for _, event := range events {
@@ -1314,7 +1447,7 @@ func upsertTicketDerivedTx(tx *sql.Tx, ticketID model.TicketID, events []model.E
 	if recordedAt == "" && len(events) > 0 {
 		recordedAt = events[0].RecordedAt.UTC().Format(time.RFC3339Nano)
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO tickets (ticket_id, alias, title, status, head_event, recorded_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(ticket_id) DO UPDATE SET
@@ -1324,7 +1457,7 @@ func upsertTicketDerivedTx(tx *sql.Tx, ticketID model.TicketID, events []model.E
 	); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM parts_current WHERE ticket_id = ?`, string(ticketID)); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM parts_current WHERE ticket_id = ?`, string(ticketID)); err != nil {
 		return err
 	}
 	for path, partID := range proj.Paths {
@@ -1344,7 +1477,7 @@ func upsertTicketDerivedTx(tx *sql.Tx, ticketID model.TicketID, events []model.E
 		if part.ParentID != nil {
 			parentID = string(*part.ParentID)
 		}
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO parts_current (ticket_id, path, part_id, value_json, value_kind, parent_id, created_by, current_event)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			string(ticketID), path, string(part.ID), valueJSON, string(part.ValueKind),
@@ -1359,25 +1492,36 @@ func upsertTicketDerivedTx(tx *sql.Tx, ticketID model.TicketID, events []model.E
 // RebuildProjection recomputes the derived tables from the authoritative
 // event ledger. It is O(ledger) and intended for recovery only.
 func (s *Store) RebuildProjection() error {
-	tx, err := s.writer.Begin()
+	return s.RebuildProjectionContext(context.Background())
+}
+
+func (s *Store) RebuildProjectionContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := rebuildProjectionTx(tx); err != nil {
+	if err := rebuildProjectionTxContext(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func rebuildProjectionTx(tx *sql.Tx) error {
-	if _, err := tx.Exec(`DELETE FROM tickets`); err != nil {
+	return rebuildProjectionTxContext(context.Background(), tx)
+}
+
+func rebuildProjectionTxContext(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tickets`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM parts_current`); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM parts_current`); err != nil {
 		return err
 	}
-	events, err := loadEventsTx(tx)
+	events, err := loadEventsContext(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -1390,7 +1534,7 @@ func rebuildProjectionTx(tx *sql.Tx) error {
 		byTicket[id] = append(byTicket[id], event)
 	}
 	for ticketID, streamEvents := range byTicket {
-		if err := upsertTicketDerivedTx(tx, ticketID, streamEvents, 0); err != nil {
+		if err := upsertTicketDerivedTxContext(ctx, tx, ticketID, streamEvents, 0); err != nil {
 			return err
 		}
 	}
@@ -1588,7 +1732,34 @@ func loadEventsTx(db interface {
 	return events, rows.Err()
 }
 
-func eventsByIDsJSON(tx *sql.Tx, idsJSON string) ([]model.Event, error) {
+type contextQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func loadEventsContext(ctx context.Context, db contextQuerier) ([]model.Event, error) {
+	rows, err := db.QueryContext(ctx, `SELECT event_json, alias_seq FROM events ORDER BY alias_seq ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []model.Event
+	for rows.Next() {
+		var raw string
+		var aliasSeq uint64
+		if err := rows.Scan(&raw, &aliasSeq); err != nil {
+			return nil, err
+		}
+		var event model.Event
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			return nil, err
+		}
+		event.AliasSeq = aliasSeq
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func eventsByIDsJSONContext(ctx context.Context, tx *sql.Tx, idsJSON string) ([]model.Event, error) {
 	var ids []string
 	if err := json.Unmarshal([]byte(idsJSON), &ids); err != nil {
 		return nil, err
@@ -1597,7 +1768,7 @@ func eventsByIDsJSON(tx *sql.Tx, idsJSON string) ([]model.Event, error) {
 	for _, id := range ids {
 		var raw string
 		var aliasSeq uint64
-		err := tx.QueryRow(`SELECT event_json, alias_seq FROM events WHERE id = ?`, id).Scan(&raw, &aliasSeq)
+		err := tx.QueryRowContext(ctx, `SELECT event_json, alias_seq FROM events WHERE id = ?`, id).Scan(&raw, &aliasSeq)
 		if err != nil {
 			return nil, err
 		}
@@ -1611,21 +1782,9 @@ func eventsByIDsJSON(tx *sql.Tx, idsJSON string) ([]model.Event, error) {
 	return events, nil
 }
 
-func nextSequenceTx(tx *sql.Tx, streamKind, streamEntity string) (uint64, error) {
-	var next uint64
-	err := tx.QueryRow(
-		`SELECT next_sequence FROM streams WHERE stream_kind = ? AND stream_entity = ?`,
-		streamKind, streamEntity,
-	).Scan(&next)
-	if err == sql.ErrNoRows {
-		return 1, nil
-	}
-	return next, err
-}
-
-func allocateSequenceTx(tx *sql.Tx, streamKind, streamEntity string, count uint64) (uint64, error) {
+func allocateSequenceTxContext(ctx context.Context, tx *sql.Tx, streamKind, streamEntity string, count uint64) (uint64, error) {
 	var newValue uint64
-	err := tx.QueryRow(
+	err := tx.QueryRowContext(ctx,
 		`INSERT INTO streams (stream_kind, stream_entity, next_sequence) VALUES (?, ?, ?)
 		 ON CONFLICT(stream_kind, stream_entity)
 		 DO UPDATE SET next_sequence = next_sequence + excluded.next_sequence
@@ -1703,8 +1862,8 @@ func checkLinkPrecondition(allEvents []model.Event, link *LinkPrecondition) erro
 	return nil
 }
 
-func loadAllEventsTx(tx *sql.Tx) ([]model.Event, error) {
-	rows, err := tx.Query(`SELECT event_json, alias_seq FROM events ORDER BY stream_kind, stream_entity, sequence`)
+func loadAllEventsTxContext(ctx context.Context, tx *sql.Tx) ([]model.Event, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT event_json, alias_seq FROM events ORDER BY stream_kind, stream_entity, sequence`)
 	if err != nil {
 		return nil, err
 	}

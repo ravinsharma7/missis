@@ -552,7 +552,6 @@ func TestConcurrentAppendNeverCreatesGaps(t *testing.T) {
 
 	now := time.Now().UTC()
 	const tickets = 3
-	const seedEvents = 3
 	for ticket := 0; ticket < tickets; ticket++ {
 		ticketID := model.TicketID(fmt.Sprintf("ticket:stress-%d", ticket))
 		stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
