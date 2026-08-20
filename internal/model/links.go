@@ -8,32 +8,45 @@ import (
 	"time"
 )
 
+// Structural relations are part of the store's built-in ontology. Arbitrary
+// relations remain valid through the open-ended relation registry.
+const (
+	RelationContains    = "contains"
+	RelationContainedBy = "contained-by"
+	RelationGoverns     = "governs"
+	RelationGovernedBy  = "governed-by"
+	RelationHasHome     = "has-home"
+	RelationHomeOf      = "home-of"
+	RelationMemberOf    = "member-of"
+	RelationHasMember   = "has-member"
+)
+
 var relationInverses = map[string]string{
-	"blocks":          "blocked-by",
-	"blocked-by":      "blocks",
-	"caused-by":       "causes",
-	"causes":          "caused-by",
-	"duplicates":      "duplicated-by",
-	"duplicated-by":   "duplicates",
-	"supports":        "supported-by",
-	"supported-by":    "supports",
-	"contradicts":     "contradicted-by",
-	"contradicted-by": "contradicts",
-	"implements":      "implemented-by",
-	"implemented-by":  "implements",
-	"tracks":          "tracked-by",
-	"tracked-by":      "tracks",
-	"documents":       "documented-by",
-	"documented-by":   "documents",
-	"contains":        "contained-by",
-	"contained-by":    "contains",
-	"governs":         "governed-by",
-	"governed-by":     "governs",
-	"has-home":        "home-of",
-	"home-of":         "has-home",
-	"member-of":       "has-member",
-	"has-member":      "member-of",
-	"related":         "related",
+	"blocks":            "blocked-by",
+	"blocked-by":        "blocks",
+	"caused-by":         "causes",
+	"causes":            "caused-by",
+	"duplicates":        "duplicated-by",
+	"duplicated-by":     "duplicates",
+	"supports":          "supported-by",
+	"supported-by":      "supports",
+	"contradicts":       "contradicted-by",
+	"contradicted-by":   "contradicts",
+	"implements":        "implemented-by",
+	"implemented-by":    "implements",
+	"tracks":            "tracked-by",
+	"tracked-by":        "tracks",
+	"documents":         "documented-by",
+	"documented-by":     "documents",
+	RelationContains:    RelationContainedBy,
+	RelationContainedBy: RelationContains,
+	RelationGoverns:     RelationGovernedBy,
+	RelationGovernedBy:  RelationGoverns,
+	RelationHasHome:     RelationHomeOf,
+	RelationHomeOf:      RelationHasHome,
+	RelationMemberOf:    RelationHasMember,
+	RelationHasMember:   RelationMemberOf,
+	"related":           "related",
 }
 
 type LinkView struct {
@@ -91,6 +104,13 @@ func ValidRelations() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// VisibleLinks returns the active asserted link triples at the requested
+// effective and known times. Unlike LinksForRef, it does not add derived
+// inverse views, making it suitable for building a shared read index.
+func VisibleLinks(events []Event, effectiveAt, knownAt time.Time) ([]LinkView, error) {
+	return currentLinkViews(events, effectiveAt, knownAt)
 }
 
 func applyLinkEvent(proj *Projection, event Event) error {

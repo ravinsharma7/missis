@@ -285,14 +285,14 @@ func TestProjectGroupFiltering(t *testing.T) {
 	if _, err := client.SetLink(ctx, req(), missis.LinkOptions{Ref: "group:eng/links", Relation: "contains", Target: "project:proj", Add: true}); err != nil {
 		t.Fatal(err)
 	}
-	byProject, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Project: "proj"})
+	byProject, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"proj"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(byProject) != 1 {
 		t.Fatalf("project tickets = %+v", byProject)
 	}
-	byGroup, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Group: "eng"})
+	byGroup, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Groups: []string{"eng"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,16 +386,19 @@ func TestMultiScopeFilteringSDK(t *testing.T) {
 	}
 	assertRefs("project/group intersection", intersection, ticketB.Ref, ticketD.Ref)
 
-	legacy, err := client.ListTicketsFiltered(ctx, missis.ListFilter{
-		Projects: []string{"p1", "", " "},
-		Project:  " p2, p1, ",
-		Groups:   []string{"g1", ""},
-		Group:    "g1,,",
+	normalized, err := client.ListTicketsFiltered(ctx, missis.ListFilter{
+		Projects: []string{" p2 ", "", "p1", "p2"},
+		Groups:   []string{" g1 ", ""},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertRefs("typed and legacy merge", legacy, ticketA.Ref, ticketB.Ref, ticketD.Ref)
+	assertRefs("typed normalization", normalized, ticketA.Ref, ticketB.Ref, ticketD.Ref)
+	commaLiteral, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"p1,p2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("typed values do not split commas", commaLiteral)
 
 	search, err := client.Search(ctx, missis.SearchOptions{Projects: []string{"p1"}, Groups: []string{"g1"}})
 	if err != nil {
@@ -435,8 +438,8 @@ func TestMultiScopeFilteringSDK(t *testing.T) {
 	if count != len(intersection) {
 		t.Fatalf("intersection count = %d, want %d", count, len(intersection))
 	}
-	if _, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Unscoped: true, Project: "p1"}); err == nil {
-		t.Fatal("expected unscoped and legacy project conflict")
+	if _, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Unscoped: true, Projects: []string{"p1"}}); err == nil {
+		t.Fatal("expected unscoped and project conflict")
 	}
 
 	unknown, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"missing"}})
@@ -444,6 +447,93 @@ func TestMultiScopeFilteringSDK(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRefs("unknown scope", unknown)
+}
+
+func TestScopeViewRelationMatrix(t *testing.T) {
+	client := testClient(t)
+	ctx := context.Background()
+	for _, entity := range []missis.EntityOptions{
+		{Kind: "project", ID: "p1", Title: "Project 1"},
+		{Kind: "project", ID: "p2", Title: "Project 2"},
+		{Kind: "group", ID: "g1", Title: "Group 1"},
+	} {
+		if _, err := client.NewEntity(ctx, req(), entity); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	newTicket := func(title, project string) missis.NewTicketResult {
+		t.Helper()
+		created, err := client.NewTicket(ctx, req(), missis.NewTicketOptions{Title: title, Project: project})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	direct := newTicket("direct group", "")
+	derived := newTicket("derived project", "p1")
+	overlap := newTicket("direct and derived", "p1")
+	governed := newTicket("governed project", "p2")
+	memberOnly := newTicket("member only", "")
+	unrelated := newTicket("unrelated", "")
+
+	for _, link := range []missis.LinkOptions{
+		{Ref: "group:g1/links", Relation: "contains", Target: direct.Ref, Add: true},
+		{Ref: "group:g1/links", Relation: "contains", Target: "project:p1", Add: true},
+		{Ref: "group:g1/links", Relation: "contains", Target: overlap.Ref, Add: true},
+		{Ref: "group:g1/links", Relation: "governs", Target: "project:p2", Add: true},
+		{Ref: direct.Ref + "/links", Relation: "related", Target: unrelated.Ref, Add: true},
+	} {
+		if _, err := client.SetLink(ctx, req(), link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.JoinScope(ctx, req(), missis.ScopeOptions{Entity: memberOnly.Ref, Scope: "group:g1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertRefs := func(name string, got []missis.TicketSummary, want ...string) {
+		t.Helper()
+		seen := make(map[string]bool, len(got))
+		for _, item := range got {
+			if seen[item.Ref] {
+				t.Fatalf("%s contains duplicate %s: %+v", name, item.Ref, got)
+			}
+			seen[item.Ref] = true
+		}
+		if len(seen) != len(want) {
+			t.Fatalf("%s refs = %v, want %v", name, seen, want)
+		}
+		for _, ref := range want {
+			if !seen[ref] {
+				t.Fatalf("%s refs = %v, missing %s", name, seen, ref)
+			}
+		}
+	}
+
+	project, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"p1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("project view", project, derived.Ref, overlap.Ref)
+
+	group, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Groups: []string{"g1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("group direct and derived union", group, direct.Ref, derived.Ref, overlap.Ref, governed.Ref)
+
+	combined, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"p1"}, Groups: []string{"g1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("project/group intersection", combined, derived.Ref, overlap.Ref)
+
+	unscoped, err := client.ListTicketsFiltered(ctx, missis.ListFilter{Unscoped: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefs("member-of and generic links remain unscoped", unscoped, memberOnly.Ref, unrelated.Ref)
 }
 
 func TestBitemporalShow(t *testing.T) {

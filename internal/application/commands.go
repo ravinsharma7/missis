@@ -18,71 +18,19 @@ import (
 // ----- creation workflows -----
 
 func (s *Service) NewTicket(ctx context.Context, req missis.RequestContext, opts missis.NewTicketOptions) (missis.NewTicketResult, error) {
-	req, now := s.normalize(req)
-	ticketID := model.TicketID(missis.NewID("ticket"))
-	result := &missis.NewTicketResult{}
-	if req.IdempotencyKey != "" {
-		replayed, lookupErr := s.LookupIdempotency(req.IdempotencyKey, result)
-		if lookupErr == nil && replayed && result.ID != "" {
-			ticketID = model.TicketID(result.ID)
+	return s.createTicket(ctx, req, opts.Title, opts.Project, func(stream model.Ref, actor model.ActorRef, now, effectiveAt time.Time, batchID model.BatchID) []model.Event {
+		var events []model.Event
+		if opts.Priority != "" {
+			events = append(events, missis.PartEvent(stream, "priority", opts.Priority, model.ValueKindPriority, actor, now, effectiveAt, batchID))
 		}
-	}
-	batchID := model.BatchID(missis.NewID("batch"))
-	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
-	actor := parseActor(req.Actor)
-	events := []model.Event{
-		missis.NewEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actor, now, req.EffectiveAt, batchID, ""),
-		missis.PartEvent(stream, "title", opts.Title, model.ValueKindText, actor, now, req.EffectiveAt, batchID),
-		missis.PartEvent(stream, "status", "open", model.ValueKindStatus, actor, now, req.EffectiveAt, batchID),
-	}
-	if opts.Priority != "" {
-		events = append(events, missis.PartEvent(stream, "priority", opts.Priority, model.ValueKindPriority, actor, now, req.EffectiveAt, batchID))
-	}
-	if len(opts.Types) > 0 {
-		events = append(events, missis.PartEvent(stream, "type", opts.Types, model.ValueKindList, actor, now, req.EffectiveAt, batchID))
-	}
-	if len(opts.Tags) > 0 {
-		events = append(events, missis.PartEvent(stream, "tag", opts.Tags, model.ValueKindList, actor, now, req.EffectiveAt, batchID))
-	}
-	if opts.Project != "" {
-		projectEvents, err := s.LoadStreamEvents(ctx, model.Ref{Kind: model.KindProject, Entity: opts.Project})
-		if err != nil {
-			return missis.NewTicketResult{}, keepStorage(err)
+		if len(opts.Types) > 0 {
+			events = append(events, missis.PartEvent(stream, "type", opts.Types, model.ValueKindList, actor, now, effectiveAt, batchID))
 		}
-		if len(projectEvents) == 0 {
-			return missis.NewTicketResult{}, validation("project does not exist: project:%s; create it with: missis new --kind project --id %s", opts.Project, opts.Project)
+		if len(opts.Tags) > 0 {
+			events = append(events, missis.PartEvent(stream, "tag", opts.Tags, model.ValueKindList, actor, now, effectiveAt, batchID))
 		}
-		projectRef := model.Ref{Kind: model.KindProject, Entity: opts.Project}
-		events = append(events, missis.NewEvent(
-			stream, model.OpAssertLink,
-			model.Ref{Kind: model.KindTicket, Entity: string(ticketID)},
-			model.Value{Text: "has-home", Ref: &projectRef},
-			actor, now, req.EffectiveAt, batchID, "",
-		))
-	}
-	outcome, alias, err := s.AppendTicketBatch(ctx, events, req.IdempotencyKey, result)
-	if err != nil {
-		return missis.NewTicketResult{}, keepStorage(err)
-	}
-	if outcome.Replayed {
-		return *result, nil
-	}
-	if result.Ref == "" {
-		result = &missis.NewTicketResult{
-			Ref:        "#" + strconv.FormatUint(alias, 10),
-			ID:         string(ticketID),
-			Title:      opts.Title,
-			Status:     "open",
-			Project:    stringPtrOrNil(opts.Project),
-			RecordedAt: now.Format(time.RFC3339),
-		}
-	}
-	if req.IdempotencyKey != "" {
-		if err := s.UpdateIdempotencyResult(req.IdempotencyKey, result); err != nil {
-			return missis.NewTicketResult{}, keepStorage(err)
-		}
-	}
-	return *result, nil
+		return events
+	})
 }
 
 func (s *Service) NewEntity(ctx context.Context, req missis.RequestContext, opts missis.EntityOptions) (missis.EntityResult, error) {
@@ -131,7 +79,6 @@ func (s *Service) NewEntity(ctx context.Context, req missis.RequestContext, opts
 }
 
 func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext, opts missis.ImportOptions) (missis.NewTicketResult, error) {
-	req, now := s.normalize(req)
 	parts, err := model.ParseMarkdownParts(opts.Content)
 	if err != nil {
 		return missis.NewTicketResult{}, validation("%v", err)
@@ -149,62 +96,9 @@ func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext,
 	if title == "" {
 		title = artifactTitle(opts.Artifact)
 	}
-	ticketID := model.TicketID(missis.NewID("ticket"))
-	result := &missis.NewTicketResult{}
-	if req.IdempotencyKey != "" {
-		replayed, lookupErr := s.LookupIdempotency(req.IdempotencyKey, result)
-		if lookupErr == nil && replayed && result.ID != "" {
-			ticketID = model.TicketID(result.ID)
-		}
-	}
-	batchID := model.BatchID(missis.NewID("batch"))
-	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
-	actor := parseActor(req.Actor)
-	events := []model.Event{
-		missis.NewEvent(stream, model.OpCreateEntity, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, model.Value{}, actor, now, req.EffectiveAt, batchID, ""),
-		missis.PartEvent(stream, "title", title, model.ValueKindText, actor, now, req.EffectiveAt, batchID),
-		missis.PartEvent(stream, "status", "open", model.ValueKindStatus, actor, now, req.EffectiveAt, batchID),
-	}
-	events = append(events, buildImportEvents(stream, parts, actor, now, req.EffectiveAt, batchID, opts.Artifact)...)
-	if opts.Project != "" {
-		projectEvents, err := s.LoadStreamEvents(ctx, model.Ref{Kind: model.KindProject, Entity: opts.Project})
-		if err != nil {
-			return missis.NewTicketResult{}, keepStorage(err)
-		}
-		if len(projectEvents) == 0 {
-			return missis.NewTicketResult{}, validation("project does not exist: project:%s; create it with: missis new --kind project --id %s", opts.Project, opts.Project)
-		}
-		projectRef := model.Ref{Kind: model.KindProject, Entity: opts.Project}
-		events = append(events, missis.NewEvent(
-			stream, model.OpAssertLink,
-			model.Ref{Kind: model.KindTicket, Entity: string(ticketID)},
-			model.Value{Text: "has-home", Ref: &projectRef},
-			actor, now, req.EffectiveAt, batchID, "",
-		))
-	}
-	outcome, alias, err := s.AppendTicketBatch(ctx, events, req.IdempotencyKey, result)
-	if err != nil {
-		return missis.NewTicketResult{}, keepStorage(err)
-	}
-	if outcome.Replayed {
-		return *result, nil
-	}
-	if result.Ref == "" {
-		result = &missis.NewTicketResult{
-			Ref:        "#" + strconv.FormatUint(alias, 10),
-			ID:         string(ticketID),
-			Title:      title,
-			Status:     "open",
-			Project:    stringPtrOrNil(opts.Project),
-			RecordedAt: now.Format(time.RFC3339),
-		}
-	}
-	if req.IdempotencyKey != "" {
-		if err := s.UpdateIdempotencyResult(req.IdempotencyKey, result); err != nil {
-			return missis.NewTicketResult{}, keepStorage(err)
-		}
-	}
-	return *result, nil
+	return s.createTicket(ctx, req, title, opts.Project, func(stream model.Ref, actor model.ActorRef, now, effectiveAt time.Time, batchID model.BatchID) []model.Event {
+		return buildImportEvents(stream, parts, actor, now, effectiveAt, batchID, opts.Artifact)
+	})
 }
 
 func (s *Service) ReimportMarkdown(ctx context.Context, req missis.RequestContext, opts missis.ImportOptions) (missis.ImportResult, error) {
@@ -261,7 +155,7 @@ func (s *Service) ListTicketSummaries(ctx context.Context, effectiveAt time.Time
 	if effectiveAt.IsZero() {
 		effectiveAt = s.now()
 	}
-	items, err := s.Store().ListTickets(effectiveAt)
+	items, err := s.ListTickets(ctx, effectiveAt)
 	if err != nil {
 		return nil, keepStorage(err)
 	}
@@ -601,8 +495,6 @@ func (s *Service) Search(ctx context.Context, opts missis.SearchOptions) ([]miss
 		Projects:    opts.Projects,
 		Groups:      opts.Groups,
 		Unscoped:    opts.Unscoped,
-		Project:     opts.Project,
-		Group:       opts.Group,
 		Status:      opts.Status,
 		Type:        opts.Type,
 		Tag:         opts.Tag,
@@ -675,20 +567,12 @@ func (s *Service) ListEntities(ctx context.Context, kind model.Kind, filter miss
 	return out, nil
 }
 
-func normalizeScopeValues(values []string, legacy string) []string {
-	seen := make(map[string]struct{}, len(values)+1)
+func normalizeScopeValues(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
-		for _, item := range strings.Split(value, ",") {
-			item = strings.TrimSpace(item)
-			if item != "" {
-				seen[item] = struct{}{}
-			}
-		}
-	}
-	for _, item := range strings.Split(legacy, ",") {
-		item = strings.TrimSpace(item)
-		if item != "" {
-			seen[item] = struct{}{}
+		value = strings.TrimSpace(value)
+		if value != "" {
+			seen[value] = struct{}{}
 		}
 	}
 	result := make([]string, 0, len(seen))
@@ -699,133 +583,47 @@ func normalizeScopeValues(values []string, legacy string) []string {
 	return result
 }
 
-func scopeEntityIDs(events []model.Event, kind model.Kind) []string {
-	seen := make(map[string]struct{})
-	for _, event := range events {
-		if event.Target.Kind == kind {
-			seen[event.Target.Entity] = struct{}{}
-		}
-		if event.Value.Ref != nil && event.Value.Ref.Kind == kind {
-			seen[event.Value.Ref.Entity] = struct{}{}
-		}
-	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
-}
-
-func projectViewTicketIDs(events []model.Event, projectIDs []string, effectiveAt, knownAt time.Time) (map[model.TicketID]bool, error) {
-	ticketIDs := make(map[model.TicketID]bool)
-	for _, projectID := range projectIDs {
-		links, err := model.LinksForRef(events, model.Ref{Kind: model.KindProject, Entity: projectID}, effectiveAt, knownAt)
-		if err != nil {
-			return nil, err
-		}
-		for _, link := range links {
-			if link.To.Kind != model.KindTicket {
-				continue
-			}
-			if link.Direction == "asserted" && link.Relation == "contains" {
-				ticketIDs[model.TicketID(link.To.Entity)] = true
-			}
-			if link.Direction == "derived-inverse" && link.Relation == "home-of" {
-				ticketIDs[model.TicketID(link.To.Entity)] = true
-			}
-		}
-	}
-	return ticketIDs, nil
-}
-
-func groupViewTicketIDs(events []model.Event, groupIDs []string, effectiveAt, knownAt time.Time) (map[model.TicketID]bool, error) {
-	ticketIDs := make(map[model.TicketID]bool)
-	for _, groupID := range groupIDs {
-		groupLinks, err := model.LinksForRef(events, model.Ref{Kind: model.KindGroup, Entity: groupID}, effectiveAt, knownAt)
-		if err != nil {
-			return nil, err
-		}
-		projectIDs := make(map[string]bool)
-		for _, link := range groupLinks {
-			if link.Direction != "asserted" {
-				continue
-			}
-			if link.Relation == "contains" && link.To.Kind == model.KindTicket {
-				ticketIDs[model.TicketID(link.To.Entity)] = true
-			}
-			if (link.Relation == "contains" || link.Relation == "governs") && link.To.Kind == model.KindProject {
-				projectIDs[link.To.Entity] = true
-			}
-		}
-		projectTicketIDs, err := projectViewTicketIDs(events, sortedStringKeys(projectIDs), effectiveAt, knownAt)
-		if err != nil {
-			return nil, err
-		}
-		for ticketID := range projectTicketIDs {
-			ticketIDs[ticketID] = true
-		}
-	}
-	return ticketIDs, nil
-}
-
-func sortedStringKeys(values map[string]bool) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFilter) ([]missis.TicketSummary, error) {
+func (s *Service) walkFilteredTickets(ctx context.Context, filter missis.ListFilter, visit func(missis.TicketSummary) error) (int, error) {
 	if filter.EffectiveAt.IsZero() {
 		filter.EffectiveAt = s.now()
 	}
 	if filter.KnownAt.IsZero() {
 		filter.KnownAt = filter.EffectiveAt
 	}
-	projects := normalizeScopeValues(filter.Projects, filter.Project)
-	groups := normalizeScopeValues(filter.Groups, filter.Group)
+	projects := normalizeScopeValues(filter.Projects)
+	groups := normalizeScopeValues(filter.Groups)
 	if filter.Unscoped && (len(projects) > 0 || len(groups) > 0) {
-		return nil, invalidInput("unscoped cannot be combined with project or group filters")
+		return 0, invalidInput("unscoped cannot be combined with project or group filters")
 	}
 	summaries, err := s.ListTicketSummaries(ctx, filter.EffectiveAt)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	var linkEvents []model.Event
+	var scopeIndex *scopeTicketIndex
 	if len(projects) > 0 || len(groups) > 0 || filter.Unscoped {
 		linkEvents, err = s.LoadLinkEvents(ctx)
 		if err != nil {
-			return nil, keepStorage(err)
+			return 0, keepStorage(err)
+		}
+		scopeIndex, err = buildScopeTicketIndex(linkEvents, filter.EffectiveAt, filter.KnownAt)
+		if err != nil {
+			return 0, keepStorage(err)
 		}
 	}
 	projectTicketIDs := make(map[model.TicketID]bool)
 	if len(projects) > 0 {
-		projectTicketIDs, err = projectViewTicketIDs(linkEvents, projects, filter.EffectiveAt, filter.KnownAt)
-		if err != nil {
-			return nil, keepStorage(err)
-		}
+		projectTicketIDs = unionScopeTickets(scopeIndex.projectTickets, projects)
 	}
 	groupTicketIDs := make(map[model.TicketID]bool)
 	if len(groups) > 0 {
-		groupTicketIDs, err = groupViewTicketIDs(linkEvents, groups, filter.EffectiveAt, filter.KnownAt)
-		if err != nil {
-			return nil, keepStorage(err)
-		}
+		groupTicketIDs = unionScopeTickets(scopeIndex.groupTickets, groups)
 	}
 	var scopeTicketIDs map[model.TicketID]bool
 	switch {
 	case filter.Unscoped:
-		projectScoped, err := projectViewTicketIDs(linkEvents, scopeEntityIDs(linkEvents, model.KindProject), filter.EffectiveAt, filter.KnownAt)
-		if err != nil {
-			return nil, keepStorage(err)
-		}
-		groupScoped, err := groupViewTicketIDs(linkEvents, scopeEntityIDs(linkEvents, model.KindGroup), filter.EffectiveAt, filter.KnownAt)
-		if err != nil {
-			return nil, keepStorage(err)
-		}
+		projectScoped := unionScopeTickets(scopeIndex.projectTickets, sortedScopeIDs(scopeIndex.projectIDs))
+		groupScoped := unionScopeTickets(scopeIndex.groupTickets, sortedScopeIDs(scopeIndex.groupIDs))
 		scopeTicketIDs = make(map[model.TicketID]bool)
 		for _, summary := range summaries {
 			ticketID := model.TicketID(summary.ID)
@@ -845,7 +643,7 @@ func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFil
 	case len(groups) > 0:
 		scopeTicketIDs = groupTicketIDs
 	}
-	result := make([]missis.TicketSummary, 0, len(summaries))
+	matched := 0
 	for _, summary := range summaries {
 		if filter.Status != "" && !csvContains(filter.Status, summary.Status) {
 			continue
@@ -853,33 +651,48 @@ func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFil
 		if scopeTicketIDs != nil && !scopeTicketIDs[model.TicketID(summary.ID)] {
 			continue
 		}
-		proj, err := s.BitemporalProjection(ctx, model.TicketID(summary.ID), filter.EffectiveAt, filter.KnownAt)
-		if err != nil {
-			return nil, keepStorage(err)
-		}
-		if filter.Query != "" {
-			text := summary.Title + " " + projectionText(proj)
-			if !matchesAllTokens(text, filter.Query) {
+		if filter.Query != "" || filter.Type != "" || filter.Tag != "" {
+			proj, projectionErr := s.BitemporalProjection(ctx, model.TicketID(summary.ID), filter.EffectiveAt, filter.KnownAt)
+			if projectionErr != nil {
+				return 0, keepStorage(projectionErr)
+			}
+			if filter.Query != "" {
+				text := summary.Title + " " + projectionText(proj)
+				if !matchesAllTokens(text, filter.Query) {
+					continue
+				}
+			}
+			if filter.Type != "" && !partHasValue(proj, "type", filter.Type) {
+				continue
+			}
+			if filter.Tag != "" && !partHasValue(proj, "tag", filter.Tag) {
 				continue
 			}
 		}
-		if filter.Type != "" && !partHasValue(proj, "type", filter.Type) {
-			continue
+		matched++
+		if visit != nil {
+			if err := visit(summary); err != nil {
+				return 0, err
+			}
 		}
-		if filter.Tag != "" && !partHasValue(proj, "tag", filter.Tag) {
-			continue
-		}
+	}
+	return matched, nil
+}
+
+func (s *Service) ListTicketsFiltered(ctx context.Context, filter missis.ListFilter) ([]missis.TicketSummary, error) {
+	result := make([]missis.TicketSummary, 0)
+	_, err := s.walkFilteredTickets(ctx, filter, func(summary missis.TicketSummary) error {
 		result = append(result, summary)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return result, nil
 }
 
 func (s *Service) CountTicketsFiltered(ctx context.Context, filter missis.ListFilter) (int, error) {
-	tickets, err := s.ListTicketsFiltered(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return len(tickets), nil
+	return s.walkFilteredTickets(ctx, filter, nil)
 }
 
 // ----- mutation workflows -----
@@ -1129,7 +942,7 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 	if err := s.validateLinkSchema(ctx, stream, toRef.Kind, opts.Relation, req.EffectiveAt, now); err != nil {
 		return missis.SetResult{}, err
 	}
-	if opts.Relation == "has-home" {
+	if opts.Relation == model.RelationHasHome {
 		if fromRef.Kind != model.KindTicket || toRef.Kind != model.KindProject {
 			return missis.SetResult{}, validation("has-home requires a ticket source and a project target")
 		}
@@ -1143,7 +956,7 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 				return missis.SetResult{}, err
 			}
 			for _, link := range links {
-				if link.Relation == "has-home" && link.Direction == "asserted" && link.To.Kind == model.KindProject && link.To.Entity != toRef.Entity {
+				if link.Relation == model.RelationHasHome && link.Direction == "asserted" && link.To.Kind == model.KindProject && link.To.Entity != toRef.Entity {
 					return missis.SetResult{}, validation("ticket already has a home project: project:%s; retract it before assigning a new one", link.To.Entity)
 				}
 			}
@@ -1198,7 +1011,7 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 		last := outcome.Events[len(outcome.Events)-1]
 		result.Event = "@e" + strconv.FormatUint(last.AliasSeq, 10)
 	}
-	if opts.Retract && opts.Relation == "has-home" && len(outcome.Events) > 0 {
+	if opts.Retract && opts.Relation == model.RelationHasHome && len(outcome.Events) > 0 {
 		linkEvents, err := s.LoadLinkEvents(ctx)
 		if err != nil {
 			return missis.SetResult{}, keepStorage(err)
@@ -1209,7 +1022,7 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 		}
 		hasHome := false
 		for _, link := range links {
-			if link.Relation == "has-home" && link.Direction == "asserted" && link.To.Kind == model.KindProject {
+			if link.Relation == model.RelationHasHome && link.Direction == "asserted" && link.To.Kind == model.KindProject {
 				hasHome = true
 				break
 			}
@@ -1223,7 +1036,7 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 
 func (s *Service) MoveLink(ctx context.Context, req missis.RequestContext, opts missis.MoveLinkOptions) (missis.SetResult, error) {
 	req, now := s.normalize(req)
-	if opts.Relation != "has-home" && opts.Relation != "contains" && opts.Relation != "governs" {
+	if opts.Relation != model.RelationHasHome && opts.Relation != model.RelationContains && opts.Relation != model.RelationGoverns {
 		return missis.SetResult{}, validation("move-link supports membership relations only: has-home, contains, governs")
 	}
 	fromRef, err := s.resolveAnyRef(ctx, opts.From, req.EffectiveAt)
@@ -1252,19 +1065,19 @@ func (s *Service) MoveLink(ctx context.Context, req missis.RequestContext, opts 
 	}
 	var originR, originA, retractOther, assertOther model.Ref
 	switch opts.Relation {
-	case "has-home":
+	case model.RelationHasHome:
 		if targetRef.Kind != model.KindTicket || fromRef.Kind != model.KindProject || toRef.Kind != model.KindProject {
 			return missis.SetResult{}, validation("has-home move requires a ticket target and project source/destination")
 		}
 		originR, originA = targetRef, targetRef
 		retractOther, assertOther = fromRef, toRef
-	case "contains":
+	case model.RelationContains:
 		if !isScopeRef(fromRef) || !isScopeRef(toRef) {
 			return missis.SetResult{}, validation("contains move requires project/group source and destination")
 		}
 		originR, originA = fromRef, toRef
 		retractOther, assertOther = targetRef, targetRef
-	case "governs":
+	case model.RelationGoverns:
 		if fromRef.Kind != model.KindGroup || toRef.Kind != model.KindGroup || targetRef.Kind != model.KindProject {
 			return missis.SetResult{}, validation("governs move requires group source/destination and project target")
 		}
@@ -1335,11 +1148,11 @@ func (s *Service) JoinScope(ctx context.Context, req missis.RequestContext, opts
 	if err != nil {
 		return missis.SetResult{}, err
 	}
-	event := s.linkEventFor(model.OpJoinScope, entityRef, scopeRef, "member-of", opts.Reason, parseActor(req.Actor), now, req.EffectiveAt, "")
+	event := s.linkEventFor(model.OpJoinScope, entityRef, scopeRef, model.RelationMemberOf, opts.Reason, parseActor(req.Actor), now, req.EffectiveAt, "")
 	result := missis.SetResult{
 		Ref:       opts.Entity,
 		Operation: "join-scope",
-		Value:     "member-of:" + opts.Scope,
+		Value:     model.RelationMemberOf + ":" + opts.Scope,
 	}
 	outcome, err := s.AppendBatch(ctx, []model.Event{event}, req.IdempotencyKey, nil, &result)
 	if err != nil {
@@ -1358,7 +1171,7 @@ func (s *Service) LeaveScope(ctx context.Context, req missis.RequestContext, opt
 	if err != nil {
 		return missis.SetResult{}, err
 	}
-	assertions, err := s.activeLinkAssertions(ctx, entityRef, scopeRef, "member-of", req.EffectiveAt, now)
+	assertions, err := s.activeLinkAssertions(ctx, entityRef, scopeRef, model.RelationMemberOf, req.EffectiveAt, now)
 	if err != nil {
 		return missis.SetResult{}, err
 	}
@@ -1379,10 +1192,10 @@ func (s *Service) LeaveScope(ctx context.Context, req missis.RequestContext, opt
 		if !active {
 			return missis.SetResult{}, conflict(fmt.Errorf("assertion %s is not an active member-of from %s to %s; re-read and retry", opts.Assertion, opts.Entity, opts.Scope))
 		}
-		events = append(events, s.linkEventFor(model.OpLeaveScope, entityRef, scopeRef, "member-of", opts.Reason, actor, now, req.EffectiveAt, ev.ID))
+		events = append(events, s.linkEventFor(model.OpLeaveScope, entityRef, scopeRef, model.RelationMemberOf, opts.Reason, actor, now, req.EffectiveAt, ev.ID))
 	} else {
 		for _, assertion := range assertions {
-			events = append(events, s.linkEventFor(model.OpLeaveScope, entityRef, scopeRef, "member-of", opts.Reason, actor, now, req.EffectiveAt, assertion.CreatedBy))
+			events = append(events, s.linkEventFor(model.OpLeaveScope, entityRef, scopeRef, model.RelationMemberOf, opts.Reason, actor, now, req.EffectiveAt, assertion.CreatedBy))
 		}
 		if len(events) == 0 {
 			return missis.SetResult{}, validation("no active member-of assertion from %s to %s; nothing to leave", opts.Entity, opts.Scope)
@@ -1391,7 +1204,7 @@ func (s *Service) LeaveScope(ctx context.Context, req missis.RequestContext, opt
 	result := missis.SetResult{
 		Ref:       opts.Entity,
 		Operation: "leave-scope",
-		Value:     "member-of:" + opts.Scope,
+		Value:     model.RelationMemberOf + ":" + opts.Scope,
 	}
 	outcome, err := s.AppendBatch(ctx, events, req.IdempotencyKey, nil, &result)
 	if err != nil {
@@ -1663,17 +1476,6 @@ func (s *Service) findStreamForPart(ctx context.Context, partID model.PartID) (m
 		}
 	}
 	return model.Ref{}, notFound("part not found: %s", partID)
-}
-
-func (s *Service) findTicketForPart(ctx context.Context, partID model.PartID) (model.TicketID, error) {
-	stream, err := s.findStreamForPart(ctx, partID)
-	if err != nil {
-		return "", err
-	}
-	if stream.Kind != model.KindTicket {
-		return "", notFound("part not in a ticket: %s", partID)
-	}
-	return model.TicketID(stream.Entity), nil
 }
 
 func (s *Service) resolveParentRef(ctx context.Context, ref string, effectiveAt time.Time) (model.Ref, error) {

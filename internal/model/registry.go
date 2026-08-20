@@ -220,7 +220,7 @@ func validateScopeTransition(e Event) error {
 	if e.Value.Ref == nil {
 		return fmt.Errorf("operation %s requires a scope reference", e.Operation)
 	}
-	if e.Value.Text != "member-of" {
+	if e.Value.Text != RelationMemberOf {
 		return fmt.Errorf("operation %s requires relation member-of, got %q", e.Operation, e.Value.Text)
 	}
 	if e.Target.Kind != KindTicket && e.Target.Kind != KindProject && e.Target.Kind != KindGroup {

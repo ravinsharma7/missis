@@ -138,11 +138,11 @@ func TestMoveLinkRetractsAllAssertions(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	viewA, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "a", EffectiveAt: now, KnownAt: now})
+	viewA, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"a"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewB, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "b", EffectiveAt: now, KnownAt: now})
+	viewB, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"b"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}

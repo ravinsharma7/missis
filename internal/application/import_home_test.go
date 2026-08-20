@@ -43,7 +43,7 @@ func TestImportMarkdownWithHome(t *testing.T) {
 	if homeCount != 1 {
 		t.Fatalf("has-home assertions = %d, want 1: %+v", homeCount, views)
 	}
-	filtered, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "safedesign", EffectiveAt: now, KnownAt: now})
+	filtered, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"safedesign"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}

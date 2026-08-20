@@ -42,7 +42,7 @@ func TestNewTicketWithHomeAssertsHasHome(t *testing.T) {
 	if !found {
 		t.Fatalf("expected asserted has-home link from ticket, got %+v", views)
 	}
-	filtered, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "safedesign", EffectiveAt: now, KnownAt: now})
+	filtered, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"safedesign"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestHomeRetractionWarnsAndLeavesProjectView(t *testing.T) {
 	if !strings.Contains(res.Warning, "zero-home") {
 		t.Fatalf("expected zero-home warning, got %q", res.Warning)
 	}
-	filtered, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "safedesign", EffectiveAt: now, KnownAt: now})
+	filtered, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"safedesign"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}

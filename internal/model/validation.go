@@ -46,11 +46,6 @@ func ValidateAppend(existing []Event, proposed Event) error {
 	return nil
 }
 
-func validOperation(operation Operation) bool {
-	_, ok := LookupOperation(operation)
-	return ok
-}
-
 // ValidatePathSegments validates the recommended part path syntax.
 func ValidatePathSegments(segments []string) error {
 	if len(segments) == 0 {

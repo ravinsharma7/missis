@@ -42,14 +42,14 @@ func TestMoveHomeAtomic(t *testing.T) {
 	if value, ok := res.Value.(string); !ok || !strings.Contains(value, "has-home:project:a->project:b") {
 		t.Fatalf("result value = %#v", res.Value)
 	}
-	viewA, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "a", EffectiveAt: now, KnownAt: now})
+	viewA, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"a"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(viewA) != 0 {
 		t.Fatalf("project a should be empty after move: %+v", viewA)
 	}
-	viewB, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "b", EffectiveAt: now, KnownAt: now})
+	viewB, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"b"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,14 +159,14 @@ func TestMoveLinkCrossStreamContains(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	viewA, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "a", EffectiveAt: now, KnownAt: now})
+	viewA, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"a"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(viewA) != 0 {
 		t.Fatalf("project a should be empty after contains move: %+v", viewA)
 	}
-	viewB, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "b", EffectiveAt: now, KnownAt: now})
+	viewB, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"b"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,11 +315,11 @@ func TestConcurrentMoveLinkAcrossScopes(t *testing.T) {
 	}
 
 	// Contains moved a -> c.
-	viewA, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "a", EffectiveAt: now, KnownAt: now})
+	viewA, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"a"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewC, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Project: "c", EffectiveAt: now, KnownAt: now})
+	viewC, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Projects: []string{"c"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,11 +328,11 @@ func TestConcurrentMoveLinkAcrossScopes(t *testing.T) {
 	}
 
 	// Governs moved g1 -> g2; group g2 sees project c tickets, g1 does not.
-	viewG1, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Group: "g1", EffectiveAt: now, KnownAt: now})
+	viewG1, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Groups: []string{"g1"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewG2, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Group: "g2", EffectiveAt: now, KnownAt: now})
+	viewG2, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Groups: []string{"g2"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}

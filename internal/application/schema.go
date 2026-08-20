@@ -111,7 +111,7 @@ func (s *Service) schemaContext(ctx context.Context, ticketID model.TicketID, ef
 		return tc, keepStorage(err)
 	}
 	for _, link := range links {
-		if link.Direction == "asserted" && link.Relation == "has-home" && link.To.Kind == model.KindProject {
+		if link.Direction == "asserted" && link.Relation == model.RelationHasHome && link.To.Kind == model.KindProject {
 			tc.ProjectID = link.To.Entity
 			break
 		}
@@ -124,7 +124,7 @@ func (s *Service) schemaContext(ctx context.Context, ticketID model.TicketID, ef
 		}
 		for _, link := range projectLinks {
 			if link.Direction == "derived-inverse" &&
-				(link.Relation == "contained-by" || link.Relation == "governed-by") &&
+				(link.Relation == model.RelationContainedBy || link.Relation == model.RelationGovernedBy) &&
 				link.To.Kind == model.KindGroup {
 				tc.Groups = append(tc.Groups, link.To.Entity)
 			}
@@ -132,16 +132,6 @@ func (s *Service) schemaContext(ctx context.Context, ticketID model.TicketID, ef
 	}
 	sort.Strings(tc.Groups)
 	return tc, nil
-}
-
-// schemaResolver builds a resolver from the declarations valid at the given
-// times.
-func (s *Service) schemaResolver(ctx context.Context, effectiveAt, knownAt time.Time) (*schema.Resolver, error) {
-	decls, err := s.schemaDeclarations(ctx, effectiveAt, knownAt)
-	if err != nil {
-		return nil, err
-	}
-	return schema.NewResolver(decls), nil
 }
 
 // resolveWriteKind determines the value kind for a proposed write. A matched

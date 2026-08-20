@@ -70,7 +70,7 @@ func TestGroupViewDirectContains(t *testing.T) {
 	if _, err := svc.SetLink(ctx, req, missis.LinkOptions{Ref: "group:eng/links", Relation: "contains", Target: created.Ref, Add: true}); err != nil {
 		t.Fatal(err)
 	}
-	filtered, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Group: "eng", EffectiveAt: now, KnownAt: now})
+	filtered, err := svc.ListTicketsFiltered(ctx, missis.ListFilter{Groups: []string{"eng"}, EffectiveAt: now, KnownAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
