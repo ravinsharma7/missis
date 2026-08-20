@@ -67,10 +67,11 @@ go run ./tools/store-gaps .missis-store/missis.db
   implementation `model.CanonicalEventBytesV1` (ticket #45).
 - Store discovery: env outranks repo markers; markers must stay inside the
   repo root; store dirs 0700 and DB 0600 by default (ticket #47).
-- main branch is protected: strict CI checks (ci/linux + ci/windows) are
-  enforced for admins, so a push to main that fails CI is rejected (2026-08-18,
-  ticket #53). v0.1.0 tagged; storage compatibility statement published in
-  docs/storage-compatibility.md and cross-referenced from the spec.
+- main branch protection was removed by explicit operator decision on
+  2026-08-20; direct pushes are currently allowed. Historical protected CI and
+  alpha-release work is tracked by ticket #53. v0.1.0 tagged; storage
+  compatibility statement published in docs/storage-compatibility.md and
+  cross-referenced from the spec.
 - v1 project/group membership landed (2026-08-19, #28 done): spec 14.8 plus
   the `has-home` / `home-of` vocabulary pair (renamed from `home-project`);
   link targets resolve at write time; context is client-side
@@ -94,11 +95,9 @@ go run ./tools/store-gaps .missis-store/missis.db
   `--assertion @eN`); MoveLink retracts all assertions of the old origin;
   preconditions guard per-assertion; legacy set-semantics stores project
   without rewrite.
-- GitHub API merges on protected main hit a GitHub-side quirk: strict required
-  checks report "2 of 2 required status checks are expected" even when checks
-  are green, and auto-merge stalls. Workaround: delete branch protection,
-  merge, re-add it — or merge from the web UI, which is unaffected
-  (2026-08-18, observed twice).
+- Historical note: GitHub API merges on protected main hit a GitHub-side quirk
+  on 2026-08-18; protection is no longer enabled, so that workaround is not
+  currently applicable.
 
 ## Known open areas
 
