@@ -40,7 +40,7 @@ cannot be retracted because they are never stored.
 
 | Guarantee | Contract |
 | --- | --- |
-| Batch atomicity | `AppendBatch` commits all events in one transaction, including across multiple streams (multi-stream batches, ticket #77). A failed batch writes nothing. |
+| Batch atomicity | `AppendBatch` and `ApplyLinkBatch` commit all events in one transaction, including across multiple streams (multi-stream batches, ticket #77). A failed batch writes nothing. |
 | Idempotency | A repeated append with the same idempotency key replays the stored result and events (ticket #63). |
 | Derived tables | `tickets`/`parts_current` are rebuildable from the ledger with parity checks (ticket #51, #61). |
 | Precondition form 1 (part/entity) | `Precondition{TargetEntity, ExpectedCurrentEvent}`: the mutation applies only if the part's current event matches (CLI `--if-current`). Mismatch = conflict. |
@@ -53,7 +53,7 @@ cannot be retracted because they are never stored.
 | --- | --- |
 | `NewTicket` | Atomic ticket creation; `--project P` additionally asserts `has-home` in the same batch and fails with guidance when `P` does not exist (spec 14.8). |
 | Markdown import (`--project`) | Ticket, content, and the `has-home` assertion land in one atomic batch; missing targets fail with guidance; reimport never changes membership (spec 14.8; ticket #73). |
-| `SetLink` | Targets resolve at write time; relation endpoint rules enforced; has-home uniqueness enforced; last-home retraction warns. |
+| `SetLink` | SDK calls remain additive evidence assertions; targets resolve at write time; relation endpoint rules enforced; has-home uniqueness enforced; last-home retraction warns. The CLI suppresses an already-active identical assertion by default; `--allow-duplicate` opts back into additive behavior. |
 | `MoveLink` | Retract + assert in one atomic batch; membership relations only; automatic link-assertion precondition (explicit `IfCurrent` override); unguarded moves rejected; result reports the transition and never emits the zero-home warning (ticket #77). |
 | `JoinScope` / `LeaveScope` | Phase 4 scope membership (ticket #74): a `member-of` assertion or retraction (entity to project/group) in one atomic batch with validated targets; leave targets a specific assertion (default retract-all); evidence semantics applies. |
 | Markdown import/reimport | All-or-nothing: any violation rejects the whole batch (schema subspec rev 5). |
@@ -66,9 +66,18 @@ cannot be retracted because they are never stored.
   and group collections; values union within each kind and intersect across
   project and group kinds. Empty scope means all tickets; `Unscoped` selects
   tickets in neither project nor group views and cannot be combined with
-  scope values. `CountTicketsFiltered` uses the same semantics. Legacy
-  comma-separated string fields remain compatible and are normalized with
-  typed values.
+  scope values. `CountTicketsFiltered` uses the same semantics. The SDK is
+  typed-only; comma-separated parsing belongs to CLI and environment input
+  adapters.
+- The next pre-1.0 SDK release (`v0.2.0`) is the typed-only scope-filter
+  cleanup. Migrate
+  `ListFilter.Project` to `ListFilter.Projects`, `ListFilter.Group` to
+  `ListFilter.Groups`, and the corresponding `SearchOptions` fields. This is
+  an API compatibility change only; no storage or link migration is needed.
+- Ticket-view membership uses project `contains`/`has-home`, direct group
+  `contains`, and one-hop group `contains`/`governs` project membership.
+  Direct and derived paths are unioned and deduplicated by ticket ID;
+  `member-of` and generic relations do not affect ticket views in v1.
 - Ref-keyed: every read and mutation is addressed by explicit refs
   (ticket, part, project, group, event); resolution is deterministic.
 - The SDK facade (`pkg/missis`) is the only public surface; `internal/*` is

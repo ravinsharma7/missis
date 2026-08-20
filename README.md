@@ -179,9 +179,9 @@ scale are documented in [docs/guarantees.md](docs/guarantees.md).
 Store discovery order:
 
 1. `--store <path>`
-2. nearest `.missis` marker
-3. `MISSIS_STORE`
-4. XDG fallback
+2. `MISSIS_STORE`
+3. nearest `.missis` marker
+4. default user store (`~/.local/share/missis/missis.db` on POSIX)
 
 Committed metadata paths are configurable:
 

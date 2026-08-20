@@ -2739,6 +2739,15 @@ memberships must not make resolution nondeterministic (14.5, N081).
 - Group view membership (union, canonical order): tickets with a direct
   asserted `contains` link from the group, plus tickets in projects the group
   `contains` or `governs` (one hop).
+- These are view-membership relations only: direct group `contains` and
+  project-derived group membership are unioned and deduplicated by canonical
+  ticket identity. A ticket may therefore be visible through several paths
+  while appearing once in the ticket list. Generic relations such as
+  `related` and `supports` do not establish project or group view membership.
+- `member-of` is a Phase 4 scope-membership relation and does not contribute
+  to project or group ticket views in v1; that behavior remains the decision
+  tracked by #84. Group-to-group and project-to-project links are not
+  recursively traversed by these ticket views.
 - Repeated filter values within one scope kind are unions. When both project
   and group filters are present, the project candidate set and group candidate
   set are intersected: `(projects union) AND (groups union)`. An empty scope
@@ -2748,11 +2757,11 @@ memberships must not make resolution nondeterministic (14.5, N081).
   requested time (14.6), and tickets remain independent entities across
   projects (9.6).
 - The SDK `ListFilter` and `SearchOptions` expose typed `Projects` and
-  `Groups` collections. The legacy `Project` and `Group` string fields remain
-  accepted as one value or comma-separated compatibility inputs; typed and
-  legacy values are normalized together by trimming, ignoring empty values,
-  deduplicating, and sorting. Both filters also expose `Unscoped`; the SDK
-  exposes `CountTicketsFiltered` with the same semantics as listing.
+  `Groups` collections and `Unscoped`; values are normalized by trimming,
+  ignoring empty values, deduplicating, and sorting. Comma-separated parsing
+  is an input-adapter behavior of the CLI and environment variables, not an
+  SDK filter contract. The SDK exposes `CountTicketsFiltered` with the same
+  semantics as listing.
 
 ### 14.8.6 Context is client-side
 
