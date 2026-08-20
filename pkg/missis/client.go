@@ -44,16 +44,32 @@ func (c *Client) StoreID() (string, error) {
 	return c.service.StoreID()
 }
 
+func (c *Client) StoreIDContext(ctx context.Context) (string, error) {
+	return c.service.StoreIDContext(ctx)
+}
+
 func (c *Client) HeadHash() (string, error) {
 	return c.service.HeadHash()
+}
+
+func (c *Client) HeadHashContext(ctx context.Context) (string, error) {
+	return c.service.HeadHashContext(ctx)
 }
 
 func (c *Client) EventCount() (int64, error) {
 	return c.service.EventCount()
 }
 
+func (c *Client) EventCountContext(ctx context.Context) (int64, error) {
+	return c.service.EventCountContext(ctx)
+}
+
 func (c *Client) SchemaVersion() (string, error) {
 	return c.service.SchemaVersion()
+}
+
+func (c *Client) SchemaVersionContext(ctx context.Context) (string, error) {
+	return c.service.SchemaVersionContext(ctx)
 }
 
 func (c *Client) CheckConsistency(ctx context.Context) error {
@@ -120,8 +136,16 @@ func (c *Client) LookupIdempotency(key string, result any) (bool, error) {
 	return c.service.LookupIdempotency(key, result)
 }
 
+func (c *Client) LookupIdempotencyContext(ctx context.Context, key string, result any) (bool, error) {
+	return c.service.LookupIdempotencyContext(ctx, key, result)
+}
+
 func (c *Client) UpdateIdempotencyResult(key string, result any) error {
 	return c.service.UpdateIdempotencyResult(key, result)
+}
+
+func (c *Client) UpdateIdempotencyResultContext(ctx context.Context, key string, result any) error {
+	return c.service.UpdateIdempotencyResultContext(ctx, key, result)
 }
 
 func (c *Client) NewTicket(ctx context.Context, req RequestContext, opts NewTicketOptions) (NewTicketResult, error) {
@@ -204,6 +228,10 @@ func (c *Client) SetLink(ctx context.Context, req RequestContext, opts LinkOptio
 	return c.service.SetLink(ctx, req, opts)
 }
 
+func (c *Client) ApplyLinkBatch(ctx context.Context, req RequestContext, opts LinkBatchOptions) (LinkBatchResult, error) {
+	return c.service.ApplyLinkBatch(ctx, req, opts)
+}
+
 func (c *Client) MoveLink(ctx context.Context, req RequestContext, opts MoveLinkOptions) (SetResult, error) {
 	return c.service.MoveLink(ctx, req, opts)
 }
@@ -220,7 +248,7 @@ func (c *Client) LeaveScope(ctx context.Context, req RequestContext, opts ScopeO
 // atomic batch. It is a convenience for MoveLink with relation has-home.
 func (c *Client) MoveHome(ctx context.Context, req RequestContext, ticketRef, fromProject, toProject, reason string) (SetResult, error) {
 	return c.service.MoveLink(ctx, req, MoveLinkOptions{
-		Relation: "has-home",
+		Relation: model.RelationHasHome,
 		From:     "project:" + fromProject,
 		To:       "project:" + toProject,
 		Target:   ticketRef,

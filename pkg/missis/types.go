@@ -260,6 +260,31 @@ type LinkOptions struct {
 	Assertion string
 }
 
+// LinkBatchItem describes one additive link in an atomic link batch. Source
+// and target accept the same references as LinkOptions. MoveFrom is only used
+// for a has-home move and identifies the currently asserted project.
+type LinkBatchItem struct {
+	Source   string
+	Relation string
+	Target   string
+	MoveFrom string
+	Reason   string
+}
+
+// LinkBatchOptions is the input to ApplyLinkBatch. The operation is additive
+// from the caller's perspective: active duplicate triples are skipped, while
+// previously retracted assertions may be added again as new evidence.
+type LinkBatchOptions struct {
+	Items []LinkBatchItem
+}
+
+// LinkBatchResult reports the links appended and the active duplicate items
+// that were intentionally skipped.
+type LinkBatchResult struct {
+	Added   []SetResult
+	Skipped []string
+}
+
 type MoveLinkOptions struct {
 	Relation  string
 	From      string
@@ -295,11 +320,7 @@ type SearchOptions struct {
 	Groups   []string
 	// Unscoped selects tickets that match neither a project nor a group view.
 	// It is mutually exclusive with project and group inputs.
-	Unscoped bool
-	// Project and Group are compatibility inputs. They accept one value or
-	// comma-separated values and are merged with Projects and Groups.
-	Project     string
-	Group       string
+	Unscoped    bool
 	Type        string
 	Tag         string
 	EffectiveAt time.Time
@@ -313,11 +334,7 @@ type ListFilter struct {
 	Groups   []string
 	// Unscoped selects tickets that match neither a project nor a group view.
 	// It is mutually exclusive with project and group inputs.
-	Unscoped bool
-	// Project and Group are compatibility inputs. They accept one value or
-	// comma-separated values and are merged with Projects and Groups.
-	Project     string
-	Group       string
+	Unscoped    bool
 	Status      string
 	Type        string
 	Tag         string

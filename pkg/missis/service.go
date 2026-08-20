@@ -18,9 +18,13 @@ type Service interface {
 	SuppliedPath() string
 	DiscoverySource() DiscoverySource
 	StoreID() (string, error)
+	StoreIDContext(ctx context.Context) (string, error)
 	HeadHash() (string, error)
+	HeadHashContext(ctx context.Context) (string, error)
 	EventCount() (int64, error)
+	EventCountContext(ctx context.Context) (int64, error)
 	SchemaVersion() (string, error)
+	SchemaVersionContext(ctx context.Context) (string, error)
 	CheckConsistency(ctx context.Context) error
 	Backup(ctx context.Context, dst string) error
 	SequenceGaps(ctx context.Context) ([]store.SequenceGap, error)
@@ -37,7 +41,9 @@ type Service interface {
 	AppendTicketBatch(ctx context.Context, events []model.Event, idempotencyKey string, result any) (store.AppendOutcome, uint64, error)
 	LookupTicketAlias(ctx context.Context, ticketID model.TicketID) (uint64, error)
 	LookupIdempotency(key string, result any) (bool, error)
+	LookupIdempotencyContext(ctx context.Context, key string, result any) (bool, error)
 	UpdateIdempotencyResult(key string, result any) error
+	UpdateIdempotencyResultContext(ctx context.Context, key string, result any) error
 
 	NewTicket(ctx context.Context, req RequestContext, opts NewTicketOptions) (NewTicketResult, error)
 	NewEntity(ctx context.Context, req RequestContext, opts EntityOptions) (EntityResult, error)
@@ -57,6 +63,7 @@ type Service interface {
 	CountTicketsFiltered(ctx context.Context, filter ListFilter) (int, error)
 	Set(ctx context.Context, req RequestContext, mutation Mutation) (SetResult, error)
 	SetLink(ctx context.Context, req RequestContext, opts LinkOptions) (SetResult, error)
+	ApplyLinkBatch(ctx context.Context, req RequestContext, opts LinkBatchOptions) (LinkBatchResult, error)
 	MoveLink(ctx context.Context, req RequestContext, opts MoveLinkOptions) (SetResult, error)
 	JoinScope(ctx context.Context, req RequestContext, opts ScopeOptions) (SetResult, error)
 	LeaveScope(ctx context.Context, req RequestContext, opts ScopeOptions) (SetResult, error)

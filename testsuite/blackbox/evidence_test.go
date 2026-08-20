@@ -21,7 +21,11 @@ func TestEvidenceSemanticsEndToEnd(t *testing.T) {
 		t.Fatalf("first assert: %d %s", first.code, first.stderr)
 	}
 	firstAlias := mustJSON(t, first)["event"].(string)
-	if result := runMissis(t, store, "set", "--json", "--actor", "plugin/x", "project:a/links", "--add", "contains:#1"); result.code != 0 {
+	guarded := runMissis(t, store, "set", "--json", "--actor", "plugin/guarded", "project:a/links", "--add", "contains:#1")
+	if guarded.code != 0 || mustJSON(t, guarded)["operation"] != "noop" {
+		t.Fatalf("default CLI duplicate guard: %d %s", guarded.code, guarded.stderr)
+	}
+	if result := runMissis(t, store, "set", "--json", "--actor", "plugin/x", "project:a/links", "--add", "contains:#1", "--allow-duplicate"); result.code != 0 {
 		t.Fatalf("second assert: %d %s", result.code, result.stderr)
 	}
 

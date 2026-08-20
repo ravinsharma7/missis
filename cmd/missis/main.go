@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,6 +43,24 @@ func (s *stringList) Set(value string) error {
 	return nil
 }
 
+func normalizeScopeInputs(values []string) []string {
+	seen := make(map[string]struct{})
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				seen[item] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for value := range seen {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
 type newResult struct {
 	Ref        string  `json:"ref"`
 	ID         string  `json:"id"`
@@ -49,13 +68,6 @@ type newResult struct {
 	Status     string  `json:"status"`
 	Project    *string `json:"project"`
 	RecordedAt string  `json:"recorded_at"`
-}
-
-type setResult struct {
-	Ref       string `json:"ref"`
-	Event     string `json:"event"`
-	Operation string `json:"operation"`
-	Value     any    `json:"value"`
 }
 
 type showTicket struct {
@@ -1051,20 +1063,22 @@ func runShow(args []string) int {
 		return exitSuccess
 	}
 
-	filterProjects := append([]string(nil), project...)
-	filterGroups := append([]string(nil), group...)
+	projectExplicit := len(project) > 0
+	groupExplicit := len(group) > 0
+	filterProjects := normalizeScopeInputs(project)
+	filterGroups := normalizeScopeInputs(group)
 	if unscoped && (len(filterProjects) > 0 || len(filterGroups) > 0) {
 		printError(fmt.Errorf("--unscoped cannot be combined with --project or --group"), exitInvalid, jsonMode, nil)
 		return exitInvalid
 	}
-	if !unscoped && len(filterProjects) == 0 {
+	if !unscoped && !projectExplicit {
 		if env := os.Getenv("MISSIS_PROJECT"); env != "" {
-			filterProjects = []string{env}
+			filterProjects = normalizeScopeInputs([]string{env})
 		}
 	}
-	if !unscoped && len(filterGroups) == 0 {
+	if !unscoped && !groupExplicit {
 		if env := os.Getenv("MISSIS_GROUP"); env != "" {
-			filterGroups = []string{env}
+			filterGroups = normalizeScopeInputs([]string{env})
 		}
 	}
 	if unscoped || len(filterProjects) > 0 || len(filterGroups) > 0 || search != "" || len(status) > 0 || len(typeFilter) > 0 || len(tagFilter) > 0 {
@@ -1192,30 +1206,31 @@ func runSet(args []string) int {
 		"actor": true, "effective-at": true, "reason": true, "name": true,
 		"parent": true, "supersedes": true, "because": true,
 		"if-current": true, "idempotency-key": true, "store": true, "kind": true,
-		"assertion": true,
-		"from":      true,
+		"assertion": true, "allow-duplicate": true,
+		"from": true,
 	})
 	fs := flag.NewFlagSet("set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var (
-		jsonMode    bool
-		actor       string
-		effectiveAt string
-		retract     bool
-		recursive   bool
-		reason      string
-		add         bool
-		name        string
-		parent      string
-		supersedes  string
-		because     string
-		ifCurrent   string
-		idemKey     string
-		storeFlag   string
-		fromFile    string
-		stdin       bool
-		kind        string
-		assertion   string
+		jsonMode       bool
+		actor          string
+		effectiveAt    string
+		retract        bool
+		recursive      bool
+		reason         string
+		add            bool
+		name           string
+		parent         string
+		supersedes     string
+		because        string
+		ifCurrent      string
+		idemKey        string
+		storeFlag      string
+		fromFile       string
+		stdin          bool
+		kind           string
+		assertion      string
+		allowDuplicate bool
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&actor, "actor", "human/local", "actor reference")
@@ -1235,6 +1250,7 @@ func runSet(args []string) int {
 	fs.BoolVar(&stdin, "stdin", false, "import Markdown from stdin")
 	fs.StringVar(&kind, "kind", "", "explicit value kind (required when no schema declaration matches)")
 	fs.StringVar(&assertion, "assertion", "", "assertion event alias to retract (optional; without it, all active assertions are retracted)")
+	fs.BoolVar(&allowDuplicate, "allow-duplicate", false, "allow another active assertion of an identical link")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
@@ -1295,7 +1311,13 @@ func runSet(args []string) int {
 			printError(fmt.Errorf("link value must be relation:ref"), exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
-		result, err := client.SetLink(ctx, req, missis.LinkOptions{Ref: ref, Relation: relation, Target: targetStr, Add: add, Retract: retract, Reason: reason, Assertion: assertion})
+		linkOpts := missis.LinkOptions{Ref: ref, Relation: relation, Target: targetStr, Add: add, Retract: retract, Reason: reason, Assertion: assertion}
+		var result missis.SetResult
+		if add && !allowDuplicate {
+			result, err = svc.SetLinkIfAbsent(ctx, req, linkOpts)
+		} else {
+			result, err = client.SetLink(ctx, req, linkOpts)
+		}
 		if err != nil {
 			printError(err, mapError(err), jsonMode, &ref)
 			return mapError(err)
