@@ -41,6 +41,29 @@ type detailState struct {
 	showRefs bool
 }
 
+// quickLinkTarget is a context-aware link target. Membership links sometimes
+// need to be asserted from the target's container (for example, adding a
+// project to a group), so the picker keeps the actual source separate from
+// the item shown to the user.
+type quickLinkTarget struct {
+	ref      string
+	labelRef string
+	title    string
+	hint     string
+	source   string
+	relation string
+	existing bool
+}
+
+type quickLinkPicker struct {
+	targets          []quickLinkTarget
+	relations        []string
+	selected         int
+	marked           map[int]bool
+	selectionTouched bool
+	relation         string
+}
+
 type refreshMsg struct{}
 
 type scopeSelection struct {
@@ -72,10 +95,6 @@ func newScopeSelection(projects, groups []string) scopeSelection {
 		Projects: normalizeScopeList(projects...),
 		Groups:   normalizeScopeList(groups...),
 	}
-}
-
-func scopeFromLegacy(project, group string) scopeSelection {
-	return newScopeSelection([]string{project}, []string{group})
 }
 
 func (s scopeSelection) empty() bool {
@@ -122,46 +141,50 @@ func scopeLabel(values []string, empty string) string {
 }
 
 type tuiModel struct {
-	client          *missis.Client
-	summaries       []missis.TicketSummary
-	entities        []entityItem
-	selected        int
-	view            string
-	kind            string
-	detail          *detailState
-	compareA        *missis.TicketSummary
-	compareB        *missis.TicketSummary
-	message         string
-	err             error
-	width           int
-	height          int
-	listOffset      int
-	statsOffset     int
-	input           string
-	cursor          int
-	inputMode       string
-	inputErr        string
-	activeScope     scopeSelection
-	draftScope      scopeSelection
-	contextPrevView string
-	// projectCtx and groupCtx remain as compatibility mirrors for existing
-	// callers/tests; activeScope is the authoritative TUI state.
-	projectCtx         string
-	groupCtx           string
-	ctxSelected        int
-	prevView           string
-	helpOffset         int
-	compareOffset      int
-	ctxOffset          int
-	contextProjects    []missis.EntitySummary
-	contextGroups      []missis.EntitySummary
-	contextCounts      map[string]int
-	contextCountErr    map[string]error
-	contextLoaded      bool
-	draftCount         int
-	draftCountErr      error
-	draftCountReady    bool
-	contextEffectiveAt time.Time
+	client                  *missis.Client
+	summaries               []missis.TicketSummary
+	entities                []entityItem
+	selected                int
+	view                    string
+	kind                    string
+	detail                  *detailState
+	compareA                *missis.TicketSummary
+	compareB                *missis.TicketSummary
+	message                 string
+	linkNotice              string
+	linkNoticeRef           string
+	linkNoticeError         bool
+	err                     error
+	width                   int
+	height                  int
+	listOffset              int
+	statsOffset             int
+	input                   string
+	cursor                  int
+	inputMode               string
+	inputErr                string
+	quickLink               *quickLinkPicker
+	ticketListMode          string
+	ticketMemberships       map[string]ticketMembership
+	ticketMembershipErr     error
+	ticketMembershipsLoaded bool
+	activeScope             scopeSelection
+	draftScope              scopeSelection
+	contextPrevView         string
+	ctxSelected             int
+	prevView                string
+	helpOffset              int
+	compareOffset           int
+	ctxOffset               int
+	contextProjects         []missis.EntitySummary
+	contextGroups           []missis.EntitySummary
+	contextCounts           map[string]int
+	contextCountErr         map[string]error
+	contextLoaded           bool
+	draftCount              int
+	draftCountErr           error
+	draftCountReady         bool
+	contextEffectiveAt      time.Time
 }
 
 func newModel() (*tuiModel, error) {
@@ -170,7 +193,7 @@ func newModel() (*tuiModel, error) {
 		return nil, err
 	}
 	client := missis.NewClient(svc)
-	projectCtx, groupCtx := "none", "none"
+	projectValues, groupValues := []string(nil), []string(nil)
 	activePath := filepath.Join(".missis.d", "active.local.md")
 	if _, statErr := os.Stat(activePath); statErr != nil {
 		activePath = filepath.Join(".missis.d", "active.example.md")
@@ -179,34 +202,36 @@ func newModel() (*tuiModel, error) {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "project:") {
-				projectCtx = strings.TrimSpace(strings.TrimPrefix(line, "project:"))
+				projectValues = append(projectValues, strings.TrimSpace(strings.TrimPrefix(line, "project:")))
 			}
 			if strings.HasPrefix(line, "group:") {
-				groupCtx = strings.TrimSpace(strings.TrimPrefix(line, "group:"))
+				groupValues = append(groupValues, strings.TrimSpace(strings.TrimPrefix(line, "group:")))
 			}
 		}
 	}
 	if env := os.Getenv("MISSIS_PROJECT"); env != "" {
-		projectCtx = env
+		projectValues = []string{env}
 	}
 	if env := os.Getenv("MISSIS_GROUP"); env != "" {
-		groupCtx = env
+		groupValues = []string{env}
 	}
-	activeScope := scopeFromLegacy(projectCtx, groupCtx)
+	activeScope := scopeSelection{
+		Projects: normalizeScopeList(projectValues...),
+		Groups:   normalizeScopeList(groupValues...),
+	}
 	summaries, err := loadTicketSummariesForScope(client, activeScope)
 	if err != nil {
 		client.Close()
 		return nil, err
 	}
 	return &tuiModel{
-		client:      client,
-		summaries:   summaries,
-		view:        "list",
-		kind:        "tickets",
-		activeScope: activeScope,
-		draftScope:  activeScope,
-		projectCtx:  projectCtx,
-		groupCtx:    groupCtx,
+		client:         client,
+		summaries:      summaries,
+		view:           "list",
+		kind:           "tickets",
+		ticketListMode: "compact",
+		activeScope:    activeScope,
+		draftScope:     activeScope,
 	}, nil
 }
 
@@ -244,11 +269,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "q":
-			if m.view != "input" && m.view != "context" {
+			if m.view != "input" && m.view != "context" && m.view != "link-picker" && m.view != "link-relations" {
 				return m, tea.Quit
 			}
 		case "?":
-			if m.view != "input" && m.view != "context" && m.view != "help" {
+			if m.view != "input" && m.view != "context" && m.view != "link-picker" && m.view != "link-relations" && m.view != "help" {
 				m.prevView = m.view
 				m.view = "help"
 				m.helpOffset = 0
@@ -268,6 +293,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateStats(msg)
 	case "input":
 		return m.updateInput(msg)
+	case "link-picker", "link-relations":
+		return m.updateQuickLink(msg)
 	case "context":
 		return m.updateContext(msg)
 	case "help":
@@ -295,6 +322,9 @@ func (m tuiModel) isNavigationKey(key string) bool {
 	if m.view == "input" {
 		return key == "esc"
 	}
+	if m.view == "link-picker" || m.view == "link-relations" {
+		return key == "esc"
+	}
 
 	switch key {
 	case "up", "down", "k", "j", "pgup", "pgdown", "home", "end", "G", "esc":
@@ -304,15 +334,17 @@ func (m tuiModel) isNavigationKey(key string) bool {
 	case "t", "p", "g":
 		return true
 	case "r":
-		return m.view == "list" || m.view == "detail" || m.view == "context"
+		return m.view == "list" || m.view == "detail" || m.view == "stats" || m.view == "context"
 	case "?":
 		return m.view != "context" && m.view != "help"
 	case "s":
 		return m.view == "list" && !m.isEntityList()
+	case "m":
+		return m.view == "list" && !m.isEntityList()
 	case "x":
 		return m.view == "list"
 	case "f":
-		return m.view == "detail" && m.detail != nil && m.detail.entity != nil
+		return (m.view == "detail" && m.detail != nil && m.detail.entity != nil) || (m.view == "list" && m.isEntityList())
 	case "enter", " ":
 		return m.view == "list" || m.view == "context"
 	default:
@@ -322,7 +354,7 @@ func (m tuiModel) isNavigationKey(key string) bool {
 
 // goBack leaves the current subpage and returns to the page it was opened
 // from. b is the standard back key on every subpage (esc stays as an alias);
-// text-input prompts type b and q, while the context picker uses b/esc to
+// text-input prompts type b and q, while the ticket-filter picker uses b/esc to
 // cancel and leaves q inert. q quits regular views, and ctrl+c is the hard
 // exit everywhere. Errors are dismissed on the way back so an error screen
 // never traps the user.
@@ -344,6 +376,10 @@ func (m tuiModel) goBack() tuiModel {
 		m.input = ""
 		m.cursor = 0
 		m.inputErr = ""
+		m.message = ""
+	case "link-picker", "link-relations":
+		m.view = "detail"
+		m.quickLink = nil
 		m.message = ""
 	case "context":
 		m.view = "list"
@@ -413,6 +449,7 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			ent := m.entities[m.selected].summary
+			m.clearLinkNoticeIfDifferent(ent.Ref)
 			lines, err := entityLines(m.client, ent, m.renderWidth())
 			if err != nil {
 				m.err = err
@@ -426,6 +463,7 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		summary := m.summaries[m.selected]
+		m.clearLinkNoticeIfDifferent(summary.Ref)
 		lines, err := ticketLines(m.client, summary, m.renderWidth())
 		if err != nil {
 			m.err = err
@@ -464,6 +502,21 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		m.refresh()
+	case "m":
+		if m.isEntityList() {
+			return m, nil
+		}
+		if m.ticketListMode == "ownership" {
+			m.ticketListMode = "compact"
+			m.ticketMembershipErr = nil
+			m.message = "ticket list: compact mode"
+			return m, nil
+		}
+		m.ticketListMode = "ownership"
+		m.refreshTicketMemberships()
+		if m.ticketMembershipErr == nil {
+			m.message = "ticket list: ownership mode"
+		}
 	case "esc":
 		m.err = nil
 	case "t", "p", "g":
@@ -485,11 +538,31 @@ func (m tuiModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inputErr = ""
 		m.view = "input"
 		m.message = ""
+	case "f":
+		if !m.isEntityList() || len(m.entities) == 0 {
+			return m, nil
+		}
+		ref := m.entities[m.selected].summary.Ref
+		kind, id, ok := strings.Cut(ref, ":")
+		if !ok || (kind != "project" && kind != "group") {
+			m.message = "cannot filter: unknown entity ref"
+			return m, nil
+		}
+		scope := scopeSelection{}
+		if kind == "project" {
+			scope.Projects = []string{id}
+		} else {
+			scope.Groups = []string{id}
+		}
+		return m.applyContextSelection(scope), nil
 	case "s":
 		if !m.isEntityList() {
+			m.refreshTicketMemberships()
 			m.view = "stats"
 			m.statsOffset = 0
-			m.message = ""
+			if m.ticketMembershipErr == nil {
+				m.message = ""
+			}
 		}
 	case "x":
 		m = m.openContext(m.currentScope())
@@ -583,16 +656,10 @@ func (m tuiModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail.showRefs = !m.detail.showRefs
 		m.refreshDetail()
 	case "l":
-		if m.detail != nil && m.detail.entity != nil && !strings.HasPrefix(m.detail.entity.Ref, "group:") {
-			m.message = "link actions on projects are not supported; use a ticket (l) or a group (l)"
+		if m.detail == nil {
 			return m, nil
 		}
-		m.inputMode = "link"
-		m.input = ""
-		m.cursor = 0
-		m.inputErr = ""
-		m.view = "input"
-		m.message = ""
+		return m.openQuickLink(), nil
 	}
 	return m, nil
 }
@@ -622,6 +689,429 @@ func (m tuiModel) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if changed {
 			m.inputErr = ""
 		}
+	}
+	return m, nil
+}
+
+func (m tuiModel) openQuickLink() tuiModel {
+	targets, err := m.quickLinkTargets("")
+	if err != nil {
+		m.err = err
+		return m
+	}
+	marked := make(map[int]bool)
+	if m.detail != nil && m.detail.entity == nil {
+		existing, err := m.quickLinkExistingTargets(targets)
+		if err != nil {
+			m.err = err
+			return m
+		}
+		for index := range existing {
+			marked[index] = true
+			targets[index].existing = true
+		}
+	}
+	m.quickLink = &quickLinkPicker{targets: targets, marked: marked}
+	m.view = "link-picker"
+	m.inputErr = ""
+	m.message = ""
+	m.clampQuickLinkSelection()
+	return m
+}
+
+func (m tuiModel) openAdvancedLinkInput() tuiModel {
+	m.quickLink = nil
+	m.inputMode = "link"
+	m.input = ""
+	m.cursor = 0
+	m.inputErr = ""
+	m.view = "input"
+	m.message = ""
+	return m
+}
+
+func (m tuiModel) quickLinkTargets(relation string) ([]quickLinkTarget, error) {
+	if m.detail == nil {
+		return nil, errors.New("link picker requires an open detail")
+	}
+	now := time.Now().UTC()
+	var targets []quickLinkTarget
+	addEntities := func(kind model.Kind, source, linkRelation, hint string) error {
+		entities, err := m.client.ListEntities(context.Background(), kind, missis.ListFilter{EffectiveAt: now, KnownAt: now})
+		if err != nil {
+			return err
+		}
+		for _, entity := range entities {
+			targets = append(targets, quickLinkTarget{
+				ref:      entity.Ref,
+				title:    entity.Title,
+				hint:     hint,
+				source:   source,
+				relation: linkRelation,
+			})
+		}
+		return nil
+	}
+	addTickets := func(source, linkRelation, hint string) error {
+		tickets, err := m.client.ListTicketSummaries(context.Background(), now)
+		if err != nil {
+			return err
+		}
+		for _, ticket := range tickets {
+			if m.detail.entity == nil && ticket.Ref == m.detail.summary.Ref {
+				continue
+			}
+			targets = append(targets, quickLinkTarget{
+				ref:      ticket.Ref,
+				title:    ticket.Title,
+				hint:     hint,
+				source:   source,
+				relation: linkRelation,
+			})
+		}
+		return nil
+	}
+
+	if relation != "" {
+		if m.detail.entity != nil {
+			return nil, errors.New("ticket relations are only available from ticket detail")
+		}
+		if err := addTickets(m.detail.summary.Ref, relation, "ticket link"); err != nil {
+			return nil, err
+		}
+		return targets, nil
+	}
+
+	if m.detail.entity != nil {
+		entity := m.detail.entity
+		switch {
+		case strings.HasPrefix(entity.Ref, "project:"):
+			// Membership is stored from the group to the project. The picker
+			// hides that storage detail and lets users act from the project.
+			if err := addEntities(model.KindGroup, "", model.RelationContains, "add project to group"); err != nil {
+				return nil, err
+			}
+			for i := range targets {
+				targets[i].labelRef = targets[i].ref
+				targets[i].source = targets[i].ref
+				targets[i].ref = entity.Ref
+				targets[i].title = entity.Title + " · " + targets[i].title
+			}
+		case strings.HasPrefix(entity.Ref, "group:"):
+			if err := addEntities(model.KindProject, entity.Ref, model.RelationContains, "add project"); err != nil {
+				return nil, err
+			}
+			if err := addTickets(entity.Ref, model.RelationContains, "add ticket"); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("unsupported entity ref: %s", entity.Ref)
+		}
+		return targets, nil
+	}
+
+	// Ticket membership is also presented from the ticket side. Selecting a
+	// project assigns home; selecting a group asserts the group's contains
+	// relation for this ticket.
+	if err := addEntities(model.KindProject, m.detail.summary.Ref, model.RelationHasHome, "set home project"); err != nil {
+		return nil, err
+	}
+	groupStart := len(targets)
+	if err := addEntities(model.KindGroup, "", model.RelationContains, "add ticket to group"); err != nil {
+		return nil, err
+	}
+	for i := groupStart; i < len(targets); i++ {
+		targets[i].labelRef = targets[i].ref
+		targets[i].source = targets[i].ref
+		targets[i].ref = m.detail.summary.Ref
+	}
+	return targets, nil
+}
+
+// quickLinkExistingTargets returns the project/group membership targets that
+// already belong to the open ticket. They are shown as checked when l opens so
+// the picker reflects the ticket's current membership instead of looking like
+// an empty add-only form.
+func (m tuiModel) quickLinkExistingTargets(targets []quickLinkTarget) (map[int]bool, error) {
+	existing := make(map[int]bool)
+	if m.detail == nil || m.detail.entity != nil {
+		return existing, nil
+	}
+	now := time.Now().UTC()
+	links, err := m.client.ShowReferences(context.Background(), m.detail.summary.Ref, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
+	if err != nil {
+		return nil, err
+	}
+	for index, target := range targets {
+		for _, link := range links {
+			matched := false
+			switch target.relation {
+			case model.RelationHasHome:
+				matched = link.Direction == "asserted" && link.Relation == model.RelationHasHome && link.To == target.ref
+			case model.RelationContains:
+				matched = link.Direction == "derived-inverse" && link.Relation == model.RelationContainedBy && link.To == target.source
+			}
+			if matched {
+				existing[index] = true
+				break
+			}
+		}
+	}
+	return existing, nil
+}
+
+// linkAlreadyExists checks the effective asserted link before the TUI emits a
+// new immutable-store event. The service deliberately keeps SetLink additive;
+// this UI-level guard avoids growing duplicate evidence when a user selects
+// the same value again.
+func (m tuiModel) linkAlreadyExists(source, relation, target string) (bool, error) {
+	now := time.Now().UTC()
+	links, err := m.client.ShowReferences(context.Background(), source, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
+	if err != nil {
+		return false, err
+	}
+	for _, link := range links {
+		if link.Direction != "asserted" || link.Relation != relation {
+			continue
+		}
+		matched, err := m.linkRefsEqual(target, link.To)
+		if err != nil {
+			return false, err
+		}
+		if matched {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m tuiModel) linkRefsEqual(wanted, actual string) (bool, error) {
+	if wanted == actual {
+		return true, nil
+	}
+	if strings.HasPrefix(wanted, "ticket:") && strings.HasPrefix(actual, "ticket:") {
+		return strings.TrimPrefix(wanted, "ticket:") == strings.TrimPrefix(actual, "ticket:"), nil
+	}
+	if !strings.HasPrefix(wanted, "#") || !strings.HasPrefix(actual, "ticket:") {
+		return false, nil
+	}
+	tickets, err := m.client.ListTicketSummaries(context.Background(), time.Now().UTC())
+	if err != nil {
+		return false, err
+	}
+	for _, ticket := range tickets {
+		if ticket.Ref == wanted {
+			return ticket.ID == actual || strings.TrimPrefix(ticket.ID, "ticket:") == strings.TrimPrefix(actual, "ticket:"), nil
+		}
+	}
+	return false, nil
+}
+
+func quickTicketRelations() []string {
+	var relations []string
+	for _, relation := range model.ValidRelations() {
+		switch relation {
+		case model.RelationContains, model.RelationContainedBy, model.RelationGoverns, model.RelationGovernedBy, model.RelationHasHome, model.RelationHomeOf, model.RelationMemberOf, model.RelationHasMember:
+			continue
+		default:
+			relations = append(relations, relation)
+		}
+	}
+	return relations
+}
+
+func (m tuiModel) updateQuickLink(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok || m.quickLink == nil {
+		return m, nil
+	}
+	items := len(m.quickLink.targets)
+	if m.view == "link-relations" {
+		items = len(m.quickLink.relations)
+	}
+	if items > 0 {
+		switch key.String() {
+		case "up", "k":
+			if m.quickLink.selected > 0 {
+				m.quickLink.selected--
+			}
+		case "down", "j":
+			if m.quickLink.selected < items-1 {
+				m.quickLink.selected++
+			}
+		case "home":
+			m.quickLink.selected = 0
+		case "G", "end":
+			m.quickLink.selected = items - 1
+		}
+	}
+	switch key.String() {
+	case "enter":
+		if m.view == "link-relations" {
+			if len(m.quickLink.relations) == 0 {
+				return m, nil
+			}
+			m.quickLink.relation = m.quickLink.relations[m.quickLink.selected]
+			targets, err := m.quickLinkTargets(m.quickLink.relation)
+			if err != nil {
+				m.inputErr = err.Error()
+				return m, nil
+			}
+			m.quickLink.targets = targets
+			m.quickLink.selected = 0
+			m.quickLink.marked = make(map[int]bool)
+			m.quickLink.selectionTouched = false
+			m.view = "link-picker"
+			m.inputErr = ""
+			return m, nil
+		}
+		if len(m.quickLink.targets) == 0 {
+			return m, nil
+		}
+		return m.submitQuickLinks()
+	case " ":
+		if m.view == "link-picker" && len(m.quickLink.targets) > 0 {
+			m.quickLink.selectionTouched = true
+			if m.quickLink.marked == nil {
+				m.quickLink.marked = make(map[int]bool)
+			}
+			if !m.quickLink.marked[m.quickLink.selected] && m.quickLink.targets[m.quickLink.selected].relation == model.RelationHasHome {
+				for index, target := range m.quickLink.targets {
+					if target.relation == model.RelationHasHome {
+						delete(m.quickLink.marked, index)
+					}
+				}
+			}
+			if m.quickLink.marked[m.quickLink.selected] {
+				delete(m.quickLink.marked, m.quickLink.selected)
+			} else {
+				m.quickLink.marked[m.quickLink.selected] = true
+			}
+		}
+	case "r":
+		if m.view == "link-picker" && m.detail.entity == nil {
+			m.quickLink.relations = quickTicketRelations()
+			m.quickLink.selected = 0
+			m.quickLink.marked = make(map[int]bool)
+			m.quickLink.selectionTouched = false
+			m.view = "link-relations"
+			m.inputErr = ""
+		}
+	case "a":
+		return m.openAdvancedLinkInput(), nil
+	case "b", "esc":
+		return m.goBack(), nil
+	}
+	m.clampQuickLinkSelection()
+	return m, nil
+}
+
+func (m *tuiModel) clampQuickLinkSelection() {
+	if m.quickLink == nil {
+		return
+	}
+	count := len(m.quickLink.targets)
+	if m.view == "link-relations" {
+		count = len(m.quickLink.relations)
+	}
+	if count == 0 {
+		m.quickLink.selected = 0
+		return
+	}
+	if m.quickLink.selected < 0 {
+		m.quickLink.selected = 0
+	}
+	if m.quickLink.selected >= count {
+		m.quickLink.selected = count - 1
+	}
+}
+
+func (m tuiModel) submitQuickLinks() (tea.Model, tea.Cmd) {
+	indices := make([]int, 0, len(m.quickLink.marked))
+	for index, marked := range m.quickLink.marked {
+		if marked && index >= 0 && index < len(m.quickLink.targets) {
+			indices = append(indices, index)
+		}
+	}
+	if len(indices) == 0 && !m.quickLink.selectionTouched {
+		indices = []int{m.quickLink.selected}
+	}
+	if len(indices) == 0 {
+		m.inputErr = "select at least one link target"
+		return m, nil
+	}
+	sort.Ints(indices)
+
+	projectTargets := 0
+	for _, index := range indices {
+		if m.quickLink.targets[index].relation == model.RelationHasHome {
+			projectTargets++
+		}
+	}
+	if projectTargets > 1 {
+		m.inputErr = "select at most one project; groups can be selected together"
+		m.setLinkNotice(m.detailRef(), "link failed: "+m.inputErr, true)
+		return m, nil
+	}
+
+	req := missis.RequestContext{Actor: "tui"}
+
+	items := make([]missis.LinkBatchItem, 0, len(indices))
+	home := ""
+	for _, index := range indices {
+		target := m.quickLink.targets[index]
+		source := target.source
+		if target.relation == model.RelationHasHome {
+			source = m.detail.summary.Ref
+			var err error
+			home, err = currentHomeProject(m.client, m.detail.summary.Ref)
+			if err != nil {
+				m.inputErr = err.Error()
+				m.setLinkNotice(m.detailRef(), "link failed: "+m.inputErr, true)
+				return m, nil
+			}
+		}
+		item := missis.LinkBatchItem{Source: source, Relation: target.relation, Target: target.ref}
+		if target.relation == model.RelationHasHome && home != "" && home != strings.TrimPrefix(target.ref, "project:") {
+			item.MoveFrom = home
+		}
+		items = append(items, item)
+	}
+	result, err := m.client.ApplyLinkBatch(context.Background(), req, missis.LinkBatchOptions{Items: items})
+	if err != nil {
+		m.inputErr = err.Error()
+		m.setLinkNotice(m.detailRef(), "link failed: "+m.inputErr, true)
+		return m, nil
+	}
+	linked := len(result.Added)
+	skipped := len(result.Skipped)
+	lastRef := ""
+	if len(indices) > 0 {
+		last := m.quickLink.targets[indices[len(indices)-1]]
+		lastRef = last.labelRef
+		if lastRef == "" {
+			lastRef = last.ref
+		}
+	}
+	if linked == 0 && skipped == len(indices) && len(indices) > 1 {
+		m.message = "already linked to selected targets"
+	} else if len(indices) == 1 && linked == 0 && skipped == 1 {
+		m.message = "already linked to " + lastRef
+	} else if len(indices) == 1 {
+		m.message = "linked " + lastRef
+	} else {
+		m.message = fmt.Sprintf("linked %d target(s)", linked)
+		if skipped > 0 {
+			m.message += fmt.Sprintf(" (%d already linked)", skipped)
+		}
+	}
+	m.setLinkNotice(m.detailRef(), m.message+"; press R to inspect references", false)
+	m.inputErr = ""
+	m.quickLink = nil
+	m.view = "detail"
+	m.refreshDetail()
+	if m.ticketListMode == "ownership" {
+		m.refreshTicketMemberships()
 	}
 	return m, nil
 }
@@ -702,33 +1192,66 @@ func (m tuiModel) submitCreateTicket() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *tuiModel) setLinkInputError(text string) {
+	m.inputErr = text
+	m.setLinkNotice(m.detailRef(), "link failed: "+text, true)
+}
+
 func (m tuiModel) submitLinkAction() (tea.Model, tea.Cmd) {
 	act, err := parseLinkAction(m.input)
 	if err != nil {
-		m.inputErr = err.Error()
+		m.setLinkInputError(err.Error())
 		return m, nil
 	}
 	source := ""
+	target := act.Target
 	if m.detail != nil && m.detail.entity != nil {
-		if !strings.HasPrefix(m.detail.entity.Ref, "group:") {
-			m.inputErr = "link actions on projects are not supported; use a ticket (l) or a group (l)"
-			return m, nil
+		if strings.HasPrefix(m.detail.entity.Ref, "project:") {
+			if act.Action == "move" || act.Relation != model.RelationContains {
+				m.setLinkInputError("project links support contains:group:<id>; use l for the quick picker")
+				return m, nil
+			}
+			if !strings.HasPrefix(target, "group:") {
+				target = "group:" + target
+			}
+			source = target
+			target = m.detail.entity.Ref
+		} else {
+			if act.Action == "move" {
+				m.setLinkInputError("move applies to tickets only")
+				return m, nil
+			}
+			if act.Relation != model.RelationContains && act.Relation != model.RelationGoverns {
+				m.setLinkInputError("group links support contains:<project|ticket> and governs:<project>")
+				return m, nil
+			}
+			source = m.detail.entity.Ref
 		}
-		if act.Action == "move" {
-			m.inputErr = "move applies to tickets only"
-			return m, nil
-		}
-		if act.Relation != "contains" && act.Relation != "governs" {
-			m.inputErr = "group links support contains:<project|ticket> and governs:<project>"
-			return m, nil
-		}
-		source = m.detail.entity.Ref
 	} else if m.detail != nil {
-		if act.Relation == "contains" || act.Relation == "governs" || act.Relation == "has-member" {
-			m.inputErr = "membership relations on tickets are not supported; use l on a group or move project:<id>"
+		if act.Relation == model.RelationContains || act.Relation == model.RelationGoverns || act.Relation == model.RelationHasMember {
+			m.setLinkInputError("membership relations on tickets are not supported; use l on a group or move project:<id>")
 			return m, nil
 		}
 		source = m.detail.summary.Ref
+	}
+	if act.Action == "add" && source != "" {
+		exists, checkErr := m.linkAlreadyExists(source, act.Relation, target)
+		if checkErr != nil {
+			m.setLinkInputError(checkErr.Error())
+			return m, nil
+		}
+		if exists {
+			m.message = "already linked"
+			m.setLinkNotice(m.detailRef(), m.message+"; press R to inspect references", false)
+			m.refreshDetail()
+			m.err = nil
+			m.view = "detail"
+			m.inputMode = ""
+			m.input = ""
+			m.cursor = 0
+			m.inputErr = ""
+			return m, nil
+		}
 	}
 	req := missis.RequestContext{Actor: "tui"}
 	switch act.Action {
@@ -736,28 +1259,37 @@ func (m tuiModel) submitLinkAction() (tea.Model, tea.Cmd) {
 		_, err = m.client.SetLink(context.Background(), req, missis.LinkOptions{
 			Ref:      source + "/links",
 			Relation: act.Relation,
-			Target:   act.Target,
+			Target:   target,
 			Add:      act.Action == "add",
 			Retract:  act.Action == "retract",
 			Reason:   act.Reason,
 		})
 	case "move":
-		home := currentHomeProject(m.client, m.detail.summary.Ref)
+		home, homeErr := currentHomeProject(m.client, m.detail.summary.Ref)
+		if homeErr != nil {
+			m.setLinkInputError(homeErr.Error())
+			return m, nil
+		}
 		if home == "" {
-			m.inputErr = "ticket has no home project; nothing to move"
+			m.setLinkInputError("ticket has no home project; nothing to move")
 			return m, nil
 		}
 		_, err = m.client.MoveHome(context.Background(), req, m.detail.summary.Ref, home, strings.TrimPrefix(act.Target, "project:"), act.Reason)
 	}
 	if err != nil {
 		m.inputErr = err.Error()
+		m.setLinkNotice(m.detailRef(), "link failed: "+err.Error(), true)
 		if strings.Contains(err.Error(), "re-read and retry") || strings.Contains(err.Error(), "conflict") {
 			m.refreshDetail()
 		}
 		return m, nil
 	}
 	m.message = "link updated"
+	m.setLinkNotice(m.detailRef(), m.message+"; press R to inspect references", false)
 	m.refreshDetail()
+	if m.ticketListMode == "ownership" {
+		m.refreshTicketMemberships()
+	}
 	m.err = nil
 	m.view = "detail"
 	m.inputMode = ""
@@ -953,6 +1485,12 @@ func (m tuiModel) updateStats(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statsOffset = 0
 	case "G", "end":
 		m.statsOffset = maxOffset
+	case "r":
+		m.refreshTicketMemberships()
+		m.statsOffset = 0
+		if m.ticketMembershipErr == nil {
+			m.message = "stats refreshed"
+		}
 	case "t", "p", "g":
 		updated, _ := m.switchListForKey(key.String())
 		return updated, nil
@@ -1013,6 +1551,8 @@ func (m tuiModel) View() string {
 		default:
 			body = renderInput(fmt.Sprintf("Edit title %s: ", m.inputRef()), m.input, m.cursor)
 		}
+	case "link-picker", "link-relations":
+		body = m.viewQuickLink()
 	case "context":
 		body = m.viewContext()
 	case "help":
@@ -1026,6 +1566,14 @@ func (m tuiModel) View() string {
 	help := helpStyle.Render(strings.Join(m.helpLines(), "\n"))
 	if m.message != "" {
 		help += "\n" + m.message
+	}
+	if m.shouldRenderLinkNotice() {
+		notice, _ := m.visibleLinkNotice()
+		style := helpStyle
+		if m.linkNoticeError {
+			style = errorStyle
+		}
+		help += "\n" + style.Render(notice)
 	}
 	return lipgloss.JoinVertical(lipgloss.Top, body, help)
 }
@@ -1043,41 +1591,49 @@ func (m tuiModel) keyHints() []keyHint {
 	case "list":
 		hints := []keyHint{{"j/k", "move"}, {"enter", "open"}}
 		if m.isEntityList() {
-			hints = append(hints, keyHint{"n", "create " + strings.TrimSuffix(m.kind, "s")})
+			hints = append(hints, keyHint{"n", "create " + strings.TrimSuffix(m.kind, "s")}, keyHint{"f", "filter tickets"})
 		} else {
 			hints = append(hints,
 				keyHint{"n", "create ticket"},
 				keyHint{"c/v", "compare"},
 				keyHint{"e", "export"},
 				keyHint{"s", "stats"},
+				keyHint{"m", "ownership mode"},
 			)
 		}
 		hints = append(hints,
 			keyHint{"t/p/g", "lists"},
 			keyHint{"r", "refresh"},
-			keyHint{"x", "context"},
+			keyHint{"x", "ticket filters"},
 			keyHint{"q", "quit"},
 		)
 		return hints
 	case "detail":
 		hints := []keyHint{{"j/k", "scroll"}, {"pgup/pgdn", "page"}, {"home/G", "top/end"}, {"t/p/g", "lists"}}
 		if m.detail != nil && m.detail.entity == nil {
-			hints = append(hints, keyHint{"T", "edit title"}, keyHint{"l", "links"}, keyHint{"e", "export"})
+			hints = append(hints, keyHint{"T", "edit title"}, keyHint{"l", "quick link"}, keyHint{"e", "export"})
 		} else if m.detail != nil {
-			hints = append(hints, keyHint{"f", "filter tickets"})
-			if strings.HasPrefix(m.detail.entity.Ref, "group:") {
-				hints = append(hints, keyHint{"l", "links"})
-			}
+			hints = append(hints, keyHint{"f", "filter tickets"}, keyHint{"l", "quick link"})
 		}
 		hints = append(hints, keyHint{"r", "refresh"}, keyHint{"R", "refs"}, keyHint{"b", "back"})
 		return hints
 	case "stats":
-		return []keyHint{{"j/k", "scroll"}, {"pgup/pgdn", "page"}, {"home/G", "top/end"}, {"t/p/g", "lists"}, {"b", "back"}}
+		return []keyHint{{"j/k", "scroll"}, {"pgup/pgdn", "page"}, {"home/G", "top/end"}, {"r", "refresh"}, {"t/p/g", "lists"}, {"b", "back"}}
 	case "compare":
 		return []keyHint{{"j/k", "scroll"}, {"pgup/pgdn", "page"}, {"home/G", "top/end"}, {"t/p/g", "lists"}, {"b", "back"}}
-	case "input", "context":
+	case "input", "context", "link-picker", "link-relations":
 		if m.view == "input" {
 			return []keyHint{{"enter", "save"}, {"esc", "cancel"}, {"←/→", "cursor"}, {"home/end", "jump"}, {"backspace", "delete"}}
+		}
+		if m.view == "link-picker" {
+			hints := []keyHint{{"j/k", "choose"}, {"space", "select"}, {"enter", "apply"}, {"a", "advanced"}, {"b/esc", "cancel"}}
+			if m.detail != nil && m.detail.entity == nil {
+				hints = []keyHint{{"j/k", "choose"}, {"space", "select"}, {"enter", "apply"}, {"r", "ticket relation"}, {"a", "advanced"}, {"b/esc", "cancel"}}
+			}
+			return hints
+		}
+		if m.view == "link-relations" {
+			return []keyHint{{"j/k", "choose"}, {"enter", "next"}, {"a", "advanced"}, {"b/esc", "cancel"}}
 		}
 		return []keyHint{{"j/k", "move"}, {"pgup/pgdn", "page"}, {"home/G", "top/end"}, {"space", "toggle"}, {"enter", "apply"}, {"n", "clean"}, {"c", "clear"}, {"r", "refresh"}, {"t/p/g", "lists"}, {"b", "back"}}
 	case "help":
@@ -1103,14 +1659,11 @@ func kindLabel(kind string) string {
 }
 
 func (m tuiModel) currentScope() scopeSelection {
-	if !m.activeScope.empty() || m.activeScope.Unscoped || (m.projectCtx == "" || m.projectCtx == "none") && (m.groupCtx == "" || m.groupCtx == "none") {
-		return scopeSelection{
-			Projects: normalizeScopeList(m.activeScope.Projects...),
-			Groups:   normalizeScopeList(m.activeScope.Groups...),
-			Unscoped: m.activeScope.Unscoped,
-		}
+	return scopeSelection{
+		Projects: normalizeScopeList(m.activeScope.Projects...),
+		Groups:   normalizeScopeList(m.activeScope.Groups...),
+		Unscoped: m.activeScope.Unscoped,
 	}
-	return scopeFromLegacy(m.projectCtx, m.groupCtx)
 }
 
 func (m tuiModel) scopeNoteFor(scope scopeSelection) string {
@@ -1176,6 +1729,45 @@ func (m tuiModel) detailRef() string {
 	return m.detail.summary.Ref
 }
 
+func (m tuiModel) visibleLinkNotice() (string, bool) {
+	if m.linkNotice == "" {
+		return "", false
+	}
+	if m.view == "list" {
+		return m.linkNotice, true
+	}
+	if m.detailRef() == "" || m.detailRef() != m.linkNoticeRef {
+		return "", false
+	}
+	return m.linkNotice, true
+}
+
+func (m tuiModel) shouldRenderLinkNotice() bool {
+	notice, ok := m.visibleLinkNotice()
+	if !ok {
+		return false
+	}
+	return notice != m.message && notice != "link failed: "+m.inputErr
+}
+
+func (m *tuiModel) setLinkNotice(ref, text string, failed bool) {
+	m.linkNoticeRef = ref
+	m.linkNotice = text
+	m.linkNoticeError = failed
+}
+
+func (m *tuiModel) clearLinkNotice() {
+	m.linkNotice = ""
+	m.linkNoticeRef = ""
+	m.linkNoticeError = false
+}
+
+func (m *tuiModel) clearLinkNoticeIfDifferent(ref string) {
+	if m.linkNoticeRef != "" && m.linkNoticeRef != ref {
+		m.clearLinkNotice()
+	}
+}
+
 // inputRef names the ticket an input prompt applies to, falling back to a
 // generic label when no detail is open.
 func (m tuiModel) inputRef() string {
@@ -1191,6 +1783,9 @@ func (m tuiModel) breadcrumb() string {
 		crumb := "missis / " + kindLabel(m.kind)
 		if m.kind == "tickets" {
 			crumb += m.scopeNote()
+			if m.ticketListMode == "ownership" {
+				crumb += " · ownership"
+			}
 		}
 		return crumb
 	case "detail":
@@ -1226,8 +1821,10 @@ func (m tuiModel) breadcrumb() string {
 		default:
 			return "missis / tickets / " + m.inputRef() + " / edit title"
 		}
+	case "link-picker", "link-relations":
+		return "missis / " + kindLabel(m.kind) + " / " + m.detailRef() + " / quick link"
 	case "context":
-		return "missis / context"
+		return "missis / ticket filters"
 	case "help":
 		return "missis / help"
 	default:
@@ -1278,13 +1875,18 @@ func (m tuiModel) contextRows() []contextRow {
 	}
 	projects := m.contextProjects
 	groups := m.contextGroups
+	var loadErrors []string
 	if m.client != nil && !m.contextLoaded {
 		now := time.Now().UTC()
 		if projects, err := m.client.ListEntities(context.Background(), model.KindProject, missis.ListFilter{EffectiveAt: now, KnownAt: now}); err == nil {
 			m.contextProjects = projects
+		} else {
+			loadErrors = append(loadErrors, "projects unavailable")
 		}
 		if groups, err := m.client.ListEntities(context.Background(), model.KindGroup, missis.ListFilter{EffectiveAt: now, KnownAt: now}); err == nil {
 			m.contextGroups = groups
+		} else {
+			loadErrors = append(loadErrors, "groups unavailable")
 		}
 		projects = m.contextProjects
 		groups = m.contextGroups
@@ -1296,6 +1898,9 @@ func (m tuiModel) contextRows() []contextRow {
 	for _, g := range groups {
 		_, id, _ := strings.Cut(g.Ref, ":")
 		rows = append(rows, contextRow{label: g.Ref, kind: "group", ref: id, countKey: "group:" + id})
+	}
+	for _, label := range loadErrors {
+		rows = append(rows, contextRow{label: "(" + label + ")", kind: "unavailable"})
 	}
 	rows = append(rows,
 		contextRow{label: "create project…", kind: "create-project"},
@@ -1460,6 +2065,76 @@ func (m tuiModel) viewContext() string {
 	return b.String()
 }
 
+func (m tuiModel) viewQuickLink() string {
+	width, height := m.effectiveSize()
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(truncateCell(m.breadcrumb(), width)))
+	b.WriteString("\n\n")
+	if m.quickLink == nil {
+		return b.String()
+	}
+
+	var lines []string
+	if m.view == "link-relations" {
+		b.WriteString("Choose a ticket relation:\n\n")
+		lines = m.quickLink.relations
+	} else {
+		b.WriteString("Choose link targets (space selects multiple):\n\n")
+		lines = make([]string, 0, len(m.quickLink.targets))
+		for _, target := range m.quickLink.targets {
+			ref := target.labelRef
+			if ref == "" {
+				ref = target.ref
+			}
+			label := ref
+			if target.title != "" {
+				label += " — " + target.title
+			}
+			if target.hint != "" {
+				label += " (" + target.hint + ")"
+			}
+			lines = append(lines, label)
+		}
+	}
+	if len(lines) == 0 {
+		b.WriteString("  no available targets\n")
+		return b.String()
+	}
+
+	available := height - 5 - m.helpRows()
+	if available < 1 {
+		available = 1
+	}
+	start := m.quickLink.selected - available + 1
+	if start < 0 {
+		start = 0
+	}
+	end := start + available
+	if end > len(lines) {
+		end = len(lines)
+	}
+	for i := start; i < end; i++ {
+		cursor := "  "
+		if i == m.quickLink.selected {
+			cursor = "> "
+		}
+		mark := ""
+		availableWidth := width - 2
+		if m.view == "link-picker" {
+			mark = "· "
+			if m.quickLink.marked[i] {
+				mark = "✓ "
+			}
+			availableWidth = width - 4
+		}
+		if availableWidth < 1 {
+			availableWidth = 1
+		}
+		b.WriteString(cursor + mark + truncateCell(lines[i], availableWidth) + "\n")
+	}
+	return b.String()
+}
+
 // helpContent builds the cheatsheet from the same keyHints used by the help
 // bar, so the in-app reference never drifts from the actual keybindings.
 func (m tuiModel) helpContent() []string {
@@ -1471,12 +2146,12 @@ func (m tuiModel) helpContent() []string {
 	lines = append(lines, wrapParts([]string{
 		"global: q quit regular views",
 		"input types q",
-		"context q inert",
+		"ticket filters q inert",
 		"ctrl+c quit",
 		"b back (esc alias)",
 		"? help regular views",
 		"input types ?",
-		"context/help ? inert",
+		"ticket filters/help ? inert",
 	}, width, " · ")...)
 	sections := []struct {
 		title string
@@ -1486,10 +2161,12 @@ func (m tuiModel) helpContent() []string {
 		{"projects/groups list", tuiModel{view: "list", kind: "projects"}.keyHints()},
 		{"ticket detail", tuiModel{view: "detail", detail: &detailState{summary: missis.TicketSummary{Ref: "#N"}}}.keyHints()},
 		{"project/group detail", tuiModel{view: "detail", detail: &detailState{entity: &missis.EntitySummary{Ref: "project:x"}}}.keyHints()},
+		{"quick link picker", tuiModel{view: "link-picker", detail: &detailState{summary: missis.TicketSummary{Ref: "#N"}}}.keyHints()},
+		{"ticket relation picker", tuiModel{view: "link-relations", detail: &detailState{summary: missis.TicketSummary{Ref: "#N"}}}.keyHints()},
 		{"compare", tuiModel{view: "compare"}.keyHints()},
 		{"stats", tuiModel{view: "stats"}.keyHints()},
 		{"input prompts", tuiModel{view: "input"}.keyHints()},
-		{"context picker", tuiModel{view: "context"}.keyHints()},
+		{"ticket-filter picker", tuiModel{view: "context"}.keyHints()},
 	}
 	for _, section := range sections {
 		lines = append(lines, "", section.title)
@@ -1564,6 +2241,10 @@ func (m tuiModel) viewList() string {
 		}
 		return b.String()
 	}
+	if m.ticketListMode == "ownership" {
+		m.writeTicketOwnershipRows(&b, width, start, end, count)
+		return b.String()
+	}
 	b.WriteString(fmt.Sprintf("  %-6s %-10s %s\n", "REF", "STATUS", "TITLE"))
 	if count == 0 {
 		b.WriteString("  " + m.ticketsEmptyLine() + "\n")
@@ -1592,6 +2273,97 @@ func (m tuiModel) viewList() string {
 	return b.String()
 }
 
+func (m tuiModel) writeTicketOwnershipRows(b *strings.Builder, width, start, end, count int) {
+	projectWidth, groupWidth, statusWidth, titleWidth := ticketOwnershipWidths(width)
+	b.WriteString(fmt.Sprintf("  %-6s %-*s %-*s %-*s %s\n",
+		truncateCell("REF", 6),
+		projectWidth, truncateCell("PROJECT", projectWidth),
+		groupWidth, truncateCell("GROUP", groupWidth),
+		statusWidth, truncateCell("STATUS", statusWidth),
+		truncateCell("TITLE", titleWidth),
+	))
+	if count == 0 {
+		b.WriteString("  " + m.ticketsEmptyLine() + "\n")
+		return
+	}
+	for i := start; i < end; i++ {
+		summary := m.summaries[i]
+		membership, ok := m.ticketMemberships[ticketSummaryKey(summary)]
+		project := "—"
+		group := "—"
+		if ok {
+			project = strings.Join(membership.projects, ",")
+			group = strings.Join(membership.groups, ",")
+			if project == "" {
+				project = "—"
+			}
+			if group == "" {
+				group = "—"
+			}
+		}
+		status := summary.Status
+		if status == "" {
+			status = "—"
+		}
+		title := summary.Title
+		if title == "" {
+			title = "<no title>"
+		}
+		cursor := "  "
+		if i == m.selected {
+			cursor = "> "
+		}
+		b.WriteString(fmt.Sprintf("%s%-6s %-*s %-*s %-*s %s\n",
+			cursor,
+			truncateCell(summary.Ref, 6),
+			projectWidth, truncateCell(project, projectWidth),
+			groupWidth, truncateCell(group, groupWidth),
+			statusWidth, truncateCell(status, statusWidth),
+			truncateCell(title, titleWidth),
+		))
+	}
+}
+
+func ticketOwnershipWidths(width int) (project, group, status, title int) {
+	const refWidth = 6
+	const separators = 4
+	available := width - 2 - refWidth - separators
+	if available < 4 {
+		available = 4
+	}
+	status = available / 4
+	if status > 8 {
+		status = 8
+	}
+	if status < 1 {
+		status = 1
+	}
+	remaining := available - status
+	project = remaining / 3
+	group = remaining / 3
+	if project > 18 {
+		project = 18
+	}
+	if group > 18 {
+		group = 18
+	}
+	for project > 6 && group > 6 && remaining-project-group < 8 {
+		project--
+		group--
+	}
+	title = remaining - project - group
+	if project < 1 {
+		project = 1
+	}
+	if group < 1 {
+		group = 1
+	}
+	if title < 1 {
+		title = 1
+	}
+	return project, group, status, title
+}
+
 func (m tuiModel) entityIDWidth() int {
 	width, _ := m.effectiveSize()
 	maxLen := 10
@@ -1607,60 +2379,6 @@ func (m tuiModel) entityIDWidth() int {
 		maxLen = 10
 	}
 	return maxLen
-}
-
-type entityCounts struct {
-	groups   int
-	projects int
-	tickets  int
-}
-
-type entityItem struct {
-	summary missis.EntitySummary
-	counts  entityCounts
-}
-
-// membershipCounts derives how many groups, projects, and tickets are linked
-// to an entity from its references. From a project's perspective, groups are
-// the groups containing it (derived-inverse contained-by) and tickets are its
-// home-of tickets; from a group's perspective, projects are its asserted
-// contains/governs targets and tickets are its directly contained tickets.
-func membershipCounts(client *missis.Client, ref string) entityCounts {
-	var counts entityCounts
-	now := time.Now().UTC()
-	links, err := client.ShowReferences(context.Background(), ref, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
-	if err != nil {
-		return counts
-	}
-	for _, link := range links {
-		kind, _, ok := strings.Cut(link.To, ":")
-		if !ok {
-			continue
-		}
-		if strings.HasPrefix(ref, "group:") {
-			if link.Direction == "asserted" && kind == "project" && (link.Relation == "contains" || link.Relation == "governs") {
-				counts.projects++
-			}
-			if link.Direction == "asserted" && kind == "ticket" && link.Relation == "contains" {
-				counts.tickets++
-			}
-			continue
-		}
-		switch {
-		case link.Direction == "derived-inverse" && kind == "group" && link.Relation == "contained-by":
-			counts.groups++
-		case link.Direction == "derived-inverse" && kind == "ticket" && link.Relation == "home-of":
-			counts.tickets++
-		}
-	}
-	return counts
-}
-
-func (c entityCounts) label(kind string) string {
-	if kind == "groups" {
-		return fmt.Sprintf("%d projects · %d tickets", c.projects, c.tickets)
-	}
-	return fmt.Sprintf("%d groups · %d tickets", c.groups, c.tickets)
 }
 
 func (m *tuiModel) clampListOffset() {
@@ -1703,6 +2421,9 @@ func (m tuiModel) effectiveSize() (width, height int) {
 func (m tuiModel) helpRows() int {
 	rows := len(m.helpLines())
 	if m.message != "" {
+		rows++
+	}
+	if m.shouldRenderLinkNotice() {
 		rows++
 	}
 	return rows
@@ -2099,12 +2820,6 @@ func (m *tuiModel) clampCompareOffset() {
 	}
 }
 
-// loadTicketSummaries keeps the legacy test/helper signature while routing
-// through the typed SDK filter fields.
-func loadTicketSummaries(client *missis.Client, projectCtx, groupCtx string) ([]missis.TicketSummary, error) {
-	return loadTicketSummariesForScope(client, scopeFromLegacy(projectCtx, groupCtx))
-}
-
 func loadTicketSummariesForScope(client *missis.Client, scope scopeSelection) ([]missis.TicketSummary, error) {
 	scope = scopeSelection{
 		Projects: normalizeScopeList(scope.Projects...),
@@ -2124,20 +2839,11 @@ func loadTicketSummariesForScope(client *missis.Client, scope scopeSelection) ([
 	return client.ListTicketSummaries(context.Background(), now)
 }
 
-// loadEntityItems lists entities of a kind with their membership counts
-// attached, mirroring loadTicketSummaries as the single load path for entity
-// lists.
-func loadEntityItems(client *missis.Client, kind model.Kind) ([]entityItem, error) {
-	now := time.Now().UTC()
-	raw, err := client.ListEntities(context.Background(), kind, missis.ListFilter{EffectiveAt: now, KnownAt: now})
-	if err != nil {
-		return nil, err
+func ticketSummaryKey(summary missis.TicketSummary) string {
+	if summary.ID != "" {
+		return summary.ID
 	}
-	items := make([]entityItem, 0, len(raw))
-	for _, summary := range raw {
-		items = append(items, entityItem{summary: summary, counts: membershipCounts(client, summary.Ref)})
-	}
-	return items, nil
+	return summary.Ref
 }
 
 func (m tuiModel) scopeConfirmation(scope scopeSelection) string {
@@ -2177,12 +2883,6 @@ func (m tuiModel) applyContextSelection(scope scopeSelection) tuiModel {
 	}
 	m.activeScope = scope
 	m.draftScope = scope
-	if scope.Unscoped {
-		m.projectCtx = "unscoped"
-	} else {
-		m.projectCtx = scopeLabel(scope.Projects, "none")
-	}
-	m.groupCtx = scopeLabel(scope.Groups, "none")
 	m.kind = "tickets"
 	m.view = "list"
 	m.contextPrevView = ""
@@ -2193,11 +2893,6 @@ func (m tuiModel) applyContextSelection(scope scopeSelection) tuiModel {
 	m.message = "ticket list context: " + m.scopeConfirmation(scope)
 	m.refresh()
 	return m
-}
-
-// applyContext keeps the pre-multi-scope helper available to existing callers.
-func (m tuiModel) applyContext(project, group string) tuiModel {
-	return m.applyContextSelection(scopeFromLegacy(project, group))
 }
 
 // switchListForKey handles the t/p/g list-switch keys from any non-input
@@ -2219,6 +2914,9 @@ func (m tuiModel) switchListForKey(key string) (tuiModel, bool) {
 	if m.view == "list" && m.kind == kind {
 		m.message = "already on " + kind
 		return m, true
+	}
+	if m.kind != kind {
+		m.clearLinkNotice()
 	}
 	m.kind = kind
 	m.view = "list"
@@ -2275,6 +2973,13 @@ func (m *tuiModel) refresh() {
 		selectedID = m.summaries[m.selected].ID
 	}
 	m.summaries = summaries
+	if m.ticketListMode == "ownership" {
+		m.refreshTicketMemberships()
+	} else {
+		m.ticketMemberships = nil
+		m.ticketMembershipErr = nil
+		m.ticketMembershipsLoaded = false
+	}
 	m.selected = 0
 	for i := range m.summaries {
 		if m.summaries[i].ID == selectedID {
@@ -2326,6 +3031,24 @@ func findSummary(summaries []missis.TicketSummary, want *missis.TicketSummary) *
 		}
 	}
 	return nil
+}
+
+func (m *tuiModel) refreshTicketMemberships() {
+	m.ticketMemberships = make(map[string]ticketMembership, len(m.summaries))
+	m.ticketMembershipErr = nil
+	m.ticketMembershipsLoaded = false
+	if m.client == nil || len(m.summaries) == 0 {
+		m.ticketMembershipsLoaded = len(m.summaries) == 0
+		return
+	}
+	memberships, err := loadTicketMemberships(m.client, m.summaries)
+	if err != nil {
+		m.ticketMembershipErr = err
+		m.message = "ownership refresh failed: " + err.Error()
+		return
+	}
+	m.ticketMemberships = memberships
+	m.ticketMembershipsLoaded = true
 }
 
 func (m tuiModel) statsLines() []string {
@@ -2391,8 +3114,59 @@ func (m tuiModel) statsLines() []string {
 	for _, bkt := range buckets {
 		lines = append(lines, fmt.Sprintf("  %-8s %d", bkt.name, ageCounts[bkt.name]))
 	}
+	lines = appendTicketOwnershipStats(lines, m.summaries, m.ticketMemberships, m.ticketMembershipsLoaded)
 	lines = append(lines, "")
 	lines = append(lines, fmt.Sprintf("total: %d", len(m.summaries)))
+	return lines
+}
+
+func appendTicketOwnershipStats(lines []string, summaries []missis.TicketSummary, memberships map[string]ticketMembership, loaded bool) []string {
+	lines = append(lines, "", "ownership")
+	if !loaded {
+		lines = append(lines, "  project/group data unavailable")
+		return lines
+	}
+	projectCounts := make(map[string]int)
+	groupCounts := make(map[string]int)
+	for _, summary := range summaries {
+		membership := memberships[ticketSummaryKey(summary)]
+		if len(membership.projects) == 0 {
+			projectCounts["(no project)"]++
+		} else {
+			for _, project := range membership.projects {
+				projectCounts[project]++
+			}
+		}
+		if len(membership.groups) == 0 {
+			groupCounts["(no group)"]++
+		} else {
+			for _, group := range membership.groups {
+				groupCounts[group]++
+			}
+		}
+	}
+	lines = appendOwnershipCounter(lines, "projects", projectCounts)
+	lines = appendOwnershipCounter(lines, "groups", groupCounts)
+	return lines
+}
+
+func appendOwnershipCounter(lines []string, label string, counts map[string]int) []string {
+	lines = append(lines, "  "+label)
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		isNoneI := strings.HasPrefix(keys[i], "(no ")
+		isNoneJ := strings.HasPrefix(keys[j], "(no ")
+		if isNoneI != isNoneJ {
+			return !isNoneI
+		}
+		return keys[i] < keys[j]
+	})
+	for _, key := range keys {
+		lines = append(lines, fmt.Sprintf("    %-24s %d", key, counts[key]))
+	}
 	return lines
 }
 
@@ -2467,22 +3241,6 @@ func referenceLinesForRef(client *missis.Client, ref string) ([]string, error) {
 	return lines, nil
 }
 
-func historyLinesForRef(client *missis.Client, ref string) ([]string, error) {
-	now := time.Now().UTC()
-	events, err := client.ShowHistory(context.Background(), ref, missis.HistoryOptions{EffectiveAt: now, KnownAt: now})
-	if err != nil {
-		return nil, err
-	}
-	if len(events) == 0 {
-		return []string{"<no history>"}, nil
-	}
-	lines := make([]string, 0, len(events))
-	for _, event := range events {
-		lines = append(lines, fmt.Sprintf("%s %s %s", event.Alias, event.Operation, event.Target))
-	}
-	return lines, nil
-}
-
 func entityLines(client *missis.Client, ent missis.EntitySummary, width int) ([]string, error) {
 	now := time.Now().UTC()
 	proj, err := client.ShowEntity(context.Background(), ent.Ref, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
@@ -2493,11 +3251,15 @@ func entityLines(client *missis.Client, ent missis.EntitySummary, width int) ([]
 	if strings.HasPrefix(ent.Ref, "group:") {
 		kind = "groups"
 	}
+	counts, err := membershipCounts(client, ent.Ref)
+	if err != nil {
+		return nil, err
+	}
 	lines := []string{
 		"title: " + proj.Title,
 		"status: " + proj.Status,
 		"recorded: " + proj.RecordedAt.UTC().Format(time.RFC3339),
-		"members: " + membershipCounts(client, ent.Ref).label(kind),
+		"members: " + counts.label(kind),
 	}
 	var roots []string
 	for path := range proj.Parts {
@@ -2516,21 +3278,21 @@ func entityLines(client *missis.Client, ent missis.EntitySummary, width int) ([]
 	return lines, nil
 }
 
-func currentHomeProject(client *missis.Client, ticketRef string) string {
+func currentHomeProject(client *missis.Client, ticketRef string) (string, error) {
 	now := time.Now().UTC()
 	links, err := client.ShowReferences(context.Background(), ticketRef, missis.ShowOptions{EffectiveAt: now, KnownAt: now})
 	if err != nil {
-		return ""
+		return "", err
 	}
 	for _, link := range links {
-		if link.Relation == "has-home" && link.Direction == "asserted" {
+		if link.Relation == model.RelationHasHome && link.Direction == "asserted" {
 			if project, ok := strings.CutPrefix(link.To, "project:"); ok {
-				return project
+				return project, nil
 			}
-			return link.To
+			return link.To, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func (m *tuiModel) refreshDetail() {
@@ -3072,7 +3834,7 @@ func parseLinkAction(input string) (linkAction, error) {
 		if !strings.HasPrefix(target, "project:") {
 			target = "project:" + target
 		}
-		return linkAction{Action: "move", Relation: "has-home", Target: target, Reason: reason}, nil
+		return linkAction{Action: "move", Relation: model.RelationHasHome, Target: target, Reason: reason}, nil
 	default:
 		return linkAction{}, fmt.Errorf("unknown action: %s; expected add, retract, or move", action)
 	}

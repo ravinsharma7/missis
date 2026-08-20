@@ -498,6 +498,81 @@ func TestViewListRowsFitTerminal(t *testing.T) {
 	}
 }
 
+func TestTicketOwnershipModeShowsProjectAndGroup(t *testing.T) {
+	base := tuiModel{
+		view:           "list",
+		kind:           "tickets",
+		height:         12,
+		ticketListMode: "ownership",
+		summaries: []missis.TicketSummary{
+			{Ref: "#1", ID: "ticket:one", Status: "open", Title: "Owned ticket"},
+			{Ref: "#2", ID: "ticket:two", Status: "open", Title: "Unassigned ticket"},
+		},
+		ticketMemberships: map[string]ticketMembership{
+			"ticket:one": {projects: []string{"project:app"}, groups: []string{"group:eng"}},
+		},
+	}
+	for _, width := range []int{80, 40, 20} {
+		m := base
+		m.width = width
+		out := m.viewList()
+		for _, want := range []string{"project:app", "group:eng", "—"} {
+			if !strings.Contains(out, want) && width == 80 {
+				t.Errorf("ownership list missing %q at width %d:\n%s", want, width, out)
+			}
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if len([]rune(line)) > m.width {
+				t.Errorf("ownership row exceeds width %d: %q", m.width, line)
+			}
+		}
+	}
+
+	m := base
+	m.width = 80
+	updated, _ := m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	m = updated.(tuiModel)
+	if m.ticketListMode != "compact" {
+		t.Fatalf("second m should return to compact mode, got %q", m.ticketListMode)
+	}
+}
+
+func TestLoadTicketMemberships(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := application.OpenPath(filepath.Join(dir, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := missis.NewClient(svc)
+	defer client.Close()
+	ctx := context.Background()
+	req := missis.RequestContext{Actor: "test"}
+	if _, err := client.NewEntity(ctx, req, missis.EntityOptions{Kind: "project", ID: "app", Title: "App"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.NewEntity(ctx, req, missis.EntityOptions{Kind: "group", ID: "eng", Title: "Engineering"}); err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := client.NewTicket(ctx, req, missis.NewTicketOptions{Title: "Owned"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SetLink(ctx, req, missis.LinkOptions{Ref: ticket.Ref + "/links", Relation: "has-home", Target: "project:app", Add: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SetLink(ctx, req, missis.LinkOptions{Ref: "group:eng/links", Relation: "contains", Target: ticket.Ref, Add: true}); err != nil {
+		t.Fatal(err)
+	}
+	memberships, err := loadTicketMemberships(client, []missis.TicketSummary{{Ref: ticket.Ref, ID: ticket.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := memberships[ticket.ID]
+	if len(got.projects) != 1 || got.projects[0] != "project:app" || len(got.groups) != 1 || got.groups[0] != "group:eng" {
+		t.Fatalf("ticket memberships = %+v", got)
+	}
+}
+
 func TestAlignTableRows(t *testing.T) {
 	in := []string{
 		"| A | Long Value |",
@@ -581,15 +656,15 @@ func TestBreadcrumbForViews(t *testing.T) {
 		want string
 	}{
 		{"tickets list", tuiModel{view: "list", kind: "tickets"}, "missis / tickets (all tickets)"},
-		{"tickets list with context", tuiModel{view: "list", kind: "tickets", projectCtx: "safedesign"}, "missis / tickets (project: safedesign · group: none)"},
-		{"projects list ignores ticket context", tuiModel{view: "list", kind: "projects", projectCtx: "safedesign"}, "missis / projects"},
-		{"stats with scope", tuiModel{view: "stats", kind: "tickets", projectCtx: "safedesign"}, "missis / tickets / stats (project: safedesign · group: none)"},
+		{"tickets list with context", tuiModel{view: "list", kind: "tickets", activeScope: scopeSelection{Projects: []string{"safedesign"}}}, "missis / tickets (project: safedesign · group: none)"},
+		{"projects list ignores ticket context", tuiModel{view: "list", kind: "projects", activeScope: scopeSelection{Projects: []string{"safedesign"}}}, "missis / projects"},
+		{"stats with scope", tuiModel{view: "stats", kind: "tickets", activeScope: scopeSelection{Projects: []string{"safedesign"}}}, "missis / tickets / stats (project: safedesign · group: none)"},
 		{"stats without scope", tuiModel{view: "stats", kind: "tickets"}, "missis / tickets / stats (all tickets)"},
 		{"entity detail", tuiModel{view: "detail", kind: "projects", detail: &detailState{entity: &missis.EntitySummary{Ref: "project:safedesign", Title: "SafeDesign"}}}, "missis / projects / project:safedesign SafeDesign"},
 		{"ticket detail", tuiModel{view: "detail", kind: "tickets", detail: &detailState{summary: missis.TicketSummary{Ref: "#12", Title: "Fix"}}}, "missis / tickets / #12 Fix"},
 		{"create prompt", tuiModel{view: "input", kind: "projects", inputMode: "create"}, "missis / projects / create"},
 		{"create ticket prompt", tuiModel{view: "input", inputMode: "create-ticket"}, "missis / tickets / create"},
-		{"context prompt", tuiModel{view: "context"}, "missis / context"},
+		{"context prompt", tuiModel{view: "context"}, "missis / ticket filters"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -609,13 +684,13 @@ func TestKeyHintsPerViewAndKind(t *testing.T) {
 		return strings.Join(parts, " | ")
 	}
 	tickets := join(tuiModel{view: "list", kind: "tickets"})
-	for _, want := range []string{"n create ticket", "c/v compare", "e export", "s stats", "q quit"} {
+	for _, want := range []string{"n create ticket", "c/v compare", "e export", "s stats", "m ownership mode", "q quit"} {
 		if !strings.Contains(tickets, want) {
 			t.Errorf("ticket list help missing %q: %s", want, tickets)
 		}
 	}
 	projects := join(tuiModel{view: "list", kind: "projects"})
-	for _, want := range []string{"n create project", "q quit"} {
+	for _, want := range []string{"n create project", "f filter tickets", "q quit"} {
 		if !strings.Contains(projects, want) {
 			t.Errorf("projects list help missing %q: %s", want, projects)
 		}
@@ -626,16 +701,19 @@ func TestKeyHintsPerViewAndKind(t *testing.T) {
 		}
 	}
 	ticketDetail := join(tuiModel{view: "detail", kind: "tickets", detail: &detailState{summary: missis.TicketSummary{Ref: "#1"}}})
-	for _, want := range []string{"T edit title", "l links", "e export", "t/p/g lists", "b back"} {
+	for _, want := range []string{"T edit title", "l quick link", "e export", "t/p/g lists", "b back"} {
 		if !strings.Contains(ticketDetail, want) {
 			t.Errorf("ticket detail help missing %q: %s", want, ticketDetail)
 		}
 	}
 	entityDetail := join(tuiModel{view: "detail", kind: "projects", detail: &detailState{entity: &missis.EntitySummary{Ref: "project:s"}}})
-	for _, banned := range []string{"edit title", "links", "export"} {
+	for _, banned := range []string{"edit title", "export"} {
 		if strings.Contains(entityDetail, banned) {
 			t.Errorf("entity detail help advertises %q: %s", banned, entityDetail)
 		}
+	}
+	if !strings.Contains(entityDetail, "l quick link") {
+		t.Errorf("entity detail help missing l quick link: %s", entityDetail)
 	}
 	if !strings.Contains(entityDetail, "R refs") {
 		t.Errorf("entity detail help missing R refs: %s", entityDetail)
@@ -647,8 +725,14 @@ func TestKeyHintsPerViewAndKind(t *testing.T) {
 		t.Errorf("entity detail help missing t/p/g lists: %s", entityDetail)
 	}
 	groupDetail := join(tuiModel{view: "detail", kind: "groups", detail: &detailState{entity: &missis.EntitySummary{Ref: "group:eng"}}})
-	if !strings.Contains(groupDetail, "l links") {
-		t.Errorf("group detail help missing l links: %s", groupDetail)
+	if !strings.Contains(groupDetail, "l quick link") {
+		t.Errorf("group detail help missing l quick link: %s", groupDetail)
+	}
+	quickLink := join(tuiModel{view: "link-picker", detail: &detailState{summary: missis.TicketSummary{Ref: "#1"}}})
+	for _, want := range []string{"space select", "enter apply", "r ticket relation"} {
+		if !strings.Contains(quickLink, want) {
+			t.Errorf("quick link help missing %q: %s", want, quickLink)
+		}
 	}
 	contextHelp := join(tuiModel{view: "context"})
 	for _, want := range []string{"j/k move", "space toggle", "enter apply", "b back"} {
@@ -674,6 +758,28 @@ func TestKeyHintsPerViewAndKind(t *testing.T) {
 	}
 }
 
+func TestStatsShowsOwnershipBreakdown(t *testing.T) {
+	m := tuiModel{
+		view:                    "stats",
+		kind:                    "tickets",
+		ticketMembershipsLoaded: true,
+		summaries: []missis.TicketSummary{
+			{Ref: "#1", ID: "ticket:one", Status: "open", Title: "one"},
+			{Ref: "#2", ID: "ticket:two", Status: "done", Title: "two"},
+		},
+		ticketMemberships: map[string]ticketMembership{
+			"ticket:one": {projects: []string{"project:app"}, groups: []string{"group:eng"}},
+			"ticket:two": {},
+		},
+	}
+	out := strings.Join(m.statsLines(), "\n")
+	for _, want := range []string{"ownership", "project:app", "group:eng", "(no project)", "(no group)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stats missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestHelpLinesWrapToWidth(t *testing.T) {
 	m := tuiModel{view: "list", kind: "tickets", width: 40, height: 24}
 	lines := m.helpLines()
@@ -684,7 +790,7 @@ func TestHelpLinesWrapToWidth(t *testing.T) {
 		t.Errorf("helpRows = %d, want %d", m.helpRows(), len(lines))
 	}
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"n create ticket", "x context", "q quit"} {
+	for _, want := range []string{"n create ticket", "x ticket filters", "q quit"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("wrapped help lost %q:\n%s", want, joined)
 		}
@@ -1117,7 +1223,7 @@ func TestHelpViewOpensAndBacks(t *testing.T) {
 func TestHelpContentCoversViews(t *testing.T) {
 	m := tuiModel{view: "help", width: 80, height: 24}
 	content := strings.Join(m.helpContent(), "\n")
-	for _, want := range []string{"tickets list", "context picker", "q quit regular views", "T edit title", "enter apply", "global:", "context/help ? inert"} {
+	for _, want := range []string{"tickets list", "ticket-filter picker", "q quit regular views", "T edit title", "enter apply", "global:", "ticket filters/help ? inert"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("help content missing %q", want)
 		}
@@ -1230,6 +1336,59 @@ func TestEntityListShowsFullIDs(t *testing.T) {
 	}
 }
 
+func TestEntityListFFiltersTickets(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := application.OpenPath(filepath.Join(dir, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := missis.NewClient(svc)
+	defer client.Close()
+	ctx := context.Background()
+	req := missis.RequestContext{Actor: "test"}
+	if _, err := client.NewEntity(ctx, req, missis.EntityOptions{Kind: "project", ID: "app", Title: "App"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.NewEntity(ctx, req, missis.EntityOptions{Kind: "group", ID: "eng", Title: "Engineering"}); err != nil {
+		t.Fatal(err)
+	}
+	projectTicket, err := client.NewTicket(ctx, req, missis.NewTicketOptions{Title: "project ticket", Project: "app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.NewTicket(ctx, req, missis.NewTicketOptions{Title: "loose ticket"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SetLink(ctx, req, missis.LinkOptions{Ref: "group:eng/links", Relation: "contains", Target: projectTicket.Ref, Add: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		ref       string
+		kind      string
+		wantScope func(scopeSelection) bool
+		wantTitle string
+	}{
+		{"project:app", "projects", func(scope scopeSelection) bool { return scope.contains("project", "app") }, "project ticket"},
+		{"group:eng", "groups", func(scope scopeSelection) bool { return scope.contains("group", "eng") }, "project ticket"},
+	} {
+		m := tuiModel{
+			client:   client,
+			view:     "list",
+			kind:     tc.kind,
+			entities: []entityItem{{summary: missis.EntitySummary{Ref: tc.ref}}},
+		}
+		updated, _ := m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+		m = updated.(tuiModel)
+		if m.view != "list" || m.kind != "tickets" || !tc.wantScope(m.activeScope) {
+			t.Fatalf("%s filter result: view=%q kind=%q scope=%+v", tc.ref, m.view, m.kind, m.activeScope)
+		}
+		if len(m.summaries) != 1 || m.summaries[0].Title != tc.wantTitle {
+			t.Fatalf("%s filtered tickets = %+v", tc.ref, m.summaries)
+		}
+	}
+}
+
 func TestEntityDetailTitleStatusOnce(t *testing.T) {
 	dir := t.TempDir()
 	svc, err := application.OpenPath(filepath.Join(dir, "missis.db"))
@@ -1286,11 +1445,17 @@ func TestMembershipCounts(t *testing.T) {
 	if _, err := client.SetLink(ctx, req, missis.LinkOptions{Ref: "group:eng/links", Relation: "contains", Target: "project:safe", Add: true}); err != nil {
 		t.Fatal(err)
 	}
-	project := membershipCounts(client, "project:safe")
+	project, err := membershipCounts(client, "project:safe")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if project.groups != 1 || project.tickets != 1 {
 		t.Fatalf("project counts = %+v, want 1 group and 1 ticket", project)
 	}
-	group := membershipCounts(client, "group:eng")
+	group, err := membershipCounts(client, "group:eng")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if group.projects != 1 {
 		t.Fatalf("group counts = %+v, want 1 project", group)
 	}
@@ -1348,27 +1513,304 @@ func TestGroupLinkActionsFromGroupDetail(t *testing.T) {
 	}
 	updated, _ := m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
 	m = updated.(tuiModel)
-	if m.view != "input" || m.inputMode != "link" {
-		t.Fatalf("l on group detail: view=%q inputMode=%q", m.view, m.inputMode)
+	if m.view != "link-picker" || m.quickLink == nil {
+		t.Fatalf("l on group detail: view=%q picker=%+v", m.view, m.quickLink)
 	}
-	if out := m.View(); !strings.Contains(out, "contains:<project|ticket>") {
-		t.Errorf("group link prompt missing relation hints:\n%s", out)
+	if out := m.View(); !strings.Contains(out, "add ticket") {
+		t.Errorf("group link picker missing ticket target:\n%s", out)
 	}
 
-	m.input = "add contains:#1"
-	updated, _ = m.updateInput(tea.KeyMsg{Type: tea.KeyEnter})
+	for i, target := range m.quickLink.targets {
+		if target.ref == "#1" {
+			m.quickLink.selected = i
+			break
+		}
+	}
+	updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(tuiModel)
-	if m.view != "detail" || !strings.Contains(m.message, "link updated") {
+	if m.view != "detail" || !strings.Contains(m.message, "linked #1") {
 		t.Fatalf("add contains from group: view=%q message=%q", m.view, m.message)
 	}
+	before, err := client.ShowReferences(ctx, "group:eng", missis.ShowOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeAssertions := 0
+	for _, link := range before {
+		if link.Relation == "contains" {
+			beforeAssertions += len(link.Assertions)
+		}
+	}
+	updated, _ = m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(tuiModel)
+	for i, target := range m.quickLink.targets {
+		if target.ref == "#1" {
+			m.quickLink.selected = i
+			break
+		}
+	}
+	updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	if m.message != "already linked to #1" {
+		t.Fatalf("duplicate link message = %q", m.message)
+	}
+	after, err := client.ShowReferences(ctx, "group:eng", missis.ShowOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("duplicate link changed visible references: before=%d after=%d", len(before), len(after))
+	}
+	afterAssertions := 0
+	for _, link := range after {
+		if link.Relation == "contains" {
+			afterAssertions += len(link.Assertions)
+		}
+	}
+	if afterAssertions != beforeAssertions {
+		t.Fatalf("duplicate link added immutable evidence: before=%d after=%d", beforeAssertions, afterAssertions)
+	}
 
+	// The old free-form syntax remains available from the quick picker.
+	updated, _ = m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(tuiModel)
+	updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(tuiModel)
 	m.input = "add has-home:project:x"
-	m.view = "input"
-	m.inputMode = "link"
 	updated, _ = m.updateInput(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(tuiModel)
 	if !strings.Contains(m.inputErr, "group links support contains") {
 		t.Errorf("invalid group relation error = %q", m.inputErr)
+	}
+}
+
+func TestLinkNoticeSurvivesDetailListAndEditNavigation(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := application.OpenPath(filepath.Join(dir, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := missis.NewClient(svc)
+	defer client.Close()
+	ctx := context.Background()
+	req := missis.RequestContext{Actor: "test"}
+	if _, err := client.NewEntity(ctx, req, missis.EntityOptions{Kind: "group", ID: "eng", Title: "Eng"}); err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := client.NewTicket(ctx, req, missis.NewTicketOptions{Title: "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := tuiModel{
+		client: client,
+		view:   "detail",
+		kind:   "tickets",
+		detail: &detailState{summary: missis.TicketSummary{Ref: ticket.Ref, ID: ticket.ID, Title: ticket.Title, Status: ticket.Status}},
+	}
+	updated, _ := m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(tuiModel)
+	foundTarget := false
+	for i, target := range m.quickLink.targets {
+		if target.labelRef == "group:eng" {
+			m.quickLink.selected = i
+			foundTarget = true
+			break
+		}
+	}
+	if !foundTarget {
+		t.Fatal("quick link picker did not offer group:eng")
+	}
+	updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	if m.message != "linked group:eng" {
+		t.Fatalf("success message = %q", m.message)
+	}
+	if m.linkNotice != "linked group:eng; press R to inspect references" || m.linkNoticeRef != ticket.Ref || m.linkNoticeError {
+		t.Fatalf("success notice state = text %q ref %q error %v", m.linkNotice, m.linkNoticeRef, m.linkNoticeError)
+	}
+	if !strings.Contains(m.View(), "press R to inspect references") {
+		t.Fatalf("detail view lost link verification hint:\n%s", m.View())
+	}
+
+	m = m.goBack()
+	if m.view != "list" || !strings.Contains(m.View(), "linked group:eng; press R to inspect references") {
+		t.Fatalf("list view lost link notice: view=%q\n%s", m.view, m.View())
+	}
+
+	m.detail = &detailState{summary: missis.TicketSummary{Ref: ticket.Ref, ID: ticket.ID, Title: ticket.Title, Status: ticket.Status}}
+	m.view = "input"
+	m.inputMode = "link"
+	m.input = "add invalid-relation:#1"
+	updated, _ = m.updateInput(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	if m.inputErr == "" || !strings.Contains(m.linkNotice, "link failed:") || m.linkNoticeRef != ticket.Ref || !m.linkNoticeError {
+		t.Fatalf("link error was not recorded: inputErr=%q notice=%q ref=%q error=%v", m.inputErr, m.linkNotice, m.linkNoticeRef, m.linkNoticeError)
+	}
+	m = m.goBack()
+	if m.inputErr != "" || m.view != "detail" || !strings.Contains(m.View(), m.linkNotice) {
+		t.Fatalf("detail view lost link error after leaving edit page:\n%s", m.View())
+	}
+
+	other, err := client.NewTicket(ctx, req, missis.NewTicketOptions{Title: "two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.summaries = []missis.TicketSummary{
+		{Ref: ticket.Ref, ID: ticket.ID, Title: ticket.Title, Status: ticket.Status},
+		{Ref: other.Ref, ID: other.ID, Title: other.Title, Status: other.Status},
+	}
+	m.selected = 1
+	m.view = "list"
+	updated, _ = m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	if m.detailRef() != other.Ref || m.linkNotice != "" {
+		t.Fatalf("notice leaked to another ticket: detail=%q notice=%q", m.detailRef(), m.linkNotice)
+	}
+}
+
+func TestQuickLinkPickerCoversProjectGroupTicketHierarchy(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := application.OpenPath(filepath.Join(dir, "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := missis.NewClient(svc)
+	defer client.Close()
+	ctx := context.Background()
+	req := missis.RequestContext{Actor: "test"}
+	if _, err := client.NewEntity(ctx, req, missis.EntityOptions{Kind: "project", ID: "app", Title: "App"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.NewEntity(ctx, req, missis.EntityOptions{Kind: "group", ID: "eng", Title: "Engineering"}); err != nil {
+		t.Fatal(err)
+	}
+	one, err := client.NewTicket(ctx, req, missis.NewTicketOptions{Title: "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneSummary := missis.TicketSummary{Ref: one.Ref, ID: one.ID, Title: one.Title, Status: one.Status}
+	two, err := client.NewTicket(ctx, req, missis.NewTicketOptions{Title: "two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Project detail: select a group and the picker writes group -> project.
+	m := tuiModel{
+		client: client,
+		view:   "detail",
+		kind:   "projects",
+		detail: &detailState{entity: &missis.EntitySummary{Ref: "project:app", Title: "App"}},
+	}
+	updated, _ := m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(tuiModel)
+	if m.view != "link-picker" || len(m.quickLink.targets) != 1 {
+		t.Fatalf("project quick picker = view %q targets %+v", m.view, m.quickLink)
+	}
+	if m.quickLink.targets[0].ref != "project:app" || m.quickLink.targets[0].source != "group:eng" {
+		t.Fatalf("project target orientation = %+v", m.quickLink.targets[0])
+	}
+	updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	if m.view != "detail" || m.message != "linked group:eng" {
+		t.Fatalf("project link result = view %q message %q", m.view, m.message)
+	}
+
+	// Ticket detail: select a project and a group together. The picker writes
+	// the home link from the ticket and the group membership from the group.
+	m.detail = &detailState{summary: oneSummary}
+	m.kind = "tickets"
+	m.view = "detail"
+	updated, _ = m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(tuiModel)
+	foundProject := false
+	foundGroup := false
+	for i, target := range m.quickLink.targets {
+		if target.ref == "project:app" {
+			m.quickLink.selected = i
+			updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+			m = updated.(tuiModel)
+			foundProject = true
+		}
+		if target.labelRef == "group:eng" {
+			m.quickLink.selected = i
+			updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+			m = updated.(tuiModel)
+			foundGroup = true
+		}
+	}
+	if !foundProject || !foundGroup {
+		t.Fatalf("ticket quick picker targets: project=%v group=%v %+v", foundProject, foundGroup, m.quickLink.targets)
+	}
+	if !strings.Contains(m.View(), "✓") {
+		t.Fatalf("multi-select picker does not show selected targets:\n%s", m.View())
+	}
+	updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	if m.view != "detail" || m.message != "linked 2 target(s)" {
+		t.Fatalf("ticket group link result = view %q message %q", m.view, m.message)
+	}
+	// Reopening l reflects both existing memberships as checked targets.
+	updated, _ = m.updateDetail(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(tuiModel)
+	marked := 0
+	for _, selected := range m.quickLink.marked {
+		if selected {
+			marked++
+		}
+	}
+	if marked != 2 {
+		t.Fatalf("reopened quick picker marked %d targets, want 2: %+v", marked, m.quickLink)
+	}
+
+	// Ticket relation mode: choose blocks, then the second ticket.
+	updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = updated.(tuiModel)
+	if m.view != "link-relations" {
+		t.Fatalf("ticket relation picker view = %q", m.view)
+	}
+	for i, relation := range m.quickLink.relations {
+		if relation == "blocks" {
+			m.quickLink.selected = i
+			break
+		}
+	}
+	updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	m.quickLink.selected = 0
+	for i, target := range m.quickLink.targets {
+		if target.ref == two.Ref {
+			m.quickLink.selected = i
+			break
+		}
+	}
+	updated, _ = m.updateQuickLink(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	if m.view != "detail" || m.message != "linked "+two.Ref {
+		t.Fatalf("ticket relation result = view %q message %q", m.view, m.message)
+	}
+
+	links, err := client.ShowReferences(ctx, one.Ref, missis.ShowOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundBlocks := false
+	foundGroup = false
+	foundProject = false
+	twoCanonical := "ticket:" + strings.TrimPrefix(two.ID, "ticket:")
+	for _, link := range links {
+		if link.Relation == "blocks" && link.Direction == "asserted" && link.To == twoCanonical {
+			foundBlocks = true
+		}
+		if link.Relation == "contained-by" && link.Direction == "derived-inverse" && link.To == "group:eng" {
+			foundGroup = true
+		}
+		if link.Relation == "has-home" && link.Direction == "asserted" && link.To == "project:app" {
+			foundProject = true
+		}
+	}
+	if !foundBlocks || !foundGroup || !foundProject {
+		t.Fatalf("quick links not visible from ticket: %+v", links)
 	}
 }
 
@@ -1386,14 +1828,14 @@ func TestViewListEmptyState(t *testing.T) {
 			t.Errorf("%s empty list missing %q:\n%s", tc.kind, tc.want, out)
 		}
 	}
-	scoped := tuiModel{view: "list", kind: "tickets", projectCtx: "safe", width: 80, height: 24}
+	scoped := tuiModel{view: "list", kind: "tickets", activeScope: scopeSelection{Projects: []string{"safe"}}, width: 80, height: 24}
 	if out := scoped.viewList(); !strings.Contains(out, "no tickets in project: safe yet") {
 		t.Errorf("scoped empty list missing scope-aware message:\n%s", out)
 	}
 }
 
 func TestStatsEmptyStateMatchesScope(t *testing.T) {
-	m := tuiModel{view: "stats", kind: "tickets", projectCtx: "safe"}
+	m := tuiModel{view: "stats", kind: "tickets", activeScope: scopeSelection{Projects: []string{"safe"}}}
 	if out := strings.Join(m.statsLines(), "\n"); !strings.Contains(out, "no tickets in project: safe yet") {
 		t.Errorf("scoped stats empty state missing scope-aware message:\n%s", out)
 	}
@@ -1418,14 +1860,14 @@ func TestLoadTicketSummariesFiltersByContext(t *testing.T) {
 	if _, err := client.NewTicket(ctx, req, missis.NewTicketOptions{Title: "loose"}); err != nil {
 		t.Fatal(err)
 	}
-	all, err := loadTicketSummaries(client, "none", "none")
+	all, err := loadTicketSummariesForScope(client, scopeSelection{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(all) != 2 {
 		t.Fatalf("unscoped load = %d tickets, want 2", len(all))
 	}
-	filtered, err := loadTicketSummaries(client, "safe", "none")
+	filtered, err := loadTicketSummariesForScope(client, scopeSelection{Projects: []string{"safe"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1530,8 +1972,8 @@ func TestContextPickerSelectsProject(t *testing.T) {
 	m = updated.(tuiModel)
 	updated, _ = m.updateContext(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(tuiModel)
-	if m.view != "list" || m.kind != "tickets" || m.projectCtx != "safedesign" || m.groupCtx != "none" {
-		t.Fatalf("after select: view=%q kind=%q project=%q group=%q", m.view, m.kind, m.projectCtx, m.groupCtx)
+	if m.view != "list" || m.kind != "tickets" || !m.activeScope.contains("project", "safedesign") || len(m.activeScope.Groups) != 0 {
+		t.Fatalf("after select: view=%q kind=%q scope=%+v", m.view, m.kind, m.activeScope)
 	}
 	if !strings.Contains(m.message, "ticket list context: project=safedesign") {
 		t.Errorf("confirmation message = %q", m.message)
@@ -1557,7 +1999,7 @@ func TestContextPickerSupportsMultiScopeDrafts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	m := tuiModel{client: client, view: "list", kind: "tickets", projectCtx: "p1", groupCtx: "none", width: 100, height: 30}
+	m := tuiModel{client: client, view: "list", kind: "tickets", activeScope: scopeSelection{Projects: []string{"p1"}}, width: 100, height: 30}
 	updated, _ := m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	m = updated.(tuiModel)
 
@@ -1589,8 +2031,8 @@ func TestContextPickerSupportsMultiScopeDrafts(t *testing.T) {
 	}
 	updated, _ = m.updateContext(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(tuiModel)
-	if m.view != "list" || m.projectCtx != "p1" || m.groupCtx != "none" {
-		t.Fatalf("cancel changed active context: view=%q project=%q group=%q", m.view, m.projectCtx, m.groupCtx)
+	if m.view != "list" || !m.activeScope.contains("project", "p1") || len(m.activeScope.Groups) != 0 {
+		t.Fatalf("cancel changed active context: view=%q scope=%+v", m.view, m.activeScope)
 	}
 
 	updated, _ = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
@@ -1610,8 +2052,8 @@ func TestContextPickerSupportsMultiScopeDrafts(t *testing.T) {
 	m = updated.(tuiModel)
 	updated, _ = m.updateContext(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(tuiModel)
-	if !m.activeScope.empty() || m.projectCtx != "none" || m.groupCtx != "none" {
-		t.Fatalf("clear all active scope = %+v, project=%q group=%q", m.activeScope, m.projectCtx, m.groupCtx)
+	if !m.activeScope.empty() {
+		t.Fatalf("clear all active scope = %+v", m.activeScope)
 	}
 }
 
@@ -1714,8 +2156,8 @@ func TestContextPickerRefreshesAndReclamps(t *testing.T) {
 		client:      client,
 		view:        "context",
 		kind:        "tickets",
-		activeScope: scopeFromLegacy("p1", "none"),
-		draftScope:  scopeFromLegacy("p1", "none"),
+		activeScope: scopeSelection{Projects: []string{"p1"}},
+		draftScope:  scopeSelection{Projects: []string{"p1"}},
 		width:       80,
 		height:      24,
 	}
