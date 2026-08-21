@@ -636,6 +636,30 @@ EOF
 	fi
 }
 
+write_full_projection() {
+	local missis_bin="$1" store="$2" output="$3" summary details ref
+	summary="${output}.summary"
+	details="${output}.details"
+	if ! "$missis_bin" show --json --store "$store" >"$summary"; then
+		rm -f "$summary" "$details"
+		return 1
+	fi
+	: >"$details"
+	while IFS= read -r ref; do
+		[ -n "$ref" ] || continue
+		if ! "$missis_bin" show "$ref" --json --store "$store" >>"$details"; then
+			rm -f "$summary" "$details"
+			return 1
+		fi
+		printf '\n' >>"$details"
+	done < <(jq -r '.tickets[]?.ref' "$summary")
+	if ! jq -s '{tickets: .}' "$details" >"$output"; then
+		rm -f "$summary" "$details"
+		return 1
+	fi
+	rm -f "$summary" "$details"
+}
+
 run_config() {
 	local name="$1" use_pointer="$2" enable_skill="$3" missis_bin="$4" bin_dir="$5" scenario="$6" prompt="$7" expected="$8" expected_value="$9" start_iteration="${10:-1}" last_iteration="${11:-$ITERATIONS}"
 	if [ "$start_iteration" -gt "$last_iteration" ] || [ "$start_iteration" -gt "$ITERATIONS" ]; then
@@ -656,7 +680,7 @@ run_config() {
 		prepare_codex_home "$exec_codex_home" "$enable_skill"
 		session_config_args=("${CODEX_CONFIG_ARGS[@]}" -c "shell_environment_policy.set.PATH=\"$bin_dir:$CODEX_HOST_PATH\"")
 		before="$LOG_DIR/${scenario}-${name}-${i}.before.json"
-		PATH="$bin_dir:$PATH" "$BIN" show --json --store "$scratch/.missis-store/missis.db" >"$before"
+		write_full_projection "$missis_bin" "$scratch/.missis-store/missis.db" "$before"
 		before_tickets="$(jq '.tickets | length' "$before" 2>/dev/null || echo 0)"
 		started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		start_ns="$(date +%s%N)"
@@ -668,14 +692,17 @@ run_config() {
 			CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec \
 				"${CODEX_RUN_ARGS_ARRAY[@]}" "${session_config_args[@]}" --skip-git-repo-check -C "$scratch" \
 				"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>&1 || first_code=$?
-			PATH="$bin_dir:$PATH" "$BIN" show --json --store "$scratch/.missis-store/missis.db" >"$mid" 2>/dev/null || true
+			write_full_projection "$missis_bin" "$scratch/.missis-store/missis.db" "$mid" 2>/dev/null || true
 			mid_tickets="$(jq '.tickets | length' "$mid" 2>/dev/null || echo 0)"
 			if [ "$first_code" -ne 0 ]; then
 				code="$first_code"
 			else
-				CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec resume --last --all \
-					"${session_config_args[@]}" --skip-git-repo-check \
-					"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$(followup_prompt)" >>"$log" 2>&1 || code=$?
+				(
+					cd "$scratch"
+					CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec resume --last --all \
+						-c 'sandbox_mode="workspace-write"' -c 'approval_policy="never"' "${session_config_args[@]}" --skip-git-repo-check \
+						"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$(followup_prompt)"
+				) >>"$log" 2>&1 || code=$?
 			fi
 		else
 			CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec \
@@ -685,7 +712,7 @@ run_config() {
 		end_ns="$(date +%s%N)"
 		wall="$(awk "BEGIN { printf \"%.1f\", ($end_ns - $start_ns) / 1000000000 }")"
 		after="$LOG_DIR/${scenario}-${name}-${i}.after.json"
-		PATH="$bin_dir:$PATH" "$BIN" show --json --store "$scratch/.missis-store/missis.db" >"$after" 2>/dev/null || true
+		write_full_projection "$missis_bin" "$scratch/.missis-store/missis.db" "$after" 2>/dev/null || true
 		tickets="$(jq '.tickets | length' "$after" 2>/dev/null || echo 0)"
 		execs="$(grep -c '^exec$' "$log" || true)"
 		turns="$(grep -c '^codex$' "$log" || true)"
@@ -721,8 +748,8 @@ run_config() {
 				other_statuses="$(jq -r --arg ref "$expected_value" '[.tickets[] | select(.ref != $ref) | .status] | unique | join(",")' "$after" 2>/dev/null || true)"
 				if [ "$target_status" = "doing" ] && [ "$other_statuses" = "open" ] && [ "$tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
 				;;
-			note-lifecycle)
-				note_value="$(jq -r --arg note "$expected_value" '[.tickets[] | select(.ref == "#1" and .status == "open" and .parts.notes.value == $note and (.parts.plan.value // null) == null)] | length' "$after" 2>/dev/null || echo 0)"
+				note-lifecycle)
+				note_value="$(jq -r --arg note "$expected_value" '[.tickets[] | select(.ref == "#1" and .status == "open" and ((.parts.notes.value == $note) or ((.parts.notes.value | type) == "array" and any(.parts.notes.value[]; . == $note))) and (.parts.plan.value // null) == null)] | length' "$after" 2>/dev/null || echo 0)"
 				other_status="$(jq -r '.tickets[] | select(.ref == "#2") | .status' "$after" 2>/dev/null | head -1)"
 				if [ "$note_value" -eq 1 ] && [ "$other_status" = "open" ] && [ "$tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
 				;;
