@@ -25,7 +25,7 @@ func TestAgentSetupGuideContract(t *testing.T) {
 		"https://raw.githubusercontent.com/ravinsharma7/missis/<ref>/docs/agent-setup.md",
 		"## Prerequisites",
 		"## Requirements",
-		"export MISSIS_REF=v0.2.0",
+		"export MISSIS_REF=v0.2.1",
 		"go install \"github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF\"",
 		"go install \"github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF\"",
 		"command -v missis-tools",

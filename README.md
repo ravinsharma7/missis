@@ -41,7 +41,7 @@ It installs both CLIs into a PATH-visible native POSIX directory and does not
 silently use a mise-managed `GOBIN` that is absent from `PATH`:
 
 ```bash
-MISSIS_REF=v0.2.0 bash scripts/install.sh
+MISSIS_REF=v0.2.1 bash scripts/install.sh
 ```
 
 For a convenient published install from a Missis checkout (tracks `latest`):
@@ -54,7 +54,7 @@ For a reproducible published install, pin a tag or commit instead of relying
 on `latest`:
 
 ```bash
-export MISSIS_REF=v0.2.0
+export MISSIS_REF=v0.2.1
 bash scripts/install.sh
 ```
 
@@ -285,7 +285,7 @@ Backup and remote scripts live in `scripts/`.
 Install reusable tools globally:
 
 ```bash
-MISSIS_REF=v0.2.0 bash scripts/install-tools.sh
+MISSIS_REF=v0.2.1 bash scripts/install-tools.sh
 ```
 
 `install-tools.sh` is the maintenance-tools-only compatibility entry point.
@@ -293,7 +293,7 @@ For a normal installation of both CLIs, use `scripts/install.sh`. Native
 Windows setup can use the equivalent PowerShell script:
 
 ```powershell
-$env:MISSIS_REF = "v0.2.0"
+$env:MISSIS_REF = "v0.2.1"
 $env:Path = "$env:LOCALAPPDATA\MissisTools\bin;$env:Path"
 .\scripts\install.ps1
 ```
@@ -305,14 +305,14 @@ same ref.
 Or install one tool directly:
 
 ```bash
-GOBIN="$HOME/go/bin" go install github.com/ravinsharma7/missis/tools/missis-tools@v0.2.0
+GOBIN="$HOME/go/bin" go install github.com/ravinsharma7/missis/tools/missis-tools@v0.2.1
 ```
 
 The legacy tools remain individually installable during the migration:
 
 ```bash
 for tool in ticket-tui repair-store store-gaps store-manifest store-backup store-remote; do
-  GOBIN="$HOME/go/bin" go install "github.com/ravinsharma7/missis/tools/$tool@v0.2.0"
+  GOBIN="$HOME/go/bin" go install "github.com/ravinsharma7/missis/tools/$tool@v0.2.1"
 done
 ```
 
@@ -368,6 +368,6 @@ Separate projects using mise can install both binaries from their own
 ```toml
 [tools]
 go = "1.26"
-"go:github.com/ravinsharma7/missis/cmd/missis" = "v0.2.0"
-"go:github.com/ravinsharma7/missis/tools/missis-tools" = "v0.2.0"
+"go:github.com/ravinsharma7/missis/cmd/missis" = "v0.2.1"
+"go:github.com/ravinsharma7/missis/tools/missis-tools" = "v0.2.1"
 ```

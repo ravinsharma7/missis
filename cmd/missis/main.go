@@ -434,7 +434,7 @@ Local-first setup for a new project:
      If no checkout is available, use an operator-supplied published ref.
 
 1. Install both CLIs at the same ref (from a checkout, or pin a tag/commit):
-     export MISSIS_REF=v0.2.0
+     export MISSIS_REF=v0.2.1
      go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
      go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
      # local checkout alternative:

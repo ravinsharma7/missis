@@ -4,7 +4,7 @@ set -euo pipefail
 # Run this after the selected ref has been published. It deliberately installs
 # into a temporary GOBIN so it cannot alter the operator's existing Go tools.
 module="github.com/ravinsharma7/missis"
-ref="${MISSIS_REF:-v0.2.0}"
+ref="${MISSIS_REF:-v0.2.1}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

@@ -85,15 +85,15 @@ The required setup must:
 
 ## Required setup: POSIX shell
 
-The following example targets the `v0.2.0` release. If this guide was
-opened at another immutable tag or commit, replace `v0.2.0` with the matching
+The following example targets the `v0.2.1` release. If this guide was
+opened at another immutable tag or commit, replace `v0.2.1` with the matching
 published ref before running the install command.
 
 Run the install commands outside the target project if you prefer, then
 return to the target project for initialization:
 
 ```bash
-export MISSIS_REF=v0.2.0
+export MISSIS_REF=v0.2.1
 export MISSIS_BIN_DIR="$HOME/go/bin"
 mkdir -p "$MISSIS_BIN_DIR"
 export PATH="$MISSIS_BIN_DIR:$PATH"
@@ -248,7 +248,7 @@ reinitializing or overwriting project files.
 For Windows PowerShell, use the corresponding commands:
 
 ```powershell
-$env:MISSIS_REF = "v0.2.0"
+$env:MISSIS_REF = "v0.2.1"
 $env:MISSIS_BIN_DIR = "$env:LOCALAPPDATA\MissisTools\bin"
 New-Item -ItemType Directory -Force $env:MISSIS_BIN_DIR | Out-Null
 $env:Path = "$env:MISSIS_BIN_DIR;$env:Path"
@@ -326,8 +326,8 @@ own `mise.toml`:
 ```toml
 [tools]
 go = "1.26"
-"go:github.com/ravinsharma7/missis/cmd/missis" = "v0.2.0"
-"go:github.com/ravinsharma7/missis/tools/missis-tools" = "v0.2.0"
+"go:github.com/ravinsharma7/missis/cmd/missis" = "v0.2.1"
+"go:github.com/ravinsharma7/missis/tools/missis-tools" = "v0.2.1"
 ```
 
 After `mise install`, verify both commands in the active shell. If the Go
