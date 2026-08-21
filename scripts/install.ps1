@@ -64,7 +64,7 @@ function Assert-NativeWindowsBinary([string]$Name) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "installed binary is missing: $path"
     }
-    $bytes = Get-Content -LiteralPath $path -Encoding Byte -TotalCount 2
+    $bytes = [System.IO.File]::ReadAllBytes($path)
     if ($bytes.Count -lt 2 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
         throw "installed binary is not a native PE executable: $path"
     }
