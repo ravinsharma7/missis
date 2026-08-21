@@ -20,7 +20,7 @@
 #
 # Env:
 #   CODEX_BIN             codex binary to run (default: codex from PATH)
-#   CODEX_RUN_ARGS        flags for non-interactive run (default: --full-auto)
+#   CODEX_RUN_ARGS        flags for non-interactive run (auto-detected by CLI)
 #   CODEX_EXTRA_ARGS      extra flags for `codex exec`
 #   CODEX_MODEL           override and execute a specific model
 #   CODEX_MODEL_PROVIDER  override and execute a specific provider
@@ -128,8 +128,7 @@ done
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CONFIG_FILE="$CODEX_HOME_DIR/config.toml"
-SKILL_DIR="$CODEX_HOME_DIR/skills/missis"
-SKILL_HIDDEN="$CODEX_HOME_DIR/skills/.missis.benchmark-hidden"
+SKILL_SOURCE_DIR="$REPO_DIR/tools/skills/missis"
 TEMP_ROOT="$REPO_DIR/temp"
 RUN_DIR="$TEMP_ROOT/run-$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_DIR="$RUN_DIR/logs"
@@ -138,9 +137,16 @@ BIN_HEAD_DIR="$RUN_DIR/bin-head"
 BIN="$BIN_DIR/missis"
 BIN_HEAD="$BIN_HEAD_DIR/missis"
 CODEX_BIN="${CODEX_BIN:-codex}"
-CODEX_RUN_ARGS="${CODEX_RUN_ARGS:---full-auto}"
+CODEX_HOST_PATH="$PATH"
+CODEX_RUN_ARGS_SET=0
+if [ "${CODEX_RUN_ARGS+x}" = x ]; then
+	CODEX_RUN_ARGS_SET=1
+fi
+CODEX_RUN_ARGS="${CODEX_RUN_ARGS-}"
 CATALOG_PATCHED=""
 CODEX_CONFIG_ARGS=()
+CODEX_RUN_ARGS_ARRAY=()
+CODEX_EXTRA_ARGS_ARRAY=()
 CATALOG_SOURCE=""
 CODEX_VERSION_LABEL="unavailable"
 CODEX_VERSION_SERIES=""
@@ -239,7 +245,10 @@ prepare_catalog() {
 		echo "model catalog is not a valid models catalog: $catpath" >&2
 		return 2
 	fi
-	if ! jq -e 'all(.models[]; (.base_instructions? | type) == "string")' "$CATALOG_PATCHED" >/dev/null; then
+	# Older Codex CLIs require base_instructions. A versioned catalog from the
+	# same release line is allowed to use that release's schema, while an
+	# unversioned catalog remains conservative and must carry the legacy field.
+	if [ -z "$CATALOG_CLIENT_SERIES" ] && ! jq -e 'all(.models[]; (.base_instructions? | type) == "string")' "$CATALOG_PATCHED" >/dev/null; then
 		echo "model catalog is incompatible with this Codex CLI (missing base_instructions or invalid type): $catpath" >&2
 		return 2
 	fi
@@ -405,6 +414,7 @@ if [ "$PLAN_ONLY" = 1 ]; then
 	echo "service tier: $SERVICE_TIER_LABEL"
 	echo "execution provider: $EXEC_PROVIDER_LABEL"
 	echo "execution: selected provider/model/service tier are passed explicitly"
+	echo "execution flags: ${CODEX_RUN_ARGS:-auto-detect during preflight}"
 	if [ "$CANARY_ONLY" -eq 1 ]; then
 		echo "mode: canary only ($CANARY_SCENARIO / brief)"
 	else
@@ -412,10 +422,10 @@ if [ "$PLAN_ONLY" = 1 ]; then
 	fi
 	echo "baseline ref: $BASELINE_REF"
 	echo "temp root: $TEMP_ROOT"
-	if [ -d "$SKILL_DIR" ]; then
-		echo "skill: $SKILL_DIR (present)"
+	if [ -d "$SKILL_SOURCE_DIR" ]; then
+		echo "skill source: $SKILL_SOURCE_DIR (present; copied into enabled run homes)"
 	else
-		echo "skill: $SKILL_DIR (absent)"
+		echo "skill source: $SKILL_SOURCE_DIR (absent)"
 	fi
 	echo
 	echo "config matrix (no codex sessions will run):"
@@ -443,9 +453,6 @@ fi
 mkdir -p "$LOG_DIR" "$BIN_DIR" "$BIN_HEAD_DIR" "$RUN_DIR/projects"
 
 cleanup() {
-	if [ -d "$SKILL_HIDDEN" ] && [ ! -d "$SKILL_DIR" ]; then
-		mv "$SKILL_HIDDEN" "$SKILL_DIR"
-	fi
 	rm -rf "$BIN_DIR"
 	rm -rf "$BIN_HEAD_DIR"
 	if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
@@ -453,6 +460,26 @@ cleanup() {
 	fi
 }
 trap cleanup EXIT
+
+prepare_codex_home() {
+	local target="$1" enable_skill="$2"
+	mkdir -p "$target"
+	# Keep authentication and the validated model cache available without
+	# exposing the user's mutable config or installed skills to the run.
+	if [ -f "$CODEX_HOME_DIR/auth.json" ]; then
+		cp -p "$CODEX_HOME_DIR/auth.json" "$target/auth.json"
+	fi
+	if [ -f "$CODEX_HOME_DIR/models_cache.json" ]; then
+		cp -p "$CODEX_HOME_DIR/models_cache.json" "$target/models_cache.json"
+	fi
+	if [ "$CONFIG_MODE" = "inherit" ] && [ -f "$CODEX_CONFIG_FILE" ]; then
+		cp -p "$CODEX_CONFIG_FILE" "$target/config.toml"
+	fi
+	if [ "$enable_skill" = "1" ]; then
+		mkdir -p "$target/skills"
+		cp -R "$SKILL_SOURCE_DIR" "$target/skills/missis"
+	fi
+}
 
 if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
 	echo "codex CLI not found: $CODEX_BIN" >&2
@@ -464,14 +491,34 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 run_cli_preflight() {
-	if ! "$CODEX_BIN" exec --help >/dev/null 2>&1; then
+	local exec_help
+	if ! exec_help="$("$CODEX_BIN" exec --help 2>&1)"; then
 		echo "Codex CLI does not support the required exec command: $CODEX_BIN" >&2
 		return 2
+	fi
+	if [ "$CODEX_RUN_ARGS_SET" -eq 0 ]; then
+		if printf '%s\n' "$exec_help" | grep -q -- '--full-auto'; then
+			CODEX_RUN_ARGS="--full-auto"
+		elif printf '%s\n' "$exec_help" | grep -q -- '--approve-for-me'; then
+			CODEX_RUN_ARGS="--approve-for-me"
+		else
+			echo "Codex CLI has no supported automatic execution mode (--full-auto or --approve-for-me)" >&2
+			return 2
+		fi
+	fi
+	read -r -a CODEX_RUN_ARGS_ARRAY <<<"$CODEX_RUN_ARGS"
+	if [ -n "${CODEX_EXTRA_ARGS:-}" ]; then
+		read -r -a CODEX_EXTRA_ARGS_ARRAY <<<"$CODEX_EXTRA_ARGS"
 	fi
 	if ! prepare_catalog; then
 		return 2
 	fi
 	prepare_exec_config
+	if ! "$CODEX_BIN" exec "${CODEX_RUN_ARGS_ARRAY[@]}" "${CODEX_CONFIG_ARGS[@]}" \
+		--skip-git-repo-check --ephemeral "${CODEX_EXTRA_ARGS_ARRAY[@]}" --help >/dev/null 2>&1; then
+		echo "Codex CLI rejected the configured exec flags; inspect CODEX_RUN_ARGS/CODEX_EXTRA_ARGS" >&2
+		return 2
+	fi
 }
 
 if ! run_cli_preflight; then
@@ -488,12 +535,6 @@ echo "building missis from $REPO_DIR"
 # Baseline must run the pre-change CLI: build BASELINE_REF into a separate dir.
 git -C "$REPO_DIR" archive "$BASELINE_REF" | tar -x -C "$BIN_HEAD_DIR"
 (cd "$BIN_HEAD_DIR" && go build -o "$BIN_HEAD" ./cmd/missis)
-CODEX_RUN_ARGS_ARRAY=()
-read -r -a CODEX_RUN_ARGS_ARRAY <<<"$CODEX_RUN_ARGS"
-CODEX_EXTRA_ARGS_ARRAY=()
-if [ -n "${CODEX_EXTRA_ARGS:-}" ]; then
-	read -r -a CODEX_EXTRA_ARGS_ARRAY <<<"$CODEX_EXTRA_ARGS"
-fi
 
 setup_project() {
 	local scratch="$1" use_pointer="$2" missis_bin="$3" scenario="$4"
@@ -530,29 +571,27 @@ EOF
 
 run_config() {
 	local name="$1" use_pointer="$2" enable_skill="$3" missis_bin="$4" bin_dir="$5" scenario="$6" prompt="$7" expected="$8" expected_value="$9" start_iteration="${10:-1}"
-	if [ "$enable_skill" = "1" ] && [ -d "$SKILL_HIDDEN" ] && [ ! -d "$SKILL_DIR" ]; then
-		mv "$SKILL_HIDDEN" "$SKILL_DIR"
-	fi
-	if [ "$enable_skill" = "0" ] && [ -d "$SKILL_DIR" ]; then
-		mv "$SKILL_DIR" "$SKILL_HIDDEN"
-	fi
 	if [ "$start_iteration" -gt "$ITERATIONS" ]; then
 		return 0
 	fi
 	for i in $(seq "$start_iteration" "$ITERATIONS"); do
-		local scratch log before after code start_ns end_ns started_at wall before_tickets tickets execs turns tokens transcript_bytes semantic outcome
+		local scratch log exec_codex_home before after code start_ns end_ns started_at wall before_tickets tickets execs turns tokens transcript_bytes semantic outcome
+		local -a session_config_args
 		scratch="$RUN_DIR/projects/${scenario}-${name}-${i}"
 		rm -rf "$scratch"
 		mkdir -p "$scratch"
 		log="$LOG_DIR/${scenario}-${name}-${i}.log"
 		setup_project "$scratch" "$use_pointer" "$missis_bin" "$scenario"
+		exec_codex_home="$RUN_DIR/codex-home/${scenario}-${name}-${i}"
+		prepare_codex_home "$exec_codex_home" "$enable_skill"
+		session_config_args=("${CODEX_CONFIG_ARGS[@]}" -c "shell_environment_policy.set.PATH=\"$bin_dir:$CODEX_HOST_PATH\"")
 		before="$LOG_DIR/${scenario}-${name}-${i}.before.json"
 		PATH="$bin_dir:$PATH" "$BIN" show --json --store "$scratch/.missis-store/missis.db" >"$before"
 		started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		start_ns="$(date +%s%N)"
 		code=0
-		PATH="$bin_dir:$PATH" timeout 900 "$CODEX_BIN" exec \
-			"${CODEX_RUN_ARGS_ARRAY[@]}" "${CODEX_CONFIG_ARGS[@]}" --skip-git-repo-check --ephemeral -C "$scratch" \
+		CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec \
+			"${CODEX_RUN_ARGS_ARRAY[@]}" "${session_config_args[@]}" --skip-git-repo-check --ephemeral -C "$scratch" \
 			"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>&1 || code=$?
 		end_ns="$(date +%s%N)"
 		wall="$(awk "BEGIN { printf \"%.1f\", ($end_ns - $start_ns) / 1000000000 }")"
@@ -562,7 +601,7 @@ run_config() {
 		tickets="$(jq '.tickets | length' "$after" 2>/dev/null || echo 0)"
 		execs="$(grep -c '^exec$' "$log" || true)"
 		turns="$(grep -c '^codex$' "$log" || true)"
-		tokens="$(awk '/^tokens used$/{getline; if ($0 ~ /^[0-9]+$/) print $0}' "$log" | tail -1)"
+		tokens="$(awk '/^tokens used$/{getline; gsub(/,/, "", $0); if ($0 ~ /^[0-9]+$/) print $0}' "$log" | tail -1)"
 		tokens="${tokens:-unknown}"
 		transcript_bytes="$(wc -c <"$log" | tr -d ' ')"
 		semantic="fail"
@@ -687,7 +726,8 @@ cat <<'EOF'
 
 Notes:
 - execs counts `exec` tool calls and turns counts assistant blocks in the
-  codex transcript; both are version-specific but stable for codex-cli 0.125.x.
+  codex transcript; both are version-specific and the exact CLI version is
+  recorded above.
 - semantic pass/fail is evaluated from the before/after store projection for
   each completed session; failed or zero-turn sessions are blocked and cannot
   count as semantic passes. Token counts are best-effort transcript values and

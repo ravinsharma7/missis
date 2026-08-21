@@ -53,13 +53,16 @@ cat >"$fake_codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "--version" ]; then
-  echo "codex-test 0.1"
+	 echo "${CODEX_FAKE_VERSION:-codex-test 0.1}"
   exit 0
 fi
 if [ "${1:-}" = "exec" ]; then
-	if [ "${2:-}" = "--help" ]; then
-		exit 0
-	fi
+	for arg in "$@"; do
+		if [ "$arg" = "--help" ]; then
+			printf '%s\n' '--full-auto'
+			exit 0
+		fi
+	done
 	if [ -n "${CODEX_FAKE_MARKER:-}" ]; then
 		printf '%s\n' "$*" >> "$CODEX_FAKE_MARKER"
 	fi
@@ -121,6 +124,30 @@ if [ "$version_code" -ne 2 ]; then
 	 exit 1
 fi
 grep -q 'version mismatch' "$version_error"
+
+modern_catalog="$tmp/modern-catalog.json"
+printf '%s\n' '{"client_version":"0.149.0","models":[{"slug":"deepseek-v4-flash","default_reasoning_level":"high"}]}' >"$modern_catalog"
+cat >"$codex_home/config.toml" <<EOF
+model_provider = "deepseek"
+model = "deepseek-v4-flash"
+model_reasoning_effort = "high"
+service_tier = "fast"
+model_catalog_json = "$modern_catalog"
+EOF
+modern_output="$tmp/modern.out"
+modern_error="$tmp/modern.err"
+modern_code=0
+(
+  cd "$repo_root"
+  CODEX_HOME="$codex_home" CODEX_BIN="$fake_codex" CODEX_FAKE_VERSION="codex-test 0.149.0" \
+    testsuite/benchmarks/benchmark-agent-brief.sh --preflight --baseline-ref HEAD
+) >"$modern_output" 2>"$modern_error" || modern_code=$?
+if [ "$modern_code" -ne 0 ]; then
+	echo "matching modern catalog preflight exit=$modern_code" >&2
+	cat "$modern_error" >&2
+	exit 1
+fi
+grep -q 'preflight only: no model sessions run' "$modern_output"
 
 cat >"$codex_home/config.toml" <<'EOF'
 model_provider = "deepseek"

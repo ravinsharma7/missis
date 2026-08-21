@@ -35,11 +35,13 @@ missis --ag-install-skill --dest "${CODEX_HOME:-$HOME/.codex}/skills/missis"
 Without `--dest` it defaults to `$CODEX_HOME/skills/missis`; `--force`
 overwrites an existing install.
 
-This benchmark tests the Codex harness, so it toggles the skill by moving the
-Codex skills directory aside for `baseline`/`pointer` and leaving it present
-for `skill`/`brief`, restoring it on exit. `--plan` prints the skill path and
-whether it is present. In a session, invoke it with `$missis` or by asking for
-missis ticket work.
+This benchmark tests the Codex harness with a hermetic per-run Codex home. The
+`skill`/`brief` configurations receive a copy of this repository's current
+`tools/skills/missis`; `baseline`/`pointer` receive no missis skill. The global
+Codex skill installation is never moved or used as benchmark input. `--plan`
+prints the canonical skill source path. In a session, invoke it with `$missis`
+or by asking for missis ticket work. The session shell `PATH` is also
+explicitly set to the selected current or baseline missis binary.
 
 ## Hermeticity and temp dirs
 
@@ -107,6 +109,10 @@ testsuite/benchmarks/benchmark-agent-brief.sh
 
 The equivalent variables are `CODEX_MODEL_PROVIDER`, `CODEX_MODEL`,
 `CODEX_REASONING_EFFORT`, `CODEX_SERVICE_TIER`, and `CODEX_MODEL_CATALOG`.
+When `CODEX_RUN_ARGS` is unset, the harness detects the installed CLI's
+automatic execution flag (`--full-auto` or `--approve-for-me`) during
+preflight. Set `CODEX_RUN_ARGS` explicitly only when the desired execution
+policy is known to be supported by that CLI version.
 Use `--service-tier none` or an explicitly empty `CODEX_SERVICE_TIER` to
 disable a configured tier. Use
 `--config-mode inherit` or `CODEX_CONFIG_MODE=inherit` only when the complete
@@ -120,9 +126,10 @@ catalog release lines differ, preflight stops with an actionable error. If a
 configured catalog advertises reasoning levels the installed Codex CLI cannot
 parse (for example `max` or `ultra`), the harness normalizes those levels in a
 temporary copy and passes it via `-c model_catalog_json=...`. It also checks
-the required `base_instructions` field. An incompatible catalog fails once
-during preflight. Override the Codex binary and run flags with `CODEX_BIN` and
-`CODEX_RUN_ARGS`.
+the legacy `base_instructions` field when the catalog is unversioned. A
+version-matched catalog is validated against its own release line instead. An
+incompatible catalog fails once during preflight. Override the Codex binary and
+run flags with `CODEX_BIN` and `CODEX_RUN_ARGS`.
 
 The run stages are:
 
@@ -160,7 +167,7 @@ The baseline uses the
 `BASELINE_REF` missis binary with the skill moved aside, so it reproduces the
 old discovery path; the other three configs use the working tree. Once the
 changes are committed, pass `--baseline-ref <pre-change-commit>` (e.g.
-`3031333`) so the baseline stays truly pre-change. The skill is restored at
+`c8767f1`) so the baseline stays truly pre-change. The skill is restored at
 exit.
 
 Every canary or full run also writes a self-contained `results.md` table into
