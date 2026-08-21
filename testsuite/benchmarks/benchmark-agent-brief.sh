@@ -12,14 +12,21 @@
 # files live under ./temp, never /tmp.
 #
 # Usage:
-#   testsuite/benchmarks/benchmark-agent-brief.sh [--iterations N] [--scenario NAME] [--plan] [--provider P] [--baseline-ref REF] [--keep]
+#   testsuite/benchmarks/benchmark-agent-brief.sh [--iterations N] [--scenario NAME]
+#     [--plan] [--provider P] [--model M] [--effort E] [--service-tier T]
+#     [--catalog PATH] [--config-mode isolated|inherit]
+#     [--baseline-ref REF] [--keep]
 #
 # Env:
 #   CODEX_BIN             codex binary to run (default: codex from PATH)
 #   CODEX_RUN_ARGS        flags for non-interactive run (default: --full-auto)
-#   CODEX_EXTRA_ARGS      extra flags for `codex exec` (e.g. --model deepseek-v4-pro)
-#   CODEX_MODEL           override the detected model label
-#   CODEX_MODEL_PROVIDER  override the detected provider label
+#   CODEX_EXTRA_ARGS      extra flags for `codex exec`
+#   CODEX_MODEL           override and execute a specific model
+#   CODEX_MODEL_PROVIDER  override and execute a specific provider
+#   CODEX_REASONING_EFFORT override the reasoning effort
+#   CODEX_SERVICE_TIER    override the service tier; empty or none disables it
+#   CODEX_MODEL_CATALOG   override the model_catalog_json path
+#   CODEX_CONFIG_MODE     isolated (default) or inherit user config
 #   BASELINE_REF          git ref used for the pre-change baseline (default: HEAD)
 #
 # Requires: codex CLI on PATH, go, jq. Budget 1-3 minutes per iteration.
@@ -28,7 +35,19 @@ set -euo pipefail
 
 ITERATIONS=1
 PLAN_ONLY=0
-PROVIDER_OVERRIDE=""
+PROVIDER_OVERRIDE="${CODEX_MODEL_PROVIDER:-}"
+MODEL_OVERRIDE="${CODEX_MODEL:-}"
+EFFORT_OVERRIDE="${CODEX_REASONING_EFFORT:-}"
+SERVICE_TIER_OVERRIDE="${CODEX_SERVICE_TIER-}"
+SERVICE_TIER_OVERRIDE_SET=0
+if [ "${CODEX_SERVICE_TIER+x}" = x ]; then
+	SERVICE_TIER_OVERRIDE_SET=1
+fi
+if [ "$SERVICE_TIER_OVERRIDE" = "none" ]; then
+	SERVICE_TIER_OVERRIDE=""
+fi
+CATALOG_OVERRIDE="${CODEX_MODEL_CATALOG:-}"
+CONFIG_MODE="${CODEX_CONFIG_MODE:-isolated}"
 BASELINE_REF="${BASELINE_REF:-HEAD}"
 KEEP=0
 SCENARIO_FILTER=""
@@ -48,6 +67,30 @@ while [ $# -gt 0 ]; do
 		;;
 	--provider)
 		PROVIDER_OVERRIDE="$2"
+		shift 2
+		;;
+	--model)
+		MODEL_OVERRIDE="$2"
+		shift 2
+		;;
+	--effort)
+		EFFORT_OVERRIDE="$2"
+		shift 2
+		;;
+	--service-tier)
+		SERVICE_TIER_OVERRIDE="$2"
+		if [ "$SERVICE_TIER_OVERRIDE" = "none" ]; then
+			SERVICE_TIER_OVERRIDE=""
+		fi
+		SERVICE_TIER_OVERRIDE_SET=1
+		shift 2
+		;;
+	--catalog)
+		CATALOG_OVERRIDE="$2"
+		shift 2
+		;;
+	--config-mode)
+		CONFIG_MODE="$2"
 		shift 2
 		;;
 	--baseline-ref)
@@ -84,16 +127,32 @@ BIN_HEAD="$BIN_HEAD_DIR/missis"
 CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_RUN_ARGS="${CODEX_RUN_ARGS:---full-auto}"
 CATALOG_PATCHED=""
-CODEX_CATALOG_ARGS=()
+CODEX_CONFIG_ARGS=()
+CATALOG_SOURCE=""
+SERVICE_TIER_RAW=""
+SERVICE_TIER_LABEL="unset"
+EXEC_PROVIDER_LABEL=""
+RUN_BLOCKED=0
+BLOCK_REASON=""
+
+config_value() {
+	local key="$1"
+	if [ ! -f "$CODEX_CONFIG_FILE" ]; then
+		return 0
+	fi
+	sed -n "s/^${key}[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$CODEX_CONFIG_FILE" | tail -1
+}
 
 catalog_path() {
-	local catpath=""
-	if [ -f "$CODEX_CONFIG_FILE" ]; then
-		catpath="$(sed -n 's/^model_catalog_json[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$CODEX_CONFIG_FILE" | tail -1)"
+	local catpath="${CATALOG_OVERRIDE:-}"
+	if [ -z "$catpath" ]; then
+		catpath="$(config_value model_catalog_json)"
 	fi
 	if [ -n "$catpath" ]; then
-		# config.toml uses ~ for the home directory, not CODEX_HOME
 		catpath="${catpath/#~/$HOME}"
+		if [[ "$catpath" != /* ]]; then
+			catpath="$(dirname "$CODEX_CONFIG_FILE")/$catpath"
+		fi
 		if [ -f "$catpath" ]; then
 			printf '%s\n' "$catpath"
 		fi
@@ -103,52 +162,110 @@ catalog_path() {
 prepare_catalog() {
 	local catpath
 	catpath="$(catalog_path)"
-	if [ -n "$catpath" ]; then
-		# Newer catalogs can advertise reasoning levels that older codex CLIs
-		# cannot parse. Patch a temp copy so the benchmark can still run.
-		CATALOG_PATCHED="$RUN_DIR/models-patched.json"
-		sed -e 's/"effort": "max"/"effort": "xhigh"/g' \
-			-e 's/"effort": "ultra"/"effort": "xhigh"/g' \
-			-e 's/"default_reasoning_level": "max"/"default_reasoning_level": "xhigh"/g' \
-			-e 's/"default_reasoning_level": "ultra"/"default_reasoning_level": "xhigh"/g' \
-			"$catpath" >"$CATALOG_PATCHED"
-		CODEX_CATALOG_ARGS=(-c "model_catalog_json=$CATALOG_PATCHED")
+	if [ -z "$catpath" ]; then
+		if [ -n "$CATALOG_OVERRIDE" ]; then
+			echo "model catalog not found: $CATALOG_OVERRIDE" >&2
+			return 2
+		fi
+		CATALOG_SOURCE="remote/default"
+		return 0
+	fi
+	CATALOG_SOURCE="$catpath"
+	# Newer catalogs can advertise reasoning levels that older codex CLIs
+	# cannot parse. Patch a temp copy so the benchmark can still run.
+	CATALOG_PATCHED="$RUN_DIR/models-patched.json"
+	sed -e 's/"effort": "max"/"effort": "xhigh"/g' \
+		-e 's/"effort": "ultra"/"effort": "xhigh"/g' \
+		-e 's/"default_reasoning_level": "max"/"default_reasoning_level": "xhigh"/g' \
+		-e 's/"default_reasoning_level": "ultra"/"default_reasoning_level": "xhigh"/g' \
+		"$catpath" >"$CATALOG_PATCHED"
+	if ! jq -e '.models | type == "array" and length > 0' "$CATALOG_PATCHED" >/dev/null; then
+		echo "model catalog is not a valid models catalog: $catpath" >&2
+		return 2
+	fi
+	if ! jq -e 'all(.models[]; has("base_instructions"))' "$CATALOG_PATCHED" >/dev/null; then
+		echo "model catalog is incompatible with this Codex CLI (missing base_instructions): $catpath" >&2
+		return 2
 	fi
 }
 
-# The codex config reference (learn.chatgpt.com/docs/config-file/config-reference)
-# documents `model` and `model_provider`; the provider defaults to `openai`.
+# The codex config reference documents `model` and `model_provider`; the
+# provider defaults to `openai`.
 detect_provider() {
-	local provider="${CODEX_MODEL_PROVIDER:-}"
-	local model="${CODEX_MODEL:-}"
-	local effort=""
-	if [ -f "$CODEX_CONFIG_FILE" ]; then
-		if [ -z "$provider" ]; then
-			provider="$(sed -n 's/^model_provider[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$CODEX_CONFIG_FILE" | tail -1)"
-		fi
-		if [ -z "$model" ]; then
-			model="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$CODEX_CONFIG_FILE" | tail -1)"
-		fi
-		effort="$(sed -n 's/^model_reasoning_effort[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$CODEX_CONFIG_FILE" | tail -1)"
+	local provider="${PROVIDER_OVERRIDE:-$(config_value model_provider)}"
+	local model="${MODEL_OVERRIDE:-$(config_value model)}"
+	local effort="${EFFORT_OVERRIDE:-$(config_value model_reasoning_effort)}"
+	local exec_provider=""
+	if [ "$SERVICE_TIER_OVERRIDE_SET" -eq 1 ]; then
+		SERVICE_TIER_RAW="$SERVICE_TIER_OVERRIDE"
+	else
+		SERVICE_TIER_RAW="$(config_value service_tier)"
 	fi
 	provider="${provider:-openai}"
 	model="${model:-unknown}"
 	local family="custom"
 	case "$provider" in
-	openai | chatgpt) family="openai-gpt" ;;
+	openai) family="openai-gpt" ;;
+	chatgpt | codex)
+		family="openai-gpt"
+		exec_provider="openai"
+		;;
 	*deepseek* | *DeepSeek*) family="deepseek" ;;
 	*) family="custom" ;;
 	esac
+	exec_provider="${exec_provider:-$provider}"
 	if [ "$family" = "custom" ] && printf '%s' "$model" | grep -qi 'deepseek'; then
 		family="deepseek"
 	fi
-	printf '%s %s %s %s\n' "$provider" "$model" "$family" "$effort"
+	if [ "$SERVICE_TIER_RAW" = "default" ] && [ "$SERVICE_TIER_OVERRIDE_SET" -eq 0 ]; then
+		SERVICE_TIER_RAW=""
+	fi
+	case "$effort" in
+	max | ultra) effort="xhigh" ;;
+	esac
+	printf '%s|%s|%s|%s|%s|%s\n' "$provider" "$exec_provider" "$model" "$family" "$effort" "$SERVICE_TIER_RAW"
 }
 
-IFS=' ' read -r PROVIDER_LABEL MODEL_LABEL FAMILY EFFORT_LABEL <<<"$(detect_provider)"
-if [ -n "$PROVIDER_OVERRIDE" ]; then
-	FAMILY="$PROVIDER_OVERRIDE"
+IFS='|' read -r PROVIDER_LABEL EXEC_PROVIDER_LABEL MODEL_LABEL FAMILY EFFORT_LABEL SERVICE_TIER_RAW <<<"$(detect_provider)"
+SERVICE_TIER_LABEL="${SERVICE_TIER_RAW:-unset}"
+
+case "$CONFIG_MODE" in
+isolated | inherit) ;;
+*)
+	echo "invalid CODEX_CONFIG_MODE: $CONFIG_MODE (use isolated or inherit)" >&2
+	exit 2
+	;;
+esac
+if [ "$SERVICE_TIER_OVERRIDE_SET" -eq 1 ] && [ "$SERVICE_TIER_OVERRIDE" = "default" ]; then
+	echo "invalid service tier override: default (use empty, fast, or flex)" >&2
+	exit 2
 fi
+if [ "$CONFIG_MODE" = "inherit" ] && [ "$(config_value service_tier)" = "default" ] && [ "$SERVICE_TIER_OVERRIDE_SET" -eq 0 ]; then
+	echo "inherited Codex config has unsupported service_tier=default; use --config-mode isolated or set CODEX_SERVICE_TIER" >&2
+	exit 2
+fi
+
+prepare_exec_config() {
+	CODEX_CONFIG_ARGS=()
+	if [ "$CONFIG_MODE" = "isolated" ]; then
+		CODEX_CONFIG_ARGS+=(--ignore-user-config)
+	fi
+	if [ "$MODEL_LABEL" != "unknown" ]; then
+		CODEX_CONFIG_ARGS+=(--model "$MODEL_LABEL")
+	fi
+	if [ -n "$EXEC_PROVIDER_LABEL" ]; then
+		CODEX_CONFIG_ARGS+=(-c "model_provider=\"$EXEC_PROVIDER_LABEL\"")
+	fi
+	if [ -n "$EFFORT_LABEL" ]; then
+		CODEX_CONFIG_ARGS+=(-c "model_reasoning_effort=\"$EFFORT_LABEL\"")
+	fi
+	if [ -n "$SERVICE_TIER_RAW" ]; then
+		CODEX_CONFIG_ARGS+=(-c "service_tier=\"$SERVICE_TIER_RAW\"")
+	fi
+	if [ -n "$CATALOG_PATCHED" ]; then
+		CODEX_CONFIG_ARGS+=(-c "model_catalog_json=\"$CATALOG_PATCHED\"")
+	fi
+}
 
 MATRIX=(
 	"baseline|0|0"
@@ -171,7 +288,15 @@ request; project/group scope comes only from explicit flags or environment."
 if [ "$PLAN_ONLY" = 1 ]; then
 	echo "provider: $PROVIDER_LABEL  model: $MODEL_LABEL  family: $FAMILY  effort: $EFFORT_LABEL"
 	echo "source: $CODEX_CONFIG_FILE"
-	echo "catalog: $(catalog_path)"
+	catalog_display="$(catalog_path)"
+	if [ -n "$CATALOG_OVERRIDE" ] && [ -z "$catalog_display" ]; then
+		catalog_display="missing:$CATALOG_OVERRIDE"
+	fi
+	echo "catalog: ${catalog_display:-remote/default}"
+	echo "config mode: $CONFIG_MODE"
+	echo "service tier: $SERVICE_TIER_LABEL"
+	echo "execution provider: $EXEC_PROVIDER_LABEL"
+	echo "execution: selected provider/model/service tier are passed explicitly"
 	echo "baseline ref: $BASELINE_REF"
 	echo "temp root: $TEMP_ROOT"
 	if [ -d "$SKILL_DIR" ]; then
@@ -223,7 +348,10 @@ echo "building missis from $REPO_DIR"
 # Baseline must run the pre-change CLI: build BASELINE_REF into a separate dir.
 git -C "$REPO_DIR" archive "$BASELINE_REF" | tar -x -C "$BIN_HEAD_DIR"
 (cd "$BIN_HEAD_DIR" && go build -o "$BIN_HEAD" ./cmd/missis)
-prepare_catalog
+if ! prepare_catalog; then
+	exit 2
+fi
+prepare_exec_config
 CODEX_RUN_ARGS_ARRAY=()
 read -r -a CODEX_RUN_ARGS_ARRAY <<<"$CODEX_RUN_ARGS"
 CODEX_EXTRA_ARGS_ARRAY=()
@@ -284,8 +412,8 @@ run_config() {
 		started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		start_ns="$(date +%s%N)"
 		code=0
-		PATH="$bin_dir:$PATH" timeout 900 "$CODEX_BIN" exec "${CODEX_CATALOG_ARGS[@]}" \
-			"${CODEX_RUN_ARGS_ARRAY[@]}" --skip-git-repo-check --ephemeral -C "$scratch" \
+		PATH="$bin_dir:$PATH" timeout 900 "$CODEX_BIN" exec \
+			"${CODEX_RUN_ARGS_ARRAY[@]}" "${CODEX_CONFIG_ARGS[@]}" --skip-git-repo-check --ephemeral -C "$scratch" \
 			"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>&1 || code=$?
 		end_ns="$(date +%s%N)"
 		wall="$(awk "BEGIN { printf \"%.1f\", ($end_ns - $start_ns) / 1000000000 }")"
@@ -323,6 +451,11 @@ run_config() {
 		printf '%-30s %8s %6s %6s %9s %8s %8s %6s  %s\n' \
 			"${scenario}/${name}#${i}" "${wall}s" "$execs" "$turns" "$tokens" "$transcript_bytes" "$tickets" "$code" "$outcome"
 		RESULT_ROWS+="| ${scenario}/${name}#${i} | $MODEL_LABEL | $started_at | ${wall}s | $execs | $turns | $tokens | $transcript_bytes | $before_tickets | $tickets | $code | $outcome | [log](logs/${scenario}-${name}-${i}.log) |"$'\n'
+		if [ "$outcome" = "blocked" ]; then
+			RUN_BLOCKED=1
+			BLOCK_REASON="Codex exited with code $code and $turns turns; see logs/${scenario}-${name}-${i}.log"
+			return 0
+		fi
 	done
 }
 
@@ -340,6 +473,9 @@ for scenario_row in "${SCENARIOS[@]}"; do
 		continue
 	fi
 	for row in "${MATRIX[@]}"; do
+		if [ "$RUN_BLOCKED" -eq 1 ]; then
+			break
+		fi
 		IFS='|' read -r name use_pointer enable_skill <<<"$row"
 		if [ "$name" = "baseline" ]; then
 			run_config "$name" "$use_pointer" "$enable_skill" "$BIN_HEAD" "$BIN_HEAD_DIR" "$scenario" "$prompt" "$expected" "$expected_value"
@@ -347,6 +483,9 @@ for scenario_row in "${SCENARIOS[@]}"; do
 			run_config "$name" "$use_pointer" "$enable_skill" "$BIN" "$BIN_DIR" "$scenario" "$prompt" "$expected" "$expected_value"
 		fi
 	done
+	if [ "$RUN_BLOCKED" -eq 1 ]; then
+		break
+	fi
 done
 
 {
@@ -356,7 +495,10 @@ done
 	printf -- '- family: %s\n' "$FAMILY"
 	printf -- '- effort: %s\n' "$EFFORT_LABEL"
 	printf -- '- codex: %s\n' "$("$CODEX_BIN" --version 2>&1 | tail -1)"
-	printf -- '- catalog: %s\n' "$(catalog_path)"
+	printf -- '- catalog: %s\n' "${CATALOG_SOURCE:-remote/default}"
+	printf -- '- config mode: %s\n' "$CONFIG_MODE"
+	printf -- '- service tier: %s\n' "$SERVICE_TIER_LABEL"
+	printf -- '- execution provider: %s\n' "$EXEC_PROVIDER_LABEL"
 	if [ -n "$CATALOG_PATCHED" ]; then
 		printf -- '- catalog patch: %s (max/ultra -> xhigh)\n' "$CATALOG_PATCHED"
 	fi
@@ -400,3 +542,8 @@ Notes:
   row to its model, iteration, timestamp, and log file; --keep copies the whole
   run folder into testsuite/benchmarks/results/ so it is portable.
 EOF
+
+if [ "$RUN_BLOCKED" -eq 1 ]; then
+	echo "benchmark blocked: $BLOCK_REASON" >&2
+	exit 3
+fi

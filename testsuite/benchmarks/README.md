@@ -74,20 +74,48 @@ source of truth:
 missis set '#32/notes' "$(< testsuite/benchmarks/results/<run-id>/results.md)"
 ```
 
-Provider detection: the harness reads `model` and `model_provider` from
-`~/.codex/config.toml` (the codex config reference documents these keys, with
-`openai` as the default provider) and classifies the family as `deepseek`,
-`openai-gpt`, or `custom`. Override detection with `CODEX_MODEL_PROVIDER`,
-`CODEX_MODEL`, or `--provider`.
+Provider selection is automatic by default: the harness reads `model`,
+`model_provider`, `model_reasoning_effort`, and `service_tier` from
+`~/.codex/config.toml`. The default `isolated` mode ignores the rest of the
+user config during each scratch session, then passes the selected provider,
+model, effort, service tier, and compatible catalog explicitly. This prevents a
+stale local setting from changing the comparison. `openai`, `chatgpt`, and
+`codex` are classified as `openai-gpt`; DeepSeek models are classified as
+`deepseek`; other values are `custom`.
 
-Compatibility: if the configured `model_catalog_json` advertises features the
-installed codex CLI cannot parse (for example `max` or `ultra` reasoning
-levels), the harness patches a temp copy of the catalog (`max`/`ultra` ->
-`xhigh`) and passes it via `-c model_catalog_json=...`. Failed or zero-turn
-Codex sessions are recorded as `blocked`, never as semantic passes. The
-scratch agent also gets the freshly built `missis` binary on PATH, so the run
-exercises the new CLI rather than a stale installed copy. Override the codex
-binary and run flags with `CODEX_BIN` and `CODEX_RUN_ARGS`.
+Manual selection is supported through either flags or environment variables:
+
+```bash
+testsuite/benchmarks/benchmark-agent-brief.sh \
+  --provider openai --model gpt-5.6-luna --effort xhigh --service-tier fast
+
+CODEX_MODEL_PROVIDER=deepseek \
+CODEX_MODEL=deepseek-v4-flash \
+CODEX_REASONING_EFFORT=high \
+CODEX_SERVICE_TIER=fast \
+CODEX_MODEL_CATALOG=/path/to/compatible/models.json \
+testsuite/benchmarks/benchmark-agent-brief.sh
+```
+
+The equivalent variables are `CODEX_MODEL_PROVIDER`, `CODEX_MODEL`,
+`CODEX_REASONING_EFFORT`, `CODEX_SERVICE_TIER`, and `CODEX_MODEL_CATALOG`.
+Use `--service-tier none` or an explicitly empty `CODEX_SERVICE_TIER` to
+disable a configured tier. Use
+`--config-mode inherit` or `CODEX_CONFIG_MODE=inherit` only when the complete
+user Codex configuration is known to be compatible. An inherited
+`service_tier = "default"` is rejected explicitly.
+
+Compatibility: if a configured catalog advertises reasoning levels the
+installed Codex CLI cannot parse (for example `max` or `ultra`), the harness
+normalizes those levels in a temporary copy and passes it via
+`-c model_catalog_json=...`. It also checks the catalog shape, including the
+required `base_instructions` field, before spending model tokens. An
+incompatible catalog fails once during preflight. Failed or zero-turn Codex
+sessions are recorded as `blocked`, and the matrix stops after the first one;
+they never count as semantic passes. The scratch agent also gets the freshly
+built `missis` binary on PATH, so the run exercises the new CLI rather than a
+stale installed copy. Override the Codex binary and run flags with `CODEX_BIN`
+and `CODEX_RUN_ARGS`.
 
 Scenarios currently include:
 
@@ -98,7 +126,7 @@ Scenarios currently include:
 - `target-ref`: update `#1` while a different ticket and stale pointer compete
   for attention; only the requested ref may change.
 
-Metrics per run: semantic pass/fail, wall time, `exec` tool-call count,
+Metrics per run: semantic pass/fail/blocked, wall time, `exec` tool-call count,
 assistant turn count, best-effort model token count, transcript bytes, before and
 after ticket counts, and exit code. The benchmark therefore selects a winner by
 correctness first, then compares performance among configurations that pass.
