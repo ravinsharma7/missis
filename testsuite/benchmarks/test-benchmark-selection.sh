@@ -211,15 +211,15 @@ full_code=0
   cd "$repo_root"
   CODEX_HOME="$codex_home" CODEX_BIN="$fake_codex" \
     CODEX_FAKE_MARKER="$full_marker" CODEX_FAKE_SUCCESS=1 \
-    testsuite/benchmarks/benchmark-agent-brief.sh --baseline-ref HEAD
+    testsuite/benchmarks/benchmark-agent-brief.sh --iterations 2 --baseline-ref HEAD
 ) >"$full_output" 2>"$full_error" || full_code=$?
 if [ "$full_code" -ne 0 ]; then
 	echo "full benchmark exit=$full_code" >&2
 	cat "$full_error" >&2
 	exit 1
 fi
-if [ "$(wc -l <"$full_marker" | tr -d ' ')" -ne 12 ]; then
-	echo "full benchmark should run exactly 12 sessions including one canary" >&2
+if [ "$(wc -l <"$full_marker" | tr -d ' ')" -ne 24 ]; then
+	echo "two-iteration benchmark should run exactly 24 sessions including one canary" >&2
 	exit 1
 fi
 grep -q 'canary: missing-title/brief' "$full_output"

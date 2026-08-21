@@ -570,11 +570,14 @@ EOF
 }
 
 run_config() {
-	local name="$1" use_pointer="$2" enable_skill="$3" missis_bin="$4" bin_dir="$5" scenario="$6" prompt="$7" expected="$8" expected_value="$9" start_iteration="${10:-1}"
-	if [ "$start_iteration" -gt "$ITERATIONS" ]; then
+	local name="$1" use_pointer="$2" enable_skill="$3" missis_bin="$4" bin_dir="$5" scenario="$6" prompt="$7" expected="$8" expected_value="$9" start_iteration="${10:-1}" last_iteration="${11:-$ITERATIONS}"
+	if [ "$start_iteration" -gt "$last_iteration" ] || [ "$start_iteration" -gt "$ITERATIONS" ]; then
 		return 0
 	fi
-	for i in $(seq "$start_iteration" "$ITERATIONS"); do
+	if [ "$last_iteration" -gt "$ITERATIONS" ]; then
+		last_iteration="$ITERATIONS"
+	fi
+	for i in $(seq "$start_iteration" "$last_iteration"); do
 		local scratch log exec_codex_home before after code start_ns end_ns started_at wall before_tickets tickets execs turns tokens transcript_bytes semantic outcome
 		local -a session_config_args
 		scratch="$RUN_DIR/projects/${scenario}-${name}-${i}"
@@ -648,7 +651,7 @@ printf '%-30s %8s %6s %6s %9s %8s %8s %6s  %s\n' "scenario/config" "wall" "execs
 canary_row="$(scenario_row_for "$CANARY_SCENARIO")"
 IFS='|' read -r canary_scenario canary_prompt canary_expected canary_expected_value <<<"$canary_row"
 echo "canary: $canary_scenario/brief"
-run_config "brief" "1" "1" "$BIN" "$BIN_DIR" "$canary_scenario" "$canary_prompt" "$canary_expected" "$canary_expected_value"
+run_config "brief" "1" "1" "$BIN" "$BIN_DIR" "$canary_scenario" "$canary_prompt" "$canary_expected" "$canary_expected_value" "1" "1"
 
 if [ "$CANARY_ONLY" -eq 0 ] && [ "$RUN_BLOCKED" -eq 0 ]; then
 	for scenario_row in "${SCENARIOS[@]}"; do
