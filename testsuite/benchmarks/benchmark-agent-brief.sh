@@ -706,6 +706,14 @@ fi
 	printf -- '- iterations per config: %s\n' "$ITERATIONS"
 	printf -- '- canary: %s/brief\n' "$CANARY_SCENARIO"
 	printf -- '- scenarios: explicit-title, missing-title, target-ref (or --scenario NAME)\n'
+	printf '\n## Configuration matrix\n\n'
+	printf '| Configuration | AGENTS.md pointer | missis skill | Purpose |\n'
+	printf '|---|---|---|---|\n'
+	printf '| baseline | no | disabled | Pre-cleanup control |\n'
+	printf '| pointer | yes | disabled | Compact `missis --ag-brief` pointer only |\n'
+	printf '| skill | no | enabled | Full missis skill only |\n'
+	printf '| brief | yes | enabled | Pointer plus full missis skill |\n'
+	printf '\n## Detailed runs\n\n'
 	printf '| scenario/config | model | started_at | wall | exec calls | turns | tokens | transcript bytes | before tickets | after tickets | exit | outcome | log |\n'
 	printf '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|\n'
 	printf '%s' "$RESULT_ROWS"
