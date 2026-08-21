@@ -55,8 +55,9 @@ The required setup must:
   reproducible path.
 - Operate on the current project directory. Do not clone the Missis repository
   into the target project merely to perform setup.
-- Create or verify the `.missis` marker, the local
-  `.missis-store/missis.db` database, and the `.missis.d/` context metadata.
+- Create or verify the `.missis` marker, its referenced store, and the
+  `.missis.d/` context metadata. A fresh project uses
+  `.missis-store/missis.db`.
 - Preserve an existing marker, store, context file, active pointer, and ticket
   data.
 - Verify the installed binary, store health, project context, and agent brief.
@@ -89,38 +90,55 @@ Confirm the current directory is the intended target, then initialize it:
 ```bash
 pwd
 
+fresh=0
 if [ -f .missis ]; then
   echo "Missis is already initialized; preserving existing state"
 else
+  fresh=1
   missis --init --json
 fi
 
 test -f .missis
-test -f .missis-store/missis.db
 test -f .missis.d/context.md
-test -f .missis.d/active.example.md
+if [ "$fresh" -eq 1 ]; then
+  test -f .missis-store/missis.db
+fi
+if [ -f .missis.d/active.local.md ]; then
+  active_pointer=.missis.d/active.local.md
+elif [ -f .missis.d/active.example.md ]; then
+  active_pointer=.missis.d/active.example.md
+else
+  echo "No active pointer found in .missis.d" >&2
+  exit 1
+fi
 
-missis show --health
+missis show --health --json
 missis show --context
 missis --ag-brief
+echo "active pointer: $active_pointer"
 ```
 
-Expected fresh-project results include an `initialized` JSON status, the
-marker and database paths above, generated context metadata, a successful
-health check, project context output, and the agent-facing command brief.
+For a fresh project, expect an `initialized` JSON status, the marker and local
+database paths above, generated context metadata, a successful health check,
+project context output, and the agent-facing command brief. For an existing
+project, expect the marker and referenced store to be preserved; the health
+check verifies that store instead of assuming the default local path.
 
 If `.missis` already exists, do not pass a different store path to try to
 replace it. Run the verification commands instead:
 
 ```bash
-missis show --health
+missis show --health --json
 missis show --context
 missis --ag-brief
 ```
 
 An existing `.missis.d/context.md`, `active.local.md`, or
-`active.example.md` is project context. Read it and preserve it. The event
-store is authoritative for tickets; use `missis show` to inspect it.
+`active.example.md` is project context. Read and preserve it. Prefer
+`active.local.md` when both active pointers exist. The event store is
+authoritative for tickets; use `missis show` to inspect it. If required context
+metadata is missing, stop and report the exact missing path rather than
+reinitializing or overwriting project files.
 
 ## Required setup: PowerShell
 
@@ -143,20 +161,29 @@ Initialize only when the current project does not already contain a `.missis`
 marker:
 
 ```powershell
+$fresh = $false
 if (Test-Path .missis) {
     Write-Host "Missis is already initialized; preserving existing state"
 } else {
+    $fresh = $true
     missis --init --json
 }
 
 if (!(Test-Path .missis)) { throw ".missis marker is missing" }
-if (!(Test-Path .missis-store\missis.db)) { throw "Missis store is missing" }
 if (!(Test-Path .missis.d\context.md)) { throw "Missis context is missing" }
-if (!(Test-Path .missis.d\active.example.md)) { throw "Missis active example is missing" }
+if ($fresh -and !(Test-Path .missis-store\missis.db)) { throw "Missis store is missing" }
+if (Test-Path .missis.d\active.local.md) {
+    $activePointer = ".missis.d\active.local.md"
+} elseif (Test-Path .missis.d\active.example.md) {
+    $activePointer = ".missis.d\active.example.md"
+} else {
+    throw "No active pointer found in .missis.d"
+}
 
-missis show --health
+missis show --health --json
 missis show --context
 missis --ag-brief
+Write-Host "active pointer: $activePointer"
 ```
 
 ## Local-checkout installation alternative
@@ -234,6 +261,10 @@ For the next agent turn, read `.missis.d/context.md` and the active pointer
 missis show
 missis --ag-brief
 ```
+
+Use `missis show --context` when the active project or group needs to be
+confirmed. Treat the context file and active pointer as handoff metadata only;
+the event store remains authoritative for ticket content.
 
 Use the existing ticket workflow from there. Do not create a ticket merely to
 confirm that setup succeeded.

@@ -417,10 +417,16 @@ URL-first setup for a new project:
      # go install ./tools/missis-tools
      export PATH="$(go env GOPATH)/bin:$PATH"
 
-2. Initialize in your project:
+2. Initialize or verify the project:
      cd /path/to/your/project
-     missis --init
+     if [ -f .missis ]; then
+       echo "Missis is already initialized; preserving existing state"
+     else
+       missis --init --json
+     fi
      missis show --health
+     missis show --context
+     missis --ag-brief
 
 3. First ticket and everyday workflow:
      missis new "First ticket" --json
@@ -444,7 +450,9 @@ URL-first setup for a new project:
 6. Optional: consume via the Go SDK:
      import "github.com/ravinsharma7/missis/pkg/missis"
 
-See README.md and spec section 14 (Projects, groups, and scopes) for details.
+For fresh-project, existing-project, PowerShell, and optional agent-integration
+details, read docs/agent-setup.md. See README.md and spec section 14
+(Projects, groups, and scopes) for the domain model.
 `
 
 func runPointer() int {

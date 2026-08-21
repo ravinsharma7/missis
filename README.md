@@ -32,6 +32,10 @@ concrete implementation.
 
 # Install
 
+Missis requires Go 1.26 or newer. The standard installation includes the
+domain CLI and the maintenance-tools CLI; install both at the same ref so
+their behavior stays aligned.
+
 From a local checkout:
 
 ```bash
@@ -39,10 +43,11 @@ go install ./cmd/missis
 go install ./tools/missis-tools
 ```
 
-From the published module:
+For a convenient published install (tracks `latest`):
 
 ```bash
 go install github.com/ravinsharma7/missis/cmd/missis@latest
+go install github.com/ravinsharma7/missis/tools/missis-tools@latest
 ```
 
 For reproducible installs, pin a tag or commit instead of relying on `latest`:
@@ -63,7 +68,9 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 Verify which version is installed:
 
 ```bash
-missis show --version
+command -v missis
+command -v missis-tools
+missis --version
 missis show --health
 missis-tools --help
 ```
@@ -83,10 +90,18 @@ GitHub tag or commit URL when the installation must be reproducible.
 Or, step by step:
 
 ```bash
-# Initialize in your project (creates the .missis marker + .missis.d/ metadata)
+# Run this from the project that should receive Missis.
 cd /path/to/your/project
-missis --init
+if [ -f .missis ]; then
+  echo "Missis is already initialized; preserving existing state"
+else
+  missis --init --json
+fi
+
+# Verify the store and project context before ticket work.
 missis show --health
+missis show --context
+missis --ag-brief
 
 # First ticket and everyday workflow
 missis new "First ticket" --json
@@ -108,6 +123,9 @@ missis-tools repair .missis-store/missis.db
 
 The examples above use the installed `missis-tools` binary. When working from
 the Missis checkout itself, use `go run ./tools/missis-tools ...` instead.
+
+For the complete fresh-project, existing-project, PowerShell, and optional
+agent-integration flow, use the [URL-first agent setup guide](docs/agent-setup.md).
 
 For how tickets, parts, tags, links, projects, and groups relate, see
 spec section 14 ([Projects, groups, and scopes](specs/missues-issue-specification.v2.md#14-projects-groups-and-scopes)).
@@ -152,13 +170,17 @@ missis --self-update
 `missis --self-update` updates only `missis`. Reinstall `missis` and
 `missis-tools` at the same tag or commit when upgrading both commands.
 
-Initialize a local missis project:
+Initialize or inspect a local Missis project:
 
 ```bash
 missis --init
-missis --start
-missis --init --store ./.missis-store/missis.db
+missis show --health
 ```
+
+`missis --start` is an alias for `missis --init`; it does not start a daemon.
+When `.missis` already exists, `--init` reports `already_initialized` and
+preserves the project marker, store, and metadata. Do not pass a different
+store path to replace an existing project store.
 
 ## Project layout and store discovery
 
