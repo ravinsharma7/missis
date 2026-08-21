@@ -36,33 +36,39 @@ Missis requires Go 1.26 or newer. The standard installation includes the
 domain CLI and the maintenance-tools CLI; install both at the same ref so
 their behavior stays aligned.
 
-From a local checkout:
+From a local checkout on Linux, macOS, or WSL, use the repository installer.
+It installs both CLIs into a PATH-visible native POSIX directory and does not
+silently use a mise-managed `GOBIN` that is absent from `PATH`:
 
 ```bash
-go install ./cmd/missis
-go install ./tools/missis-tools
+MISSIS_REF=v0.2.0 bash scripts/install.sh
 ```
 
-For a convenient published install (tracks `latest`):
+For a convenient published install from a Missis checkout (tracks `latest`):
 
 ```bash
-go install github.com/ravinsharma7/missis/cmd/missis@latest
-go install github.com/ravinsharma7/missis/tools/missis-tools@latest
+MISSIS_REF=latest bash scripts/install.sh
 ```
 
-For reproducible installs, pin a tag or commit instead of relying on `latest`:
+For a reproducible published install, pin a tag or commit instead of relying
+on `latest`:
 
 ```bash
 export MISSIS_REF=v0.2.0
-go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
-go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
+bash scripts/install.sh
 ```
 
-Go places the binary in `$(go env GOPATH)/bin`. Make sure that directory is on
-your `PATH`:
+The installer prints the selected directory and verifies native binaries. If
+you install manually, `GOBIN` overrides Go's usual `GOPATH/bin` destination;
+make the selected directory explicit and keep it on `PATH`:
 
 ```bash
-export PATH="$(go env GOPATH)/bin:$PATH"
+export MISSIS_BIN_DIR="$HOME/go/bin"
+mkdir -p "$MISSIS_BIN_DIR"
+export PATH="$MISSIS_BIN_DIR:$PATH"
+GOBIN="$MISSIS_BIN_DIR" go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
+GOBIN="$MISSIS_BIN_DIR" go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
+file "$MISSIS_BIN_DIR/missis" "$MISSIS_BIN_DIR/missis-tools"
 ```
 
 Verify which version is installed:
@@ -75,6 +81,23 @@ missis show --health
 missis-tools --help
 ```
 
+Inside WSL, use the Linux command without `.exe`:
+
+```bash
+missis-tools tui
+```
+
+Use `missis-tools.exe` only from native Windows PowerShell or Windows
+Terminal, with a project and store on a native Windows path. WSL imports the
+Windows `PATH` by default, so seeing a Windows Missis directory under
+`/mnt/c/...` is expected; the WSL installer must still place the Linux binary
+earlier on `PATH` and verify that `command -v missis-tools` resolves it.
+
+Do not open one `.missis-store/missis.db` concurrently from Windows and WSL.
+Keep the binary, project filesystem, and SQLite store in the same OS
+environment. If the same logical project needs to move between environments,
+use Missis backup/remote synchronization instead of sharing the live database.
+
 ## Getting started
 
 The fastest path is the CLI's own guide:
@@ -83,9 +106,9 @@ The fastest path is the CLI's own guide:
 missis --get-started
 ```
 
-For a new project where an agent is given setup instructions by URL, pass it
-the [URL-first agent setup guide](docs/agent-setup.md). Prefer an immutable
-GitHub tag or commit URL when the installation must be reproducible.
+For a new project, use the [local-first agent setup guide](docs/agent-setup.md)
+from the checkout when available. It does not require a web search; use an
+immutable GitHub tag or commit only when choosing the published install ref.
 
 Or, step by step:
 
@@ -103,8 +126,16 @@ missis show --health
 missis show --context
 missis --ag-brief
 
+# Make Missis discoverable to future agents. Review before adding to an
+# existing instruction file; do not overwrite unrelated project guidance.
+if [ -f AGENTS.md ]; then
+  missis --ag-pointer
+else
+  missis --ag-pointer > AGENTS.md
+fi
+
 # First ticket and everyday workflow
-missis new "First ticket" --json
+missis new "First ticket" --idempotency-key first-ticket --json
 missis show 1 --format markdown
 missis set 1/status doing
 missis set '#1/notes' "some context"
@@ -124,8 +155,8 @@ missis-tools repair .missis-store/missis.db
 The examples above use the installed `missis-tools` binary. When working from
 the Missis checkout itself, use `go run ./tools/missis-tools ...` instead.
 
-For the complete fresh-project, existing-project, PowerShell, and optional
-agent-integration flow, use the [URL-first agent setup guide](docs/agent-setup.md).
+For the complete fresh-project, existing-project, PowerShell, and recommended
+project-local agent handoff flow, use the [local-first agent setup guide](docs/agent-setup.md).
 
 For how tickets, parts, tags, links, projects, and groups relate, see
 spec section 14 ([Projects, groups, and scopes](specs/missues-issue-specification.v2.md#14-projects-groups-and-scopes)).
@@ -257,6 +288,16 @@ Install reusable tools globally:
 MISSIS_REF=v0.2.0 bash scripts/install-tools.sh
 ```
 
+`install-tools.sh` is the maintenance-tools-only compatibility entry point.
+For a normal installation of both CLIs, use `scripts/install.sh`. Native
+Windows setup can use the equivalent PowerShell script:
+
+```powershell
+$env:MISSIS_REF = "v0.2.0"
+$env:Path = "$env:LOCALAPPDATA\MissisTools\bin;$env:Path"
+.\scripts\install.ps1
+```
+
 Omit `MISSIS_REF` for the convenience default of `latest`. Set
 `MISSIS_INSTALL_LEGACY_TOOLS=1` to install the compatibility wrappers at that
 same ref.
@@ -264,14 +305,14 @@ same ref.
 Or install one tool directly:
 
 ```bash
-go install github.com/ravinsharma7/missis/tools/missis-tools@v0.2.0
+GOBIN="$HOME/go/bin" go install github.com/ravinsharma7/missis/tools/missis-tools@v0.2.0
 ```
 
 The legacy tools remain individually installable during the migration:
 
 ```bash
 for tool in ticket-tui repair-store store-gaps store-manifest store-backup store-remote; do
-  go install "github.com/ravinsharma7/missis/tools/$tool@v0.2.0"
+  GOBIN="$HOME/go/bin" go install "github.com/ravinsharma7/missis/tools/$tool@v0.2.0"
 done
 ```
 
@@ -309,6 +350,12 @@ For an interactive terminal UI, use:
 
 ```bash
 missis-tools tui
+```
+
+To select a store explicitly:
+
+```bash
+missis-tools tui --store /path/to/project/.missis-store/missis.db
 ```
 
 The TUI is also a maintenance tool, not a public `missis` command. From the

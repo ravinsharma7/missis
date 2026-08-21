@@ -52,6 +52,8 @@ cannot be retracted because they are never stored.
 | Workflow | Guarantee |
 | --- | --- |
 | `NewTicket` | Atomic ticket creation; `--project P` additionally asserts `has-home` in the same batch and fails with guidance when `P` does not exist (spec 14.8). |
+| `NewEntity` | Project/group creation rejects an existing canonical ID; repeating a request with the same idempotency key replays the original entity result. |
+| CLI scope guard | `new` rejects `--tag project:ID` and `--tag group:ID` before writing a ticket; scope must use `--project` or an explicit link. |
 | Markdown import (`--project`) | Ticket, content, and the `has-home` assertion land in one atomic batch; missing targets fail with guidance; reimport never changes membership (spec 14.8; ticket #73). |
 | `SetLink` | SDK calls remain additive evidence assertions; targets resolve at write time; relation endpoint rules enforced; has-home uniqueness enforced; last-home retraction warns. The CLI suppresses an already-active identical assertion by default; `--allow-duplicate` opts back into additive behavior. |
 | `MoveLink` | Retract + assert in one atomic batch; membership relations only; automatic link-assertion precondition (explicit `IfCurrent` override); unguarded moves rejected; result reports the transition and never emits the zero-home warning (ticket #77). |

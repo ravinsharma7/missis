@@ -16,6 +16,8 @@ func TestAgentSetupGuideContract(t *testing.T) {
 	}
 	guide := string(data)
 	for _, want := range []string{
+		"# Local-first Missis setup",
+		"Do not perform a web search",
 		"You are setting up Missis in the current project directory.",
 		"https://github.com/ravinsharma7/missis/blob/<ref>/docs/agent-setup.md",
 		"https://raw.githubusercontent.com/ravinsharma7/missis/<ref>/docs/agent-setup.md",
@@ -33,10 +35,58 @@ func TestAgentSetupGuideContract(t *testing.T) {
 		"missis --ag-brief",
 		"already initialized",
 		"Never use destructive cleanup",
-		"Optional agent integrations",
+		"Recommended agent handoff",
+		"AGENTS.md",
+		"If a future agent cannot resolve",
+		"Optional provider integrations",
 	} {
 		if !strings.Contains(guide, want) {
 			t.Errorf("setup guide missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"# URL-first Missis setup", "Read this guide from the supplied GitHub URL"} {
+		if strings.Contains(guide, forbidden) {
+			t.Errorf("setup guide contains obsolete web-first instruction %q", forbidden)
+		}
+	}
+}
+
+func TestExternalProjectAgentHandoffContract(t *testing.T) {
+	guidePath := filepath.Join("..", "..", "docs", "agent-setup.md")
+	guideBytes, err := os.ReadFile(guidePath)
+	if err != nil {
+		t.Fatalf("read setup guide %s: %v", guidePath, err)
+	}
+	guide := string(guideBytes)
+	result := runMissis(t, "", "--ag-pointer")
+	if result.code != 0 {
+		t.Fatalf("--ag-pointer failed: %d %s", result.code, result.stderr)
+	}
+	pointer := result.stdout
+
+	for _, want := range []string{
+		"This project uses Missis as its local ticket system",
+		".missis",
+		"AGENTS.md",
+		".missis.d/context.md",
+		"missis --ag-brief",
+		"missis show --context",
+		"If `missis` is unavailable",
+		"parallel ticket workflow",
+	} {
+		if !strings.Contains(pointer, want) {
+			t.Errorf("--ag-pointer missing %q:\n%s", want, pointer)
+		}
+	}
+	for _, want := range []string{
+		"## Recommended agent handoff",
+		"reviewed project-local",
+		"skill is only an optional accelerator",
+		"If `AGENTS.md` already exists, do not overwrite it",
+		"project-local instruction hook",
+	} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("setup guide missing discoverability contract %q", want)
 		}
 	}
 }

@@ -11,7 +11,7 @@ import (
 
 const usage = "usage: missis-tools <command> [args]\n\n" +
 	"commands:\n" +
-	"  tui [--smoke ...]                 open the ticket TUI\n" +
+	"  tui [--store PATH] [--smoke ...]  open the ticket TUI\n" +
 	"  repair <missis.db>                verify consistency and report sequence gaps\n" +
 	"  gaps <missis.db>                  report sequence gaps\n" +
 	"  manifest [missis.db]              print the store manifest as JSON\n" +

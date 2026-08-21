@@ -68,6 +68,7 @@ func scanAll(root string) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
+			displayPath = filepath.ToSlash(displayPath)
 			fileLines, err := scanFile(file, displayPath)
 			if err != nil {
 				return nil, err

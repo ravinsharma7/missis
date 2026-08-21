@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -189,8 +190,16 @@ type tuiModel struct {
 	contextEffectiveAt      time.Time
 }
 
-func newModel() (*tuiModel, error) {
-	svc, err := application.Open("")
+func newModel(storePath string) (*tuiModel, error) {
+	var (
+		svc *application.Service
+		err error
+	)
+	if storePath != "" {
+		svc, err = application.OpenPath(storePath)
+	} else {
+		svc, err = application.Open("")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +233,7 @@ func newModel() (*tuiModel, error) {
 	summaries, err := loadTicketSummariesForScope(client, activeScope)
 	if err != nil {
 		client.Close()
-		return nil, err
+		return nil, fmt.Errorf("load tickets from missis store path=%q discovery=%s runtime=%s: %w", client.StorePath(), client.DiscoverySource(), runtime.GOOS, err)
 	}
 	return &tuiModel{
 		client:         client,
@@ -3844,6 +3853,66 @@ func parseLinkAction(input string) (linkAction, error) {
 	}
 }
 
+const tuiUsage = "usage: missis-tools tui [--store PATH] [--smoke [--view VIEW] [--kind KIND] [--input TEXT]]"
+
+func tuiStartupError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("%w\nhint: if this Windows binary was launched from WSL, run the Linux missis-tools binary inside WSL or use a native Windows project path; do not share one SQLite store across the OS boundary", err)
+	}
+	return fmt.Errorf("%w\nhint: for a WSL/Linux project, use the Linux missis-tools binary without .exe; use --store PATH for explicit selection and keep the SQLite store on the same OS/filesystem", err)
+}
+
+type runOptions struct {
+	storePath string
+	smoke     bool
+	view      string
+	kind      string
+	input     string
+	help      bool
+}
+
+func parseRunArgs(args []string) (runOptions, error) {
+	var options runOptions
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--help", "-h":
+			options.help = true
+		case "--store":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return runOptions{}, fmt.Errorf("%s: --store requires a path", tuiUsage)
+			}
+			i++
+			options.storePath = args[i]
+		case "--smoke":
+			options.smoke = true
+		case "--view":
+			if i+1 >= len(args) {
+				return runOptions{}, fmt.Errorf("%s: --view requires a value", tuiUsage)
+			}
+			i++
+			options.view = args[i]
+		case "--kind":
+			if i+1 >= len(args) {
+				return runOptions{}, fmt.Errorf("%s: --kind requires a value", tuiUsage)
+			}
+			i++
+			options.kind = args[i]
+		case "--input":
+			if i+1 >= len(args) {
+				return runOptions{}, fmt.Errorf("%s: --input requires a value", tuiUsage)
+			}
+			i++
+			options.input = args[i]
+		default:
+			return runOptions{}, fmt.Errorf("%s: unknown option %q", tuiUsage, args[i])
+		}
+	}
+	return options, nil
+}
+
 func Run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 	if input == nil {
 		input = os.Stdin
@@ -3854,36 +3923,42 @@ func Run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 	if errorOutput == nil {
 		errorOutput = os.Stderr
 	}
-	m, err := newModel()
+	options, err := parseRunArgs(args)
 	if err != nil {
 		fmt.Fprintln(errorOutput, err)
+		return 2
+	}
+	if options.help {
+		fmt.Fprintln(output, tuiUsage)
+		return 0
+	}
+	m, err := newModel(options.storePath)
+	if err != nil {
+		fmt.Fprintln(errorOutput, tuiStartupError(err))
 		return 1
+	}
+	closeClient := func(code int) int {
+		if closeErr := m.client.Close(); closeErr != nil {
+			fmt.Fprintf(errorOutput, "close missis store path=%q runtime=%s: %v\n", m.client.StorePath(), runtime.GOOS, closeErr)
+			return 1
+		}
+		return code
 	}
 	// --smoke renders one frame to stdout and exits. It is the hermetic
 	// CI smoke (ticket #55 C2): it exercises the real binary's store open,
 	// model init, and View rendering without requiring a terminal, which
 	// headless runners cannot provide.
-	if len(args) > 0 && args[0] == "--smoke" {
-		for i := 1; i < len(args); i++ {
-			switch args[i] {
-			case "--view":
-				if i+1 < len(args) {
-					i++
-					m.view = args[i]
-				}
-			case "--kind":
-				if i+1 < len(args) {
-					i++
-					m.kind = args[i]
-				}
-			case "--input":
-				if i+1 < len(args) {
-					i++
-					m.input = args[i]
-					m.cursor = len([]rune(m.input))
-				}
-			}
+	if options.smoke {
+		if options.view != "" {
+			m.view = options.view
 		}
+		if options.kind != "" {
+			m.kind = options.kind
+		}
+		if options.input != "" {
+			m.input = options.input
+		}
+		m.cursor = len([]rune(m.input))
 		m.refresh()
 		switch m.view {
 		case "detail":
@@ -3909,12 +3984,12 @@ func Run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 			m.inputMode = "link"
 		}
 		_, _ = fmt.Fprint(output, m.View())
-		return 0
+		return closeClient(0)
 	}
 	p := tea.NewProgram(m, tea.WithInput(input), tea.WithOutput(output), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(errorOutput, err)
-		return 1
+		return closeClient(1)
 	}
-	return 0
+	return closeClient(0)
 }
