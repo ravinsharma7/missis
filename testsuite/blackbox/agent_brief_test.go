@@ -27,6 +27,12 @@ func TestAgentBrief(t *testing.T) {
 	for _, want := range []string{
 		"store:",
 		"missis new",
+		"missis new --kind project --id ID",
+		"missis new --kind group --id ID",
+		"--idempotency-key KEY",
+		"group:ID/links --add contains:#N",
+		"Preflight explicit project/group IDs",
+		"Do not use web search",
 		"missis show",
 		"missis set",
 		"No destructive delete",
@@ -114,7 +120,15 @@ func TestPointerSnippet(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("--ag-pointer failed: %d %s", result.code, result.stderr)
 	}
-	for _, want := range []string{"## missis quick reference", "missis --ag-brief", "missis show --context"} {
+	for _, want := range []string{
+		"## missis quick reference",
+		"This project uses Missis as its local ticket system",
+		".missis.d/context.md",
+		"missis --ag-brief",
+		"missis show --context",
+		"If `missis` is unavailable",
+		"parallel ticket workflow",
+	} {
 		if !strings.Contains(result.stdout, want) {
 			t.Errorf("--ag-pointer missing %q:\n%s", want, result.stdout)
 		}

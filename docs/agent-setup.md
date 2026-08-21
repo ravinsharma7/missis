@@ -7,8 +7,9 @@ copy is only an optional fallback when the operator explicitly supplies one.
 Do not assume that the current project is a checkout of the Missis repository.
 
 This is a project bootstrap guide. It is not a ticket, and it does not create
-a sample ticket. After setup, the agent can continue using the project's own
-context and Missis tickets.
+a sample ticket. After setup, the project should have a reviewed, project-local
+agent instruction hook so future agents naturally continue with Missis. The
+hook is provider-neutral; a provider-specific skill is optional.
 
 ## Published references and reproducibility (optional)
 
@@ -49,9 +50,10 @@ The target project may be empty, may already contain source code, or may
 already have Missis initialized. The setup must inspect that state and must
 not delete or rebuild existing project data.
 
-Optional integrations, such as a provider skill directory or `AGENTS.md`,
-require separate permission to modify those locations. They are not required
-for the project setup to succeed.
+The project-local agent instruction hook requires separate permission to modify
+`AGENTS.md` or the provider-equivalent instruction file. Review the generated
+pointer before adding it and preserve unrelated instructions. A provider skill
+directory is optional and is not required for the project setup to succeed.
 
 ## Requirements
 
@@ -67,6 +69,8 @@ The required setup must:
 - Preserve an existing marker, store, context file, active pointer, and ticket
   data.
 - Verify the installed binary, store health, project context, and agent brief.
+- Make Missis discoverable to future agents through a reviewed project-local
+  instruction hook such as `AGENTS.md` or the provider's equivalent.
 - Preflight explicit project/group IDs before creating them, and use a stable
   idempotency key for every logical create or mutation.
 - Treat groups as link scopes, not ticket tags, and verify the returned ticket
@@ -144,6 +148,35 @@ missis show --context
 missis --ag-brief
 echo "active pointer: $active_pointer"
 ```
+
+## Recommended agent handoff
+
+Installation and initialization make the command available, but they do not
+tell a future agent that Missis is this project's ticket system. Add the
+generated, provider-neutral pointer to the project's instruction hook after
+reviewing it. This is the recommended durable handoff; a provider-specific
+skill is only an optional accelerator.
+
+If the project has no existing `AGENTS.md`, review the output and then create
+the file:
+
+```bash
+missis --ag-pointer
+missis --ag-pointer > AGENTS.md
+```
+
+If `AGENTS.md` already exists, do not overwrite it. Run `missis --ag-pointer`,
+review the block, and add it under a Missis section. Use the provider's native
+equivalent when the agent does not read `AGENTS.md` (for example, the project's
+documented instruction file). The block tells future agents that `.missis`
+enables Missis, which context files to read, and which two commands to run
+before ticket work.
+
+The handoff must remain project-local and committed with the project
+instructions when appropriate. It must not depend on a user-level skill,
+hidden conversation state, or a web search. If a future agent cannot resolve
+`missis` on `PATH`, it should report the installation problem rather than
+silently creating a parallel ticket workflow.
 
 ## First project, group, and ticket
 
@@ -297,10 +330,10 @@ go = "1.26"
 After `mise install`, verify both commands in the active shell. If the Go
 tool plugin sets `GOBIN`, it must also expose that directory on `PATH`; the
 explicit installer above is the fallback when it does not.
+## Optional provider integrations
 
-## Optional agent integrations
-
-Project setup is complete without these integrations.
+The project-local instruction hook above is the recommended cross-agent
+integration. Project setup does not require a provider-specific skill.
 
 If the agent provider supports skills and a Missis checkout is available, an
 explicit checkout path can be installed without overwriting an existing
@@ -313,15 +346,9 @@ missis --ag-install-skill \
 ```
 
 Only add `--force` after explicitly authorizing replacement of that skill.
-If the provider does not support skills, keep this guide URL or its copied
-instructions as the agent handoff context.
-
-If the project uses `AGENTS.md`, review the generated pointer before adding
-it. Do not replace unrelated project instructions:
-
-```bash
-missis --ag-pointer
-```
+If the provider does not support skills, the project-local instruction hook
+remains sufficient. Keep this guide URL or its copied instructions as
+additional handoff context when useful.
 
 ## Completion report and continuation
 
@@ -333,7 +360,8 @@ Before continuing, report:
 - The health-check result.
 - Whether `.missis.d/context.md` and the active pointer were created or
   preserved.
-- Whether optional skill or `AGENTS.md` integration was installed.
+- Whether the reviewed project-local instruction hook was added or preserved.
+- Whether an optional provider skill was installed.
 
 For the next agent turn, read `.missis.d/context.md` and the active pointer
 (`active.local.md` when present, otherwise `active.example.md`). Then run:
@@ -355,7 +383,8 @@ confirm that setup succeeded.
 - If GitHub or the Go module is unavailable, stop and report the missing
   network access or use the local-checkout alternative.
 - If `missis` is not found after installation, check the Go bin directory on
-  `PATH` and rerun the version check.
+  `PATH` and rerun the version check. Do not continue with a parallel ticket
+  system while the Missis command is unavailable.
 - If `.missis` already exists, preserve it and inspect health; do not create a
   second store beside it unless an operator explicitly chooses a separate
   store workflow.

@@ -126,6 +126,14 @@ missis show --health
 missis show --context
 missis --ag-brief
 
+# Make Missis discoverable to future agents. Review before adding to an
+# existing instruction file; do not overwrite unrelated project guidance.
+if [ -f AGENTS.md ]; then
+  missis --ag-pointer
+else
+  missis --ag-pointer > AGENTS.md
+fi
+
 # First ticket and everyday workflow
 missis new "First ticket" --idempotency-key first-ticket --json
 missis show 1 --format markdown
@@ -147,8 +155,8 @@ missis-tools repair .missis-store/missis.db
 The examples above use the installed `missis-tools` binary. When working from
 the Missis checkout itself, use `go run ./tools/missis-tools ...` instead.
 
-For the complete fresh-project, existing-project, PowerShell, and optional
-agent-integration flow, use the [local-first agent setup guide](docs/agent-setup.md).
+For the complete fresh-project, existing-project, PowerShell, and recommended
+project-local agent handoff flow, use the [local-first agent setup guide](docs/agent-setup.md).
 
 For how tickets, parts, tags, links, projects, and groups relate, see
 spec section 14 ([Projects, groups, and scopes](specs/missues-issue-specification.v2.md#14-projects-groups-and-scopes)).

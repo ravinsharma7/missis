@@ -113,11 +113,22 @@ const modulePath = "github.com/ravinsharma7/missis"
 
 const unknownCommit = "unknown"
 
-const agentBriefCommands = `missis new "Title" [--priority X] [--type T]... [--tag T]... [--from FILE|--stdin] [--json]
+const agentBriefCommands = `missis new "Title" [--project ID] [--priority X] [--type T]... [--tag T]... [--from FILE|--stdin] [--idempotency-key KEY] [--json]
+missis new --kind project --id ID "Title" [--idempotency-key KEY] [--json]
+missis new --kind group --id ID "Title" [--idempotency-key KEY] [--json]
 missis show [REF] [--json|--format markdown] [--search S] [--status S] [--type T] [--tag T]
+missis show --kind project|group [--search S] [--json]
+missis set group:ID/links --add contains:#N [--idempotency-key KEY] [--json]
 missis set <REF> <VALUE> [--add] [--retract [--recursive] [--reason R]] [--json]`
 
-const agentBriefRules = `- No destructive delete; use --retract --reason instead.
+const agentBriefRules = `- Preflight explicit project/group IDs with missis show project:ID or missis show group:ID before creating anything.
+- Create missing projects/groups with missis new --kind ... --id ...; a group is a link scope, not a ticket --tag.
+- Scope-shaped ticket tags (project:ID or group:ID) are rejected; use the scoped commands and links instead.
+- --project sets a ticket's home project. Add group membership with group:ID/links --add contains:#N after the ticket exists.
+- Give each logical create/mutation a stable idempotency key and reuse that exact key after an uncertain result; do not issue a fresh new command.
+- Verify the returned ref and scope with missis show --project ID --group ID --json before reporting success.
+- Do not use web search for this local workflow; use the local CLI brief, context, help, and repository files unless the user explicitly asks for external research.
+- No destructive delete; use --retract --reason instead.
 - If a ticket is requested without a title, derive it from the session focus in .missis.d/active.local.md (or active.example.md) and state the assumption; do not block on a question.
 - Prefer missis refs (#N) over free text.
 - Shells treat "#" as a comment: in commands, quote refs (missis show '#55') or use bare numbers (missis show 55); an unquoted #55 silently drops the ref and following flags.
@@ -126,9 +137,22 @@ const agentBriefRules = `- No destructive delete; use --retract --reason instead
 
 const agentPointerSnippet = `## missis quick reference
 
-Run ` + "`missis --ag-brief`" + ` once before ticket work. It prints the exact
-new/show/set syntax and the rules from the CLI itself; do not copy that syntax
-into this file. For the active session focus, run ` + "`missis show --context`" + `.
+This project uses Missis as its local ticket system when the ` + "`.missis`" + ` marker
+is present. Keep this reviewed block in the project's ` + "`AGENTS.md`" + ` or
+provider-equivalent agent instruction file. Do not replace unrelated project
+instructions when adding it.
+
+Before ticket work, read ` + "`.missis.d/context.md`" + ` and the active pointer
+(` + "`active.local.md`" + ` when present, otherwise ` + "`active.example.md`" + `), then run:
+
+    ` + "`missis --ag-brief`" + `
+    ` + "`missis show --context`" + `
+
+The brief prints the exact new/show/set syntax and the rules from the CLI
+itself; do not copy that syntax into this file. Use the local event store as
+the ticket authority. If ` + "`missis`" + ` is unavailable, report the setup
+problem instead of creating a parallel ticket workflow or doing unrelated web
+research.
 
 In shell commands, quote ticket refs (` + "`missis show '#55'`" + `) or use the
 bare number (` + "`missis show 55`" + `); an unquoted ` + "`#55`" + ` is a shell
@@ -404,9 +428,10 @@ func runGetStarted() int {
 
 const getStartedText = `missis getting started
 
-URL-first setup for a new project:
-     https://github.com/ravinsharma7/missis/blob/main/docs/agent-setup.md
-     Prefer an immutable tag or commit in this URL for reproducibility.
+Local-first setup for a new project:
+     Read docs/agent-setup.md from the current Missis checkout when available.
+     No web search is required for setup or ticket work.
+     If no checkout is available, use an operator-supplied published ref.
 
 1. Install both CLIs at the same ref (from a checkout, or pin a tag/commit):
      export MISSIS_REF=v0.2.0
@@ -428,17 +453,36 @@ URL-first setup for a new project:
      missis show --context
      missis --ag-brief
 
-3. First ticket and everyday workflow:
-     missis new "First ticket" --json
+3. Make Missis discoverable to future agents (review before modifying files):
+     if [ -f AGENTS.md ]; then
+       missis --ag-pointer
+       # Add the reviewed block under a Missis section; do not overwrite AGENTS.md.
+     else
+       missis --ag-pointer > AGENTS.md
+     fi
+     # Use the provider's equivalent instruction file when it does not read AGENTS.md.
+
+4. First project, group, ticket, and everyday workflow (when requested):
+     missis show project:proj --json
+     missis new --kind project --id proj "Project title" --idempotency-key setup-project-proj --json
+     missis show group:kb --json
+     missis new --kind group --id kb "Knowledge base" --idempotency-key setup-group-kb --json
+     missis new --project proj "First ticket" --idempotency-key first-ticket --json
+     missis set group:kb/links --add contains:#N --idempotency-key first-ticket-group --json
+     # If output is uncertain, reuse the same key; do not run a fresh new command.
+     missis show --project proj --group kb --json
+
+5. First unscoped ticket and everyday workflow:
+     missis new "First ticket" --idempotency-key first-ticket --json
      missis show 1 --format markdown
      missis set 1/status doing
      missis set '#1/notes' "some context"
 
-4. Correct and remove (append-only; no destructive delete):
+6. Correct and remove (append-only; no destructive delete):
      missis set '#1/notes' "revised text"            # overwrites current value
      missis set '#1/notes' --retract --reason "moved elsewhere"
 
-5. Backup, manifest, health, repair, and remote sync:
+7. Backup, manifest, health, repair, and remote sync:
      MISSIS_STORE="$PWD/.missis-store/missis.db" \
        missis-tools backup "$PWD/backups/missis.db"
      missis-tools manifest
@@ -447,11 +491,11 @@ URL-first setup for a new project:
      missis-tools remote upload
      missis-tools remote download "$PWD/backups/restored.db"
 
-6. Optional: consume via the Go SDK:
+8. Optional: consume via the Go SDK:
      import "github.com/ravinsharma7/missis/pkg/missis"
 
-For fresh-project, existing-project, PowerShell, and optional agent-integration
-details, read docs/agent-setup.md. See README.md and spec section 14
+For fresh-project, existing-project, PowerShell, and project-local agent
+handoff details, read docs/agent-setup.md. See README.md and spec section 14
 (Projects, groups, and scopes) for the domain model.
 `
 
@@ -815,6 +859,12 @@ func runNew(args []string) int {
 		printError(fmt.Errorf("title is required for missis new"), exitInvalid, jsonMode, nil)
 		return exitInvalid
 	}
+	if kind == "" {
+		if err := rejectScopeTags([]string(tags)); err != nil {
+			printError(err, exitInvalid, jsonMode, nil)
+			return exitInvalid
+		}
+	}
 	svc, err := application.Open(storeFlag)
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
@@ -883,6 +933,20 @@ func runNew(args []string) int {
 	}
 	writeNewResult(jsonMode, newResultFromSDK(result))
 	return exitSuccess
+}
+
+func rejectScopeTags(tags []string) error {
+	for _, tag := range tags {
+		kind, id, ok := strings.Cut(strings.TrimSpace(tag), ":")
+		if !ok || (kind != "project" && kind != "group") {
+			continue
+		}
+		if id == "" {
+			return fmt.Errorf("scope tag %q is not valid ticket metadata; use a real project/group ID and the scoped workflow", tag)
+		}
+		return fmt.Errorf("scope tag %q is not valid ticket metadata; use --project %s for a home project or link with: missis set group:%s/links --add contains:<ticket-ref>", tag, id, id)
+	}
+	return nil
 }
 
 func runShow(args []string) int {

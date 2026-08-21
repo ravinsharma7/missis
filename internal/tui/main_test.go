@@ -34,6 +34,44 @@ func TestTruncateCell(t *testing.T) {
 	}
 }
 
+func TestPartSubtreeRendersMediaFallbacks(t *testing.T) {
+	proj := missis.TicketProjection{Parts: map[string]missis.PartView{
+		"screenshot": {
+			Name:      "screenshot",
+			Value:     "https://example.test/screenshot.png",
+			ValueKind: string(model.ValueKindImage),
+		},
+		"recording": {
+			Name:      "recording",
+			Value:     "https://example.test/demo.mp4",
+			ValueKind: string(model.ValueKindVideo),
+		},
+		"embed": {
+			Name:      "embed",
+			Value:     `<iframe src="https://example.test/player"></iframe>`,
+			ValueKind: string(model.ValueKindEmbed),
+		},
+	}}
+
+	lines := append(partSubtree(proj, "screenshot", 0, 80), partSubtree(proj, "recording", 0, 80)...)
+	lines = append(lines, partSubtree(proj, "embed", 0, 80)...)
+	got := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"[image] <no alt text>",
+		"terminal image protocol not enabled",
+		"[video] <no alt text>",
+		"external player required",
+		"source: inline embed data (not executed)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("TUI media fallback missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "<iframe") {
+		t.Fatalf("TUI leaked iframe markup:\n%s", got)
+	}
+}
+
 func TestVisibleRange(t *testing.T) {
 	cases := []struct {
 		name            string

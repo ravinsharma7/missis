@@ -44,6 +44,19 @@ func (s *Service) NewEntity(ctx context.Context, req missis.RequestContext, opts
 	if err := model.ValidatePathSegments([]string{opts.ID}); err != nil {
 		return missis.EntityResult{}, validation("%v", err)
 	}
+	result := &missis.EntityResult{}
+	if req.IdempotencyKey != "" {
+		replayed, err := s.LookupIdempotencyContext(ctx, req.IdempotencyKey, result)
+		if err != nil {
+			return missis.EntityResult{}, keepStorage(err)
+		}
+		if replayed {
+			if result.Ref == "" {
+				return missis.EntityResult{}, validation("idempotency key already belongs to another operation: %s", req.IdempotencyKey)
+			}
+			return *result, nil
+		}
+	}
 	existing, err := s.LoadEvents(ctx)
 	if err != nil {
 		return missis.EntityResult{}, keepStorage(err)
@@ -65,15 +78,27 @@ func (s *Service) NewEntity(ctx context.Context, req missis.RequestContext, opts
 		EffectiveAt: req.EffectiveAt,
 		Actor:       parseActor(req.Actor),
 	}
-	result := &missis.EntityResult{
+	*result = missis.EntityResult{
 		Ref:        opts.Kind + ":" + opts.ID,
 		ID:         opts.Kind + ":" + opts.ID,
 		Title:      opts.Title,
 		Status:     "open",
 		RecordedAt: now.Format(time.RFC3339),
 	}
-	if _, err := s.AppendBatch(ctx, []model.Event{event}, req.IdempotencyKey, nil, result); err != nil {
+	outcome, err := s.AppendBatch(ctx, []model.Event{event}, req.IdempotencyKey, nil, result)
+	if err != nil {
 		return missis.EntityResult{}, keepStorage(err)
+	}
+	if outcome.Replayed {
+		if result.Ref == "" {
+			return missis.EntityResult{}, validation("idempotency key replay did not contain an entity result: %s", req.IdempotencyKey)
+		}
+		return *result, nil
+	}
+	if req.IdempotencyKey != "" {
+		if err := s.UpdateIdempotencyResultContext(ctx, req.IdempotencyKey, result); err != nil {
+			return missis.EntityResult{}, keepStorage(err)
+		}
 	}
 	return *result, nil
 }

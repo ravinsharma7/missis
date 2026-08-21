@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/media"
 	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
@@ -3355,7 +3356,9 @@ func partSubtree(proj missis.TicketProjection, path string, depth int, width int
 	lines := []string{indent + "▸ " + name}
 	if part.Value != nil {
 		value := valueText(part.Value)
-		if part.ValueKind == "markdown" {
+		if mediaValue, ok := media.Parse(model.ValueKind(part.ValueKind), part.Value); ok {
+			value = strings.Join(media.FallbackLines(mediaValue), "\n")
+		} else if part.ValueKind == "markdown" {
 			available := width - depth*2 - 3
 			if available < 20 {
 				available = 20

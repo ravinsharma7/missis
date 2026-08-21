@@ -86,6 +86,12 @@ const (
 	ValueKindJSON         ValueKind = "json"
 	ValueKindArtifact     ValueKind = "artifact"
 	ValueKindAnnotation   ValueKind = "annotation"
+	// Media kinds are prototype value kinds. They carry a URI or a
+	// MediaDescriptor in Value.Data; they do not imply that every consumer can
+	// display or play the referenced media.
+	ValueKindImage ValueKind = "image"
+	ValueKindVideo ValueKind = "video"
+	ValueKindEmbed ValueKind = "embed"
 )
 
 // Value is the payload stored on a part. Retracted is a projection flag, not

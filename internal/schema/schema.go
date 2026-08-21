@@ -83,6 +83,9 @@ var baseKinds = map[string]model.ValueKind{
 	"json":         model.ValueKindJSON,
 	"artifact":     model.ValueKindArtifact,
 	"annotation":   model.ValueKindAnnotation,
+	"image":        model.ValueKindImage,
+	"video":        model.ValueKindVideo,
+	"embed":        model.ValueKindEmbed,
 }
 
 var targetKinds = map[string]model.Kind{
