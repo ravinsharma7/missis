@@ -17,6 +17,8 @@ func TestAgentSetupGuideContract(t *testing.T) {
 	guide := string(data)
 	for _, want := range []string{
 		"# Local-first Missis setup",
+		"standalone: it contains the complete external-project setup",
+		"must not need Missis's repository-specific `README.md`",
 		"Do not perform a web search",
 		"You are setting up Missis in the current project directory.",
 		"https://github.com/ravinsharma7/missis/blob/<ref>/docs/agent-setup.md",

@@ -495,8 +495,8 @@ Local-first setup for a new project:
      import "github.com/ravinsharma7/missis/pkg/missis"
 
 For fresh-project, existing-project, PowerShell, and project-local agent
-handoff details, read docs/agent-setup.md. See README.md and spec section 14
-(Projects, groups, and scopes) for the domain model.
+handoff details, read docs/agent-setup.md. This output and that guide are
+standalone; no Missis README or repository checkout is required.
 `
 
 func runPointer() int {

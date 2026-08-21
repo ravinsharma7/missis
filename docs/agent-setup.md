@@ -1,7 +1,10 @@
 # Local-first Missis setup for a new project
 
 You are setting up Missis in the current project directory. This guide is
-self-contained: read the local copy when the Missis checkout is available.
+standalone: it contains the complete external-project setup and continuation
+flow. An agent may receive only this document and an installed Missis binary;
+it must not need Missis's repository-specific `README.md`, repository
+`AGENTS.md`, or internal specification files.
 Do not perform a web search to discover the setup or ticket workflow. A remote
 copy is only an optional fallback when the operator explicitly supplies one.
 Do not assume that the current project is a checkout of the Missis repository.

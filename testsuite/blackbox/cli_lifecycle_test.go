@@ -84,6 +84,7 @@ func TestGetStarted(t *testing.T) {
 		"docs/agent-setup.md",
 		"Local-first setup",
 		"No web search is required",
+		"standalone; no Missis README",
 		"missis --init",
 		"missis --ag-pointer",
 		"AGENTS.md",
@@ -100,6 +101,11 @@ func TestGetStarted(t *testing.T) {
 	for _, stale := range []string{"go run ./tools/store-backup", "go run ./tools/store-gaps", "go run ./tools/repair-store"} {
 		if strings.Contains(result.stdout, stale) {
 			t.Fatalf("--get-started output still contains stale command %q:\n%s", stale, result.stdout)
+		}
+	}
+	for _, repositoryOnly := range []string{"README.md", "spec section 14"} {
+		if strings.Contains(result.stdout, repositoryOnly) {
+			t.Fatalf("--get-started output still requires repository-only reference %q:\n%s", repositoryOnly, result.stdout)
 		}
 	}
 }
