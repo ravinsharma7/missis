@@ -224,4 +224,33 @@ if [ "$(wc -l <"$full_marker" | tr -d ' ')" -ne 24 ]; then
 fi
 grep -q 'canary: missing-title/brief' "$full_output"
 
+workflow_marker="$tmp/fake-codex-workflow"
+workflow_output="$tmp/workflow.out"
+workflow_error="$tmp/workflow.err"
+workflow_code=0
+(
+  cd "$repo_root"
+  CODEX_HOME="$codex_home" CODEX_BIN="$fake_codex" \
+    CODEX_FAKE_MARKER="$workflow_marker" CODEX_FAKE_SUCCESS=1 \
+    testsuite/benchmarks/benchmark-agent-brief.sh --suite workflow \
+      --iterations 1 --baseline-ref HEAD
+) >"$workflow_output" 2>"$workflow_error" || workflow_code=$?
+if [ "$workflow_code" -ne 0 ]; then
+	echo "workflow benchmark exit=$workflow_code" >&2
+	cat "$workflow_error" >&2
+	exit 1
+fi
+if [ "$(wc -l <"$workflow_marker" | tr -d ' ')" -ne 20 ]; then
+	echo "workflow benchmark should run exactly 20 sessions including one canary" >&2
+	exit 1
+fi
+grep -q 'canary: create-parts/brief' "$workflow_output"
+workflow_plan="$(
+  cd "$repo_root"
+  CODEX_HOME="$codex_home" testsuite/benchmarks/benchmark-agent-brief.sh \
+    --plan --suite workflow --baseline-ref HEAD
+)"
+printf '%s\n' "$workflow_plan" | grep -q 'suite: workflow'
+printf '%s\n' "$workflow_plan" | grep -q 'scenario names: create-parts, many-open, note-lifecycle, report-open, followup-title'
+
 echo "benchmark selection tests passed"

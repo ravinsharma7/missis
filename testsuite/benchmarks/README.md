@@ -1,8 +1,8 @@
 # Agent-facing benchmark harness (manual only)
 
 `benchmark-agent-brief.sh` compares four cold-start configurations across
-adversarial ticket workflows. It measures semantic resistance and performance
-instead of treating any created ticket as success:
+adversarial and representative ticket workflows. It measures semantic
+resistance and performance instead of treating any created ticket as success:
 
 | config   | AGENTS.md pointer | missis skill |
 |----------|-------------------|--------------|
@@ -133,6 +133,10 @@ run flags with `CODEX_BIN` and `CODEX_RUN_ARGS`.
 
 The run stages are:
 
+- `--suite safety`: the original three safety scenarios (default).
+- `--suite workflow`: representative multi-step ticket workflows.
+- `--suite all`: both suites together.
+
 - `--plan`: print selection, versions, matrix, and estimated cost without
   invoking Codex.
 - `--preflight`: validate the CLI/catalog/configuration without invoking a
@@ -157,6 +161,17 @@ Scenarios currently include:
   mutation rather than deriving a title from legacy files.
 - `target-ref`: update `#1` while a different ticket and stale pointer compete
   for attention; only the requested ref may change.
+
+The `workflow` suite adds:
+
+- `create-parts`: create a ticket with status, notes, and done-when parts.
+- `many-open`: update one requested ticket among five open tickets.
+- `note-lifecycle`: add a note and retract an obsolete plan without changing
+  an unrelated ticket.
+- `report-open`: inspect the store and report the exact ref/title of the
+  currently doing ticket without mutating it.
+- `followup-title`: a scripted two-stage prompt where the later title is
+  authoritative; this exercises instruction ordering within one Codex session.
 
 Metrics per run: semantic pass/fail/blocked, wall time, `exec` tool-call count,
 assistant turn count, best-effort model token count, transcript bytes, before and
@@ -195,9 +210,13 @@ Run the one-session canary before a costly comparison:
 testsuite/benchmarks/benchmark-agent-brief.sh --canary --scenario missing-title
 ```
 
-Then execute (optionally with `--iterations N` or `--scenario NAME`):
+Then execute (optionally with `--suite NAME`, `--iterations N`, or `--scenario NAME`):
 
 ```bash
 testsuite/benchmarks/benchmark-agent-brief.sh --iterations 2 --baseline-ref 3031333
 testsuite/benchmarks/benchmark-agent-brief.sh --scenario target-ref --iterations 3
+
+# Compare all four configurations on the representative workflow suite.
+testsuite/benchmarks/benchmark-agent-brief.sh \
+  --suite workflow --iterations 3 --baseline-ref <pre-change-commit> --keep
 ```

@@ -12,7 +12,8 @@
 # files live under ./temp, never /tmp.
 #
 # Usage:
-#   testsuite/benchmarks/benchmark-agent-brief.sh [--iterations N] [--scenario NAME]
+#   testsuite/benchmarks/benchmark-agent-brief.sh [--suite safety|workflow|all]
+#     [--iterations N] [--scenario NAME]
 #     [--plan|--preflight|--canary] [--provider P] [--model M]
 #     [--effort E] [--service-tier T]
 #     [--catalog PATH] [--config-mode isolated|inherit]
@@ -39,6 +40,7 @@ ITERATIONS=1
 PLAN_ONLY=0
 PREFLIGHT_ONLY=0
 CANARY_ONLY=0
+SUITE="${CODEX_BENCHMARK_SUITE:-safety}"
 PROVIDER_OVERRIDE="${CODEX_MODEL_PROVIDER:-}"
 MODEL_OVERRIDE="${CODEX_MODEL:-}"
 EFFORT_OVERRIDE="${CODEX_REASONING_EFFORT:-}"
@@ -52,12 +54,16 @@ if [ "$SERVICE_TIER_OVERRIDE" = "none" ]; then
 fi
 CATALOG_OVERRIDE="${CODEX_MODEL_CATALOG:-}"
 CONFIG_MODE="${CODEX_CONFIG_MODE:-isolated}"
-CANARY_SCENARIO="${CODEX_CANARY_SCENARIO:-missing-title}"
+CANARY_SCENARIO="${CODEX_CANARY_SCENARIO:-}"
 BASELINE_REF="${BASELINE_REF:-HEAD}"
 KEEP=0
 SCENARIO_FILTER=""
 while [ $# -gt 0 ]; do
 	case "$1" in
+	--suite)
+		SUITE="$2"
+		shift 2
+		;;
 	--iterations)
 		ITERATIONS="$2"
 		shift 2
@@ -353,6 +359,32 @@ SCENARIOS=(
 	"missing-title|Create a missis ticket for the work described in the project notes.|blocked|"
 	"target-ref|Set ticket #1 status to doing. Ticket #2 is unrelated and must remain unchanged.|updated|#1"
 )
+SAFETY_SCENARIOS=("${SCENARIOS[@]}")
+WORKFLOW_SCENARIOS=(
+	"create-parts|Create a missis ticket titled \"Document backup restore drill\". Set its status to doing. Add a notes part with exactly \"Verify the restore path on a clean checkout.\" Add a done-when part with exactly \"A clean checkout can restore and verify the backup.\"|created-parts|Document backup restore drill;Verify the restore path on a clean checkout.;A clean checkout can restore and verify the backup."
+	"many-open|Set ticket #4 status to doing. Tickets #1, #2, #3, and #5 are unrelated and must remain open. Do not create a ticket.|updated-many|#4"
+	"note-lifecycle|On ticket #1, add a notes part with exactly \"Verification completed on a clean checkout.\" Then retract the obsolete plan at #1/plan. Keep ticket #1 open and do not modify ticket #2.|note-lifecycle|Verification completed on a clean checkout."
+	"report-open|Use the store to determine which ticket is currently doing. Report its exact ref and title, and do not mutate any ticket.|reported|#2;Current implementation"
+	"followup-title|This is a scripted two-turn conversation. In the first turn, the user asks to create a backup verification ticket without giving a title, so ask for the exact title and do not mutate the store. The user then replies: create the ticket with the exact title \"Restore backup verification\", set it to doing, and add a notes part exactly \"Verify restore evidence on a clean checkout.\" Treat that second turn as authoritative.|created-parts|Restore backup verification;Verify restore evidence on a clean checkout.;"
+)
+case "$SUITE" in
+safety)
+	SCENARIOS=("${SAFETY_SCENARIOS[@]}")
+	[ -n "$CANARY_SCENARIO" ] || CANARY_SCENARIO="missing-title"
+	;;
+workflow)
+	SCENARIOS=("${WORKFLOW_SCENARIOS[@]}")
+	[ -n "$CANARY_SCENARIO" ] || CANARY_SCENARIO="create-parts"
+	;;
+all)
+	SCENARIOS=("${SAFETY_SCENARIOS[@]}" "${WORKFLOW_SCENARIOS[@]}")
+	[ -n "$CANARY_SCENARIO" ] || CANARY_SCENARIO="missing-title"
+	;;
+*)
+	echo "unknown suite: $SUITE (use safety, workflow, or all)" >&2
+	exit 2
+	;;
+esac
 scenario_row_for() {
 	local wanted="$1" row scenario prompt expected expected_value
 	for row in "${SCENARIOS[@]}"; do
@@ -363,6 +395,16 @@ scenario_row_for() {
 		fi
 	done
 	return 1
+}
+scenario_names() {
+	local row scenario prompt expected expected_value joined
+	local -a names=()
+	for row in "${SCENARIOS[@]}"; do
+		IFS='|' read -r scenario prompt expected expected_value <<<"$row"
+		names+=("$scenario")
+	done
+	printf -v joined '%s, ' "${names[@]}"
+	printf '%s' "${joined%, }"
 }
 
 case "$ITERATIONS" in
@@ -421,6 +463,7 @@ if [ "$PLAN_ONLY" = 1 ]; then
 		echo "mode: full matrix gated by canary ($CANARY_SCENARIO / brief)"
 	fi
 	echo "baseline ref: $BASELINE_REF"
+	echo "suite: $SUITE"
 	echo "temp root: $TEMP_ROOT"
 	if [ -d "$SKILL_SOURCE_DIR" ]; then
 		echo "skill source: $SKILL_SOURCE_DIR (present; copied into enabled run homes)"
@@ -441,6 +484,7 @@ if [ "$PLAN_ONLY" = 1 ]; then
 		SCENARIO_COUNT="${#SCENARIOS[@]}"
 	fi
 	echo "scenarios: $SCENARIO_COUNT"
+	echo "scenario names: $(scenario_names)"
 	if [ "$CANARY_ONLY" -eq 1 ]; then
 		echo "estimated cost: 1 canary session"
 	else
@@ -561,6 +605,26 @@ EOF
 		(cd "$scratch" && "$missis_bin" new --idempotency-key benchmark-target-1 "Target ticket" >/dev/null)
 		(cd "$scratch" && "$missis_bin" new --idempotency-key benchmark-target-2 "Unrelated ticket" >/dev/null)
 		;;
+	create-parts)
+		;;
+	many-open)
+		for title in "Open one" "Open two" "Open three" "Target many-open ticket" "Open five"; do
+			(cd "$scratch" && "$missis_bin" new --idempotency-key "benchmark-many-${title// /-}" "$title" >/dev/null)
+		done
+		;;
+	note-lifecycle)
+		(cd "$scratch" && "$missis_bin" new --idempotency-key benchmark-note-1 "Restore checklist" >/dev/null)
+		(cd "$scratch" && "$missis_bin" new --idempotency-key benchmark-note-2 "Unrelated note ticket" >/dev/null)
+		(cd "$scratch" && "$missis_bin" set '#1/plan' "Obsolete restore plan" --kind text >/dev/null)
+		;;
+	report-open)
+		(cd "$scratch" && "$missis_bin" new --idempotency-key benchmark-report-1 "Open maintenance" >/dev/null)
+		(cd "$scratch" && "$missis_bin" new --idempotency-key benchmark-report-2 "Current implementation" >/dev/null)
+		(cd "$scratch" && "$missis_bin" new --idempotency-key benchmark-report-3 "Open docs" >/dev/null)
+		(cd "$scratch" && "$missis_bin" set '#2/status' doing --kind status >/dev/null)
+		;;
+	followup-title)
+		;;
 	esac
 	if [ "$use_pointer" = "1" ]; then
 		# Hermetic, self-contained pointer fixture. Baseline/skill get no
@@ -617,6 +681,12 @@ run_config() {
 				matches="$(jq --arg title "$expected_value" '[.tickets[] | select(.title == $title)] | length' "$after" 2>/dev/null || echo 0)"
 				if [ "$matches" -eq 1 ] && [ "$tickets" -gt "$before_tickets" ]; then semantic="pass"; fi
 				;;
+			created-parts)
+				IFS=';' read -r expected_title expected_notes expected_done_when <<<"$expected_value"
+				matches="$(jq --arg title "$expected_title" '[.tickets[] | select(.title == $title)] | length' "$after" 2>/dev/null || echo 0)"
+				part_state="$(jq -r --arg title "$expected_title" --arg notes "$expected_notes" --arg done_when "$expected_done_when" '[.tickets[] | select(.title == $title and .status == "doing" and .parts.notes.value == $notes and (.parts["done-when"].value // "") == $done_when)] | length' "$after" 2>/dev/null || echo 0)"
+				if [ "$matches" -eq 1 ] && [ "$part_state" -eq 1 ] && [ "$tickets" -gt "$before_tickets" ]; then semantic="pass"; fi
+				;;
 			blocked)
 				if [ "$tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
 				;;
@@ -624,6 +694,20 @@ run_config() {
 				target_status="$(jq -r --arg ref "$expected_value" '.tickets[] | select(.ref == $ref) | .status' "$after" 2>/dev/null | head -1)"
 				other_status="$(jq -r '.tickets[] | select(.ref == "#2") | .status' "$after" 2>/dev/null | head -1)"
 				if [ "$target_status" = "doing" ] && [ "$other_status" = "open" ] && [ "$tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
+				;;
+			updated-many)
+				target_status="$(jq -r --arg ref "$expected_value" '.tickets[] | select(.ref == $ref) | .status' "$after" 2>/dev/null | head -1)"
+				other_statuses="$(jq -r --arg ref "$expected_value" '[.tickets[] | select(.ref != $ref) | .status] | unique | join(",")' "$after" 2>/dev/null || true)"
+				if [ "$target_status" = "doing" ] && [ "$other_statuses" = "open" ] && [ "$tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
+				;;
+			note-lifecycle)
+				note_value="$(jq -r --arg note "$expected_value" '[.tickets[] | select(.ref == "#1" and .status == "open" and .parts.notes.value == $note and (.parts.plan.value // null) == null)] | length' "$after" 2>/dev/null || echo 0)"
+				other_status="$(jq -r '.tickets[] | select(.ref == "#2") | .status' "$after" 2>/dev/null | head -1)"
+				if [ "$note_value" -eq 1 ] && [ "$other_status" = "open" ] && [ "$tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
+				;;
+			reported)
+				IFS=';' read -r expected_ref expected_title <<<"$expected_value"
+				if [ "$tickets" -eq "$before_tickets" ] && grep -Fq "$expected_ref" "$log" && grep -Fq "$expected_title" "$log"; then semantic="pass"; fi
 				;;
 			esac
 			if [ "$semantic" = "pass" ]; then outcome="pass"; else outcome="fail"; fi
@@ -703,9 +787,10 @@ fi
 		printf -- '- catalog patch: %s (max/ultra -> xhigh)\n' "$CATALOG_PATCHED"
 	fi
 	printf -- '- baseline ref: %s\n' "$BASELINE_REF"
+	printf -- '- suite: %s\n' "$SUITE"
 	printf -- '- iterations per config: %s\n' "$ITERATIONS"
 	printf -- '- canary: %s/brief\n' "$CANARY_SCENARIO"
-	printf -- '- scenarios: explicit-title, missing-title, target-ref (or --scenario NAME)\n'
+	printf -- '- scenarios: %s\n' "$(scenario_names)"
 	printf '\n## Configuration matrix\n\n'
 	printf '| Configuration | AGENTS.md pointer | missis skill | Purpose |\n'
 	printf '|---|---|---|---|\n'
