@@ -57,10 +57,17 @@ if [ "${1:-}" = "--version" ]; then
   exit 0
 fi
 if [ "${1:-}" = "exec" ]; then
-  if [ -n "${CODEX_FAKE_MARKER:-}" ]; then
-    printf '%s\n' "$*" >> "$CODEX_FAKE_MARKER"
-  fi
-  exit "${CODEX_FAKE_EXIT:-1}"
+	if [ "${2:-}" = "--help" ]; then
+		exit 0
+	fi
+	if [ -n "${CODEX_FAKE_MARKER:-}" ]; then
+		printf '%s\n' "$*" >> "$CODEX_FAKE_MARKER"
+	fi
+	if [ "${CODEX_FAKE_SUCCESS:-0}" = "1" ]; then
+		printf '%s\n' 'codex' 'exec' 'tokens used' '42'
+		exit 0
+	fi
+	exit "${CODEX_FAKE_EXIT:-1}"
 fi
 exit 0
 EOF
@@ -90,6 +97,30 @@ if [ "$preflight_code" -ne 2 ]; then
   exit 1
 fi
 grep -q 'missing base_instructions' "$preflight_error"
+
+version_catalog="$tmp/version-catalog.json"
+printf '%s\n' '{"client_version":"0.149.0","models":[{"slug":"deepseek-v4-flash","base_instructions":"test","supported_reasoning_levels":[{"effort":"high"}]}]}' >"$version_catalog"
+cat >"$codex_home/config.toml" <<EOF
+model_provider = "deepseek"
+model = "deepseek-v4-flash"
+model_reasoning_effort = "high"
+service_tier = "fast"
+model_catalog_json = "$version_catalog"
+EOF
+version_output="$tmp/version.out"
+version_error="$tmp/version.err"
+version_code=0
+(
+  cd "$repo_root"
+  CODEX_HOME="$codex_home" CODEX_BIN="$fake_codex" \
+    testsuite/benchmarks/benchmark-agent-brief.sh --preflight --baseline-ref HEAD
+) >"$version_output" 2>"$version_error" || version_code=$?
+if [ "$version_code" -ne 2 ]; then
+	 echo "version mismatch preflight exit=$version_code" >&2
+	 cat "$version_error" >&2
+	 exit 1
+fi
+grep -q 'version mismatch' "$version_error"
 
 cat >"$codex_home/config.toml" <<'EOF'
 model_provider = "deepseek"
@@ -121,5 +152,49 @@ grep -q -- '--model deepseek-v4-flash' "$marker"
 grep -q -- 'model_provider="deepseek"' "$marker"
 grep -q -- 'service_tier="fast"' "$marker"
 grep -q 'benchmark blocked:' "$blocked_error"
+
+canary_marker="$tmp/fake-codex-canary"
+canary_output="$tmp/canary.out"
+canary_error="$tmp/canary.err"
+canary_code=0
+(
+  cd "$repo_root"
+  CODEX_HOME="$codex_home" CODEX_BIN="$fake_codex" \
+    CODEX_FAKE_MARKER="$canary_marker" CODEX_FAKE_SUCCESS=1 \
+    testsuite/benchmarks/benchmark-agent-brief.sh --canary \
+      --scenario missing-title --baseline-ref HEAD
+) >"$canary_output" 2>"$canary_error" || canary_code=$?
+if [ "$canary_code" -ne 0 ]; then
+	 echo "canary benchmark exit=$canary_code" >&2
+	 cat "$canary_error" >&2
+	 exit 1
+fi
+if [ "$(wc -l <"$canary_marker" | tr -d ' ')" -ne 1 ]; then
+	 echo "canary benchmark should run exactly one model session" >&2
+	 exit 1
+fi
+grep -q 'canary: missing-title/brief' "$canary_output"
+grep -q 'preflight: passed' "$canary_output"
+
+full_marker="$tmp/fake-codex-full"
+full_output="$tmp/full.out"
+full_error="$tmp/full.err"
+full_code=0
+(
+  cd "$repo_root"
+  CODEX_HOME="$codex_home" CODEX_BIN="$fake_codex" \
+    CODEX_FAKE_MARKER="$full_marker" CODEX_FAKE_SUCCESS=1 \
+    testsuite/benchmarks/benchmark-agent-brief.sh --baseline-ref HEAD
+) >"$full_output" 2>"$full_error" || full_code=$?
+if [ "$full_code" -ne 0 ]; then
+	echo "full benchmark exit=$full_code" >&2
+	cat "$full_error" >&2
+	exit 1
+fi
+if [ "$(wc -l <"$full_marker" | tr -d ' ')" -ne 12 ]; then
+	echo "full benchmark should run exactly 12 sessions including one canary" >&2
+	exit 1
+fi
+grep -q 'canary: missing-title/brief' "$full_output"
 
 echo "benchmark selection tests passed"

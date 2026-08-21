@@ -11,10 +11,11 @@ instead of treating any created ticket as success:
 | skill    | no                | enabled      |
 | brief    | yes               | enabled      |
 
-WARNING: each run is a real `codex exec` session against a scratch project and
-consumes model tokens/credits. Run it manually and only when a comparison is
-actually needed. It is intentionally NOT part of `go test ./...` or
-`testsuite/blackbox`, so normal test runs never spend tokens.
+WARNING: a full run is a real `codex exec` session against a scratch project
+and consumes model tokens/credits. Run it manually and only when a comparison
+is actually needed. `--plan` and `--preflight` do not spend model tokens;
+`--canary` spends one session. It is intentionally NOT part of `go test ./...`
+or `testsuite/blackbox`, so normal test runs never spend tokens.
 
 ## Skill usage
 
@@ -79,9 +80,16 @@ Provider selection is automatic by default: the harness reads `model`,
 `~/.codex/config.toml`. The default `isolated` mode ignores the rest of the
 user config during each scratch session, then passes the selected provider,
 model, effort, service tier, and compatible catalog explicitly. This prevents a
-stale local setting from changing the comparison. `openai`, `chatgpt`, and
+stale local setting from changing the comparison. If no catalog is named in
+`config.toml`, the harness also checks the implicit `models_cache.json` used by
+Codex. `openai`, `chatgpt`, and
 `codex` are classified as `openai-gpt`; DeepSeek models are classified as
 `deepseek`; other values are `custom`.
+
+Automatic selection does not silently fall back to another provider or model.
+If the selected toolchain is incompatible, the run is blocked and the selected
+model must be changed explicitly with flags or environment variables. This
+keeps a performance comparison reproducible.
 
 Manual selection is supported through either flags or environment variables:
 
@@ -105,17 +113,34 @@ disable a configured tier. Use
 user Codex configuration is known to be compatible. An inherited
 `service_tier = "default"` is rejected explicitly.
 
-Compatibility: if a configured catalog advertises reasoning levels the
-installed Codex CLI cannot parse (for example `max` or `ultra`), the harness
-normalizes those levels in a temporary copy and passes it via
-`-c model_catalog_json=...`. It also checks the catalog shape, including the
-required `base_instructions` field, before spending model tokens. An
-incompatible catalog fails once during preflight. Failed or zero-turn Codex
-sessions are recorded as `blocked`, and the matrix stops after the first one;
-they never count as semantic passes. The scratch agent also gets the freshly
-built `missis` binary on PATH, so the run exercises the new CLI rather than a
-stale installed copy. Override the Codex binary and run flags with `CODEX_BIN`
-and `CODEX_RUN_ARGS`.
+Compatibility preflight checks the Codex CLI version, the catalog
+`client_version` release line, the catalog shape, the selected model, and the
+selected reasoning effort before spending model tokens. If the CLI and
+catalog release lines differ, preflight stops with an actionable error. If a
+configured catalog advertises reasoning levels the installed Codex CLI cannot
+parse (for example `max` or `ultra`), the harness normalizes those levels in a
+temporary copy and passes it via `-c model_catalog_json=...`. It also checks
+the required `base_instructions` field. An incompatible catalog fails once
+during preflight. Override the Codex binary and run flags with `CODEX_BIN` and
+`CODEX_RUN_ARGS`.
+
+The run stages are:
+
+- `--plan`: print selection, versions, matrix, and estimated cost without
+  invoking Codex.
+- `--preflight`: validate the CLI/catalog/configuration without invoking a
+  model session.
+- `--canary`: run one adversarial scenario with the target `brief` setup. The
+  default scenario is `missing-title`; use `--scenario target-ref` or
+  `CODEX_CANARY_SCENARIO` to choose another.
+- no mode flag: run preflight, run the canary, then run the full matrix. The
+  canary is the first `brief` row, so it does not add a duplicate session to the
+  normal one-iteration estimate.
+
+Failed or zero-turn Codex sessions are recorded as `blocked`, and the matrix
+stops after the first one; they never count as semantic passes. The scratch
+agent also gets the freshly built `missis` binary on PATH, so the run exercises
+the new CLI rather than a stale installed copy.
 
 Scenarios currently include:
 
@@ -129,7 +154,8 @@ Scenarios currently include:
 Metrics per run: semantic pass/fail/blocked, wall time, `exec` tool-call count,
 assistant turn count, best-effort model token count, transcript bytes, before and
 after ticket counts, and exit code. The benchmark therefore selects a winner by
-correctness first, then compares performance among configurations that pass.
+correctness/resistance first, then compares performance among configurations
+that pass. A blocked compatibility or canary run has no performance score.
 The baseline uses the
 `BASELINE_REF` missis binary with the skill moved aside, so it reproduces the
 old discovery path; the other three configs use the working tree. Once the
@@ -137,16 +163,29 @@ changes are committed, pass `--baseline-ref <pre-change-commit>` (e.g.
 `3031333`) so the baseline stays truly pre-change. The skill is restored at
 exit.
 
-Every real run also writes a self-contained `results.md` table into the
-printed scratch directory alongside the per-config transcripts, with the
-provider, model, catalog, baseline ref, and iteration count captured for
-repeatability.
+Every canary or full run also writes a self-contained `results.md` table into
+the printed scratch directory alongside the per-config transcripts, with the
+provider, model, CLI/catalog versions, catalog, canary, baseline ref, and
+iteration count captured for repeatability. A preflight-only run removes its
+temporary directory after reporting the result.
 
-Run `--plan` first to preview the matrix and the provider detection without
-spending tokens:
+Run `--plan` first to preview the matrix, provider detection, and toolchain
+versions without spending tokens:
 
 ```bash
 testsuite/benchmarks/benchmark-agent-brief.sh --plan
+```
+
+Then validate compatibility without spending model tokens:
+
+```bash
+testsuite/benchmarks/benchmark-agent-brief.sh --preflight
+```
+
+Run the one-session canary before a costly comparison:
+
+```bash
+testsuite/benchmarks/benchmark-agent-brief.sh --canary --scenario missing-title
 ```
 
 Then execute (optionally with `--iterations N` or `--scenario NAME`):

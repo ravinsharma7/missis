@@ -13,7 +13,8 @@
 #
 # Usage:
 #   testsuite/benchmarks/benchmark-agent-brief.sh [--iterations N] [--scenario NAME]
-#     [--plan] [--provider P] [--model M] [--effort E] [--service-tier T]
+#     [--plan|--preflight|--canary] [--provider P] [--model M]
+#     [--effort E] [--service-tier T]
 #     [--catalog PATH] [--config-mode isolated|inherit]
 #     [--baseline-ref REF] [--keep]
 #
@@ -27,6 +28,7 @@
 #   CODEX_SERVICE_TIER    override the service tier; empty or none disables it
 #   CODEX_MODEL_CATALOG   override the model_catalog_json path
 #   CODEX_CONFIG_MODE     isolated (default) or inherit user config
+#   CODEX_CANARY_SCENARIO scenario used by --canary/full preflight (default: missing-title)
 #   BASELINE_REF          git ref used for the pre-change baseline (default: HEAD)
 #
 # Requires: codex CLI on PATH, go, jq. Budget 1-3 minutes per iteration.
@@ -35,6 +37,8 @@ set -euo pipefail
 
 ITERATIONS=1
 PLAN_ONLY=0
+PREFLIGHT_ONLY=0
+CANARY_ONLY=0
 PROVIDER_OVERRIDE="${CODEX_MODEL_PROVIDER:-}"
 MODEL_OVERRIDE="${CODEX_MODEL:-}"
 EFFORT_OVERRIDE="${CODEX_REASONING_EFFORT:-}"
@@ -48,6 +52,7 @@ if [ "$SERVICE_TIER_OVERRIDE" = "none" ]; then
 fi
 CATALOG_OVERRIDE="${CODEX_MODEL_CATALOG:-}"
 CONFIG_MODE="${CODEX_CONFIG_MODE:-isolated}"
+CANARY_SCENARIO="${CODEX_CANARY_SCENARIO:-missing-title}"
 BASELINE_REF="${BASELINE_REF:-HEAD}"
 KEEP=0
 SCENARIO_FILTER=""
@@ -63,6 +68,14 @@ while [ $# -gt 0 ]; do
 		;;
 	--plan)
 		PLAN_ONLY=1
+		shift
+		;;
+	--preflight)
+		PREFLIGHT_ONLY=1
+		shift
+		;;
+	--canary)
+		CANARY_ONLY=1
 		shift
 		;;
 	--provider)
@@ -129,11 +142,34 @@ CODEX_RUN_ARGS="${CODEX_RUN_ARGS:---full-auto}"
 CATALOG_PATCHED=""
 CODEX_CONFIG_ARGS=()
 CATALOG_SOURCE=""
+CODEX_VERSION_LABEL="unavailable"
+CODEX_VERSION_SERIES=""
+CATALOG_CLIENT_VERSION=""
+CATALOG_CLIENT_SERIES=""
 SERVICE_TIER_RAW=""
 SERVICE_TIER_LABEL="unset"
 EXEC_PROVIDER_LABEL=""
 RUN_BLOCKED=0
 BLOCK_REASON=""
+
+version_series() {
+	local match
+	match="$(printf '%s\n' "$1" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true)"
+	if [ -n "$match" ]; then
+		printf '%s\n' "$match" | cut -d. -f1-2
+	fi
+}
+
+best_effort_codex_version() {
+	if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+		printf '%s\n' "unavailable"
+		return 0
+	fi
+	"$CODEX_BIN" --version 2>&1 | tail -1 || true
+}
+
+CODEX_VERSION_LABEL="$(best_effort_codex_version)"
+CODEX_VERSION_SERIES="$(version_series "$CODEX_VERSION_LABEL")"
 
 config_value() {
 	local key="$1"
@@ -145,13 +181,27 @@ config_value() {
 
 catalog_path() {
 	local catpath="${CATALOG_OVERRIDE:-}"
+	local explicit_override=0
+	if [ -n "$catpath" ]; then
+		explicit_override=1
+	fi
 	if [ -z "$catpath" ]; then
 		catpath="$(config_value model_catalog_json)"
+	fi
+	if [ -z "$catpath" ] && [ -f "$CODEX_HOME_DIR/models_cache.json" ]; then
+		# Codex can use this cache even when config.toml does not name it.
+		# Treat it as an input to preflight rather than allowing a stale cache
+		# to fail only after a model session starts.
+		catpath="$CODEX_HOME_DIR/models_cache.json"
 	fi
 	if [ -n "$catpath" ]; then
 		catpath="${catpath/#~/$HOME}"
 		if [[ "$catpath" != /* ]]; then
-			catpath="$(dirname "$CODEX_CONFIG_FILE")/$catpath"
+			if [ "$explicit_override" -eq 1 ]; then
+				catpath="$(pwd)/$catpath"
+			else
+				catpath="$(dirname "$CODEX_CONFIG_FILE")/$catpath"
+			fi
 		fi
 		if [ -f "$catpath" ]; then
 			printf '%s\n' "$catpath"
@@ -171,6 +221,12 @@ prepare_catalog() {
 		return 0
 	fi
 	CATALOG_SOURCE="$catpath"
+	CATALOG_CLIENT_VERSION="$(jq -r '.client_version // empty' "$catpath" 2>/dev/null || true)"
+	CATALOG_CLIENT_SERIES="$(version_series "$CATALOG_CLIENT_VERSION")"
+	if [ -n "$CODEX_VERSION_SERIES" ] && [ -n "$CATALOG_CLIENT_SERIES" ] && [ "$CODEX_VERSION_SERIES" != "$CATALOG_CLIENT_SERIES" ]; then
+		echo "Codex CLI/model cache version mismatch: CLI $CODEX_VERSION_LABEL, catalog client_version $CATALOG_CLIENT_VERSION; align the CLI and cache release lines before benchmarking" >&2
+		return 2
+	fi
 	# Newer catalogs can advertise reasoning levels that older codex CLIs
 	# cannot parse. Patch a temp copy so the benchmark can still run.
 	CATALOG_PATCHED="$RUN_DIR/models-patched.json"
@@ -183,8 +239,18 @@ prepare_catalog() {
 		echo "model catalog is not a valid models catalog: $catpath" >&2
 		return 2
 	fi
-	if ! jq -e 'all(.models[]; has("base_instructions"))' "$CATALOG_PATCHED" >/dev/null; then
-		echo "model catalog is incompatible with this Codex CLI (missing base_instructions): $catpath" >&2
+	if ! jq -e 'all(.models[]; (.base_instructions? | type) == "string")' "$CATALOG_PATCHED" >/dev/null; then
+		echo "model catalog is incompatible with this Codex CLI (missing base_instructions or invalid type): $catpath" >&2
+		return 2
+	fi
+	if [ "$MODEL_LABEL" != "unknown" ] && ! jq -e --arg model "$MODEL_LABEL" 'any(.models[]; .slug == $model)' "$CATALOG_PATCHED" >/dev/null; then
+		echo "model is not present in the selected catalog: $MODEL_LABEL ($catpath)" >&2
+		return 2
+	fi
+	if [ "$MODEL_LABEL" != "unknown" ] && [ -n "$EFFORT_LABEL" ] && ! jq -e --arg model "$MODEL_LABEL" --arg effort "$EFFORT_LABEL" '
+		any(.models[]; .slug == $model and (((.supported_reasoning_levels? // []) | length == 0) or any(.supported_reasoning_levels[]?; .effort == $effort)))
+	' "$CATALOG_PATCHED" >/dev/null; then
+		echo "reasoning effort is not advertised for model $MODEL_LABEL: $EFFORT_LABEL ($catpath)" >&2
 		return 2
 	fi
 }
@@ -278,6 +344,43 @@ SCENARIOS=(
 	"missing-title|Create a missis ticket for the work described in the project notes.|blocked|"
 	"target-ref|Set ticket #1 status to doing. Ticket #2 is unrelated and must remain unchanged.|updated|#1"
 )
+scenario_row_for() {
+	local wanted="$1" row scenario prompt expected expected_value
+	for row in "${SCENARIOS[@]}"; do
+		IFS='|' read -r scenario prompt expected expected_value <<<"$row"
+		if [ "$scenario" = "$wanted" ]; then
+			printf '%s\n' "$row"
+			return 0
+		fi
+	done
+	return 1
+}
+
+case "$ITERATIONS" in
+'' | *[!0-9]* | 0)
+	echo "iterations must be a positive integer: $ITERATIONS" >&2
+	exit 2
+	;;
+esac
+if [ -n "$SCENARIO_FILTER" ] && ! scenario_row_for "$SCENARIO_FILTER" >/dev/null; then
+	echo "unknown scenario: $SCENARIO_FILTER" >&2
+	exit 2
+fi
+if [ -n "$SCENARIO_FILTER" ]; then
+	CANARY_SCENARIO="$SCENARIO_FILTER"
+fi
+if ! scenario_row_for "$CANARY_SCENARIO" >/dev/null; then
+	echo "unknown canary scenario: $CANARY_SCENARIO" >&2
+	exit 2
+fi
+if [ "$PLAN_ONLY" -eq 1 ] && [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+	echo "--plan and --preflight are mutually exclusive" >&2
+	exit 2
+fi
+if [ "$PREFLIGHT_ONLY" -eq 1 ] && [ "$CANARY_ONLY" -eq 1 ]; then
+	echo "--preflight and --canary are mutually exclusive" >&2
+	exit 2
+fi
 RESULT_ROWS=""
 POINTER_AGENTS_MD="## missis quick reference
 
@@ -288,15 +391,25 @@ request; project/group scope comes only from explicit flags or environment."
 if [ "$PLAN_ONLY" = 1 ]; then
 	echo "provider: $PROVIDER_LABEL  model: $MODEL_LABEL  family: $FAMILY  effort: $EFFORT_LABEL"
 	echo "source: $CODEX_CONFIG_FILE"
+	echo "codex: $CODEX_VERSION_LABEL"
 	catalog_display="$(catalog_path)"
 	if [ -n "$CATALOG_OVERRIDE" ] && [ -z "$catalog_display" ]; then
 		catalog_display="missing:$CATALOG_OVERRIDE"
 	fi
 	echo "catalog: ${catalog_display:-remote/default}"
+	if [ -n "$catalog_display" ] && command -v jq >/dev/null 2>&1; then
+		plan_catalog_version="$(jq -r '.client_version // empty' "$catalog_display" 2>/dev/null || true)"
+		echo "catalog client version: ${plan_catalog_version:-unknown}"
+	fi
 	echo "config mode: $CONFIG_MODE"
 	echo "service tier: $SERVICE_TIER_LABEL"
 	echo "execution provider: $EXEC_PROVIDER_LABEL"
 	echo "execution: selected provider/model/service tier are passed explicitly"
+	if [ "$CANARY_ONLY" -eq 1 ]; then
+		echo "mode: canary only ($CANARY_SCENARIO / brief)"
+	else
+		echo "mode: full matrix gated by canary ($CANARY_SCENARIO / brief)"
+	fi
 	echo "baseline ref: $BASELINE_REF"
 	echo "temp root: $TEMP_ROOT"
 	if [ -d "$SKILL_DIR" ]; then
@@ -318,7 +431,11 @@ if [ "$PLAN_ONLY" = 1 ]; then
 		SCENARIO_COUNT="${#SCENARIOS[@]}"
 	fi
 	echo "scenarios: $SCENARIO_COUNT"
-	echo "estimated cost: $ITERATIONS run(s) x 4 configs x $SCENARIO_COUNT scenarios = $((ITERATIONS * 4 * SCENARIO_COUNT)) real codex sessions"
+	if [ "$CANARY_ONLY" -eq 1 ]; then
+		echo "estimated cost: 1 canary session"
+	else
+		echo "estimated cost: $ITERATIONS run(s) x 4 configs x $SCENARIO_COUNT scenarios = $((ITERATIONS * 4 * SCENARIO_COUNT)) real codex sessions (canary is the first brief row)"
+	fi
 	echo "run without --plan to execute."
 	exit 0
 fi
@@ -331,6 +448,9 @@ cleanup() {
 	fi
 	rm -rf "$BIN_DIR"
 	rm -rf "$BIN_HEAD_DIR"
+	if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+		rm -rf "$RUN_DIR"
+	fi
 }
 trap cleanup EXIT
 
@@ -343,15 +463,31 @@ if ! command -v jq >/dev/null 2>&1; then
 	exit 1
 fi
 
+run_cli_preflight() {
+	if ! "$CODEX_BIN" exec --help >/dev/null 2>&1; then
+		echo "Codex CLI does not support the required exec command: $CODEX_BIN" >&2
+		return 2
+	fi
+	if ! prepare_catalog; then
+		return 2
+	fi
+	prepare_exec_config
+}
+
+if ! run_cli_preflight; then
+	exit 2
+fi
+echo "preflight: passed (codex $CODEX_VERSION_LABEL, catalog ${CATALOG_SOURCE:-remote/default})"
+if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+	echo "preflight only: no model sessions run"
+	exit 0
+fi
+
 echo "building missis from $REPO_DIR"
 (cd "$REPO_DIR" && go build -o "$BIN" ./cmd/missis)
 # Baseline must run the pre-change CLI: build BASELINE_REF into a separate dir.
 git -C "$REPO_DIR" archive "$BASELINE_REF" | tar -x -C "$BIN_HEAD_DIR"
 (cd "$BIN_HEAD_DIR" && go build -o "$BIN_HEAD" ./cmd/missis)
-if ! prepare_catalog; then
-	exit 2
-fi
-prepare_exec_config
 CODEX_RUN_ARGS_ARRAY=()
 read -r -a CODEX_RUN_ARGS_ARRAY <<<"$CODEX_RUN_ARGS"
 CODEX_EXTRA_ARGS_ARRAY=()
@@ -393,14 +529,17 @@ EOF
 }
 
 run_config() {
-	local name="$1" use_pointer="$2" enable_skill="$3" missis_bin="$4" bin_dir="$5" scenario="$6" prompt="$7" expected="$8" expected_value="$9"
+	local name="$1" use_pointer="$2" enable_skill="$3" missis_bin="$4" bin_dir="$5" scenario="$6" prompt="$7" expected="$8" expected_value="$9" start_iteration="${10:-1}"
 	if [ "$enable_skill" = "1" ] && [ -d "$SKILL_HIDDEN" ] && [ ! -d "$SKILL_DIR" ]; then
 		mv "$SKILL_HIDDEN" "$SKILL_DIR"
 	fi
 	if [ "$enable_skill" = "0" ] && [ -d "$SKILL_DIR" ]; then
 		mv "$SKILL_DIR" "$SKILL_HIDDEN"
 	fi
-	for i in $(seq 1 "$ITERATIONS"); do
+	if [ "$start_iteration" -gt "$ITERATIONS" ]; then
+		return 0
+	fi
+	for i in $(seq "$start_iteration" "$ITERATIONS"); do
 		local scratch log before after code start_ns end_ns started_at wall before_tickets tickets execs turns tokens transcript_bytes semantic outcome
 		scratch="$RUN_DIR/projects/${scenario}-${name}-${i}"
 		rm -rf "$scratch"
@@ -467,26 +606,37 @@ fi
 echo "temp root: $TEMP_ROOT"
 echo "logs: $LOG_DIR"
 printf '%-30s %8s %6s %6s %9s %8s %8s %6s  %s\n' "scenario/config" "wall" "execs" "turns" "tokens" "bytes" "tickets" "exit" "outcome"
-for scenario_row in "${SCENARIOS[@]}"; do
-	IFS='|' read -r scenario prompt expected expected_value <<<"$scenario_row"
-	if [ -n "$SCENARIO_FILTER" ] && [ "$scenario" != "$SCENARIO_FILTER" ]; then
-		continue
-	fi
-	for row in "${MATRIX[@]}"; do
+canary_row="$(scenario_row_for "$CANARY_SCENARIO")"
+IFS='|' read -r canary_scenario canary_prompt canary_expected canary_expected_value <<<"$canary_row"
+echo "canary: $canary_scenario/brief"
+run_config "brief" "1" "1" "$BIN" "$BIN_DIR" "$canary_scenario" "$canary_prompt" "$canary_expected" "$canary_expected_value"
+
+if [ "$CANARY_ONLY" -eq 0 ] && [ "$RUN_BLOCKED" -eq 0 ]; then
+	for scenario_row in "${SCENARIOS[@]}"; do
+		IFS='|' read -r scenario prompt expected expected_value <<<"$scenario_row"
+		if [ -n "$SCENARIO_FILTER" ] && [ "$scenario" != "$SCENARIO_FILTER" ]; then
+			continue
+		fi
+		for row in "${MATRIX[@]}"; do
+			if [ "$RUN_BLOCKED" -eq 1 ]; then
+				break
+			fi
+			IFS='|' read -r name use_pointer enable_skill <<<"$row"
+			start_iteration=1
+			if [ "$name" = "brief" ] && [ "$scenario" = "$CANARY_SCENARIO" ]; then
+				start_iteration=2
+			fi
+			if [ "$name" = "baseline" ]; then
+				run_config "$name" "$use_pointer" "$enable_skill" "$BIN_HEAD" "$BIN_HEAD_DIR" "$scenario" "$prompt" "$expected" "$expected_value" "$start_iteration"
+			else
+				run_config "$name" "$use_pointer" "$enable_skill" "$BIN" "$BIN_DIR" "$scenario" "$prompt" "$expected" "$expected_value" "$start_iteration"
+			fi
+		done
 		if [ "$RUN_BLOCKED" -eq 1 ]; then
 			break
 		fi
-		IFS='|' read -r name use_pointer enable_skill <<<"$row"
-		if [ "$name" = "baseline" ]; then
-			run_config "$name" "$use_pointer" "$enable_skill" "$BIN_HEAD" "$BIN_HEAD_DIR" "$scenario" "$prompt" "$expected" "$expected_value"
-		else
-			run_config "$name" "$use_pointer" "$enable_skill" "$BIN" "$BIN_DIR" "$scenario" "$prompt" "$expected" "$expected_value"
-		fi
 	done
-	if [ "$RUN_BLOCKED" -eq 1 ]; then
-		break
-	fi
-done
+fi
 
 {
 	printf '# Agent brief benchmark — %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -495,7 +645,15 @@ done
 	printf -- '- family: %s\n' "$FAMILY"
 	printf -- '- effort: %s\n' "$EFFORT_LABEL"
 	printf -- '- codex: %s\n' "$("$CODEX_BIN" --version 2>&1 | tail -1)"
+	if [ "$CANARY_ONLY" -eq 1 ]; then
+		printf -- '- mode: canary-only\n'
+	else
+		printf -- '- mode: full-matrix\n'
+	fi
+	printf -- '- codex version series: %s\n' "${CODEX_VERSION_SERIES:-unknown}"
 	printf -- '- catalog: %s\n' "${CATALOG_SOURCE:-remote/default}"
+	printf -- '- catalog client version: %s\n' "${CATALOG_CLIENT_VERSION:-unknown}"
+	printf -- '- catalog client version series: %s\n' "${CATALOG_CLIENT_SERIES:-unknown}"
 	printf -- '- config mode: %s\n' "$CONFIG_MODE"
 	printf -- '- service tier: %s\n' "$SERVICE_TIER_LABEL"
 	printf -- '- execution provider: %s\n' "$EXEC_PROVIDER_LABEL"
@@ -504,6 +662,7 @@ done
 	fi
 	printf -- '- baseline ref: %s\n' "$BASELINE_REF"
 	printf -- '- iterations per config: %s\n' "$ITERATIONS"
+	printf -- '- canary: %s/brief\n' "$CANARY_SCENARIO"
 	printf -- '- scenarios: explicit-title, missing-title, target-ref (or --scenario NAME)\n'
 	printf '| scenario/config | model | started_at | wall | exec calls | turns | tokens | transcript bytes | before tickets | after tickets | exit | outcome | log |\n'
 	printf '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|\n'
@@ -533,6 +692,9 @@ Notes:
   each completed session; failed or zero-turn sessions are blocked and cannot
   count as semantic passes. Token counts are best-effort transcript values and
   transcript bytes are a provider-neutral output-size proxy.
+- every full run performs a no-token compatibility preflight and uses the
+  target brief configuration's first row as its one-session canary; --canary
+  runs only that gate.
 - baseline and pointer run with the missis skill moved aside; skill and brief
   run with it enabled. The skill is restored at exit.
 - baseline uses the AGENTS.md and missis binary from HEAD (pre-change), so it
