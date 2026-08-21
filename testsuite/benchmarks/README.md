@@ -170,8 +170,9 @@ The `workflow` suite adds:
   an unrelated ticket.
 - `report-open`: inspect the store and report the exact ref/title of the
   currently doing ticket without mutating it.
-- `followup-title`: a scripted two-stage prompt where the later title is
-  authoritative; this exercises instruction ordering within one Codex session.
+- `followup-title`: a real `codex exec` followed by `codex exec resume`; the
+  first turn must ask for the missing title without mutating, and the later
+  title must be applied.
 
 Metrics per run: semantic pass/fail/blocked, wall time, `exec` tool-call count,
 assistant turn count, best-effort model token count, transcript bytes, before and

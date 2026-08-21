@@ -64,7 +64,9 @@ if [ "${1:-}" = "exec" ]; then
 		fi
 	done
 	if [ -n "${CODEX_FAKE_MARKER:-}" ]; then
-		printf '%s\n' "$*" >> "$CODEX_FAKE_MARKER"
+		if [ "${2:-}" != "resume" ]; then
+			printf '%s\n' "$*" >> "$CODEX_FAKE_MARKER"
+		fi
 	fi
 	if [ "${CODEX_FAKE_SUCCESS:-0}" = "1" ]; then
 		printf '%s\n' 'codex' 'exec' 'tokens used' '42'

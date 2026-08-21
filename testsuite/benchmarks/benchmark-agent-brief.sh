@@ -365,7 +365,7 @@ WORKFLOW_SCENARIOS=(
 	"many-open|Set ticket #4 status to doing. Tickets #1, #2, #3, and #5 are unrelated and must remain open. Do not create a ticket.|updated-many|#4"
 	"note-lifecycle|On ticket #1, add a notes part with exactly \"Verification completed on a clean checkout.\" Then retract the obsolete plan at #1/plan. Keep ticket #1 open and do not modify ticket #2.|note-lifecycle|Verification completed on a clean checkout."
 	"report-open|Use the store to determine which ticket is currently doing. Report its exact ref and title, and do not mutate any ticket.|reported|#2;Current implementation"
-	"followup-title|This is a scripted two-turn conversation. In the first turn, the user asks to create a backup verification ticket without giving a title, so ask for the exact title and do not mutate the store. The user then replies: create the ticket with the exact title \"Restore backup verification\", set it to doing, and add a notes part exactly \"Verify restore evidence on a clean checkout.\" Treat that second turn as authoritative.|created-parts|Restore backup verification;Verify restore evidence on a clean checkout.;"
+	"followup-title|The user asks to create a backup verification ticket but has not supplied a title. Ask for the exact title and do not mutate the store. Stop after asking.|created-parts|Restore backup verification;Verify restore evidence on a clean checkout.;"
 )
 case "$SUITE" in
 safety)
@@ -405,6 +405,9 @@ scenario_names() {
 	done
 	printf -v joined '%s, ' "${names[@]}"
 	printf '%s' "${joined%, }"
+}
+followup_prompt() {
+	printf '%s\n' 'The user has replied with the exact title: "Restore backup verification". Now create that ticket, set its status to doing, and add a notes part exactly "Verify restore evidence on a clean checkout." Do not use any title or task from legacy files.'
 }
 
 case "$ITERATIONS" in
@@ -642,7 +645,7 @@ run_config() {
 		last_iteration="$ITERATIONS"
 	fi
 	for i in $(seq "$start_iteration" "$last_iteration"); do
-		local scratch log exec_codex_home before after code start_ns end_ns started_at wall before_tickets tickets execs turns tokens transcript_bytes semantic outcome
+		local scratch log exec_codex_home before mid after code first_code start_ns end_ns started_at wall before_tickets mid_tickets tickets execs turns tokens transcript_bytes semantic outcome
 		local -a session_config_args
 		scratch="$RUN_DIR/projects/${scenario}-${name}-${i}"
 		rm -rf "$scratch"
@@ -654,21 +657,39 @@ run_config() {
 		session_config_args=("${CODEX_CONFIG_ARGS[@]}" -c "shell_environment_policy.set.PATH=\"$bin_dir:$CODEX_HOST_PATH\"")
 		before="$LOG_DIR/${scenario}-${name}-${i}.before.json"
 		PATH="$bin_dir:$PATH" "$BIN" show --json --store "$scratch/.missis-store/missis.db" >"$before"
+		before_tickets="$(jq '.tickets | length' "$before" 2>/dev/null || echo 0)"
 		started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		start_ns="$(date +%s%N)"
 		code=0
-		CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec \
-			"${CODEX_RUN_ARGS_ARRAY[@]}" "${session_config_args[@]}" --skip-git-repo-check --ephemeral -C "$scratch" \
-			"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>&1 || code=$?
+		mid_tickets="$before_tickets"
+		if [ "$scenario" = "followup-title" ]; then
+			mid="$LOG_DIR/${scenario}-${name}-${i}.mid.json"
+			first_code=0
+			CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec \
+				"${CODEX_RUN_ARGS_ARRAY[@]}" "${session_config_args[@]}" --skip-git-repo-check -C "$scratch" \
+				"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>&1 || first_code=$?
+			PATH="$bin_dir:$PATH" "$BIN" show --json --store "$scratch/.missis-store/missis.db" >"$mid" 2>/dev/null || true
+			mid_tickets="$(jq '.tickets | length' "$mid" 2>/dev/null || echo 0)"
+			if [ "$first_code" -ne 0 ]; then
+				code="$first_code"
+			else
+				CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec resume --last --all \
+					"${session_config_args[@]}" --skip-git-repo-check \
+					"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$(followup_prompt)" >>"$log" 2>&1 || code=$?
+			fi
+		else
+			CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec \
+				"${CODEX_RUN_ARGS_ARRAY[@]}" "${session_config_args[@]}" --skip-git-repo-check --ephemeral -C "$scratch" \
+				"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>&1 || code=$?
+		fi
 		end_ns="$(date +%s%N)"
 		wall="$(awk "BEGIN { printf \"%.1f\", ($end_ns - $start_ns) / 1000000000 }")"
 		after="$LOG_DIR/${scenario}-${name}-${i}.after.json"
 		PATH="$bin_dir:$PATH" "$BIN" show --json --store "$scratch/.missis-store/missis.db" >"$after" 2>/dev/null || true
-		before_tickets="$(jq '.tickets | length' "$before" 2>/dev/null || echo 0)"
 		tickets="$(jq '.tickets | length' "$after" 2>/dev/null || echo 0)"
 		execs="$(grep -c '^exec$' "$log" || true)"
 		turns="$(grep -c '^codex$' "$log" || true)"
-		tokens="$(awk '/^tokens used$/{getline; gsub(/,/, "", $0); if ($0 ~ /^[0-9]+$/) print $0}' "$log" | tail -1)"
+		tokens="$(awk '/^tokens used$/{getline; gsub(/,/, "", $0); if ($0 ~ /^[0-9]+$/) { total += $0; found=1 }} END { if (found) print total }' "$log")"
 		tokens="${tokens:-unknown}"
 		transcript_bytes="$(wc -c <"$log" | tr -d ' ')"
 		semantic="fail"
@@ -685,7 +706,7 @@ run_config() {
 				IFS=';' read -r expected_title expected_notes expected_done_when <<<"$expected_value"
 				matches="$(jq --arg title "$expected_title" '[.tickets[] | select(.title == $title)] | length' "$after" 2>/dev/null || echo 0)"
 				part_state="$(jq -r --arg title "$expected_title" --arg notes "$expected_notes" --arg done_when "$expected_done_when" '[.tickets[] | select(.title == $title and .status == "doing" and .parts.notes.value == $notes and (.parts["done-when"].value // "") == $done_when)] | length' "$after" 2>/dev/null || echo 0)"
-				if [ "$matches" -eq 1 ] && [ "$part_state" -eq 1 ] && [ "$tickets" -gt "$before_tickets" ]; then semantic="pass"; fi
+				if [ "$matches" -eq 1 ] && [ "$part_state" -eq 1 ] && [ "$tickets" -gt "$before_tickets" ] && [ "$mid_tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
 				;;
 			blocked)
 				if [ "$tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
