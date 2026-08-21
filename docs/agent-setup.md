@@ -1,14 +1,20 @@
-# URL-first Missis setup for a new project
+# Local-first Missis setup for a new project
 
-You are setting up Missis in the current project directory. Read this guide
-from the supplied GitHub URL, then follow the required steps in order. Do not
-assume that the current project is a checkout of the Missis repository.
+You are setting up Missis in the current project directory. This guide is
+self-contained: read the local copy when the Missis checkout is available.
+Do not perform a web search to discover the setup or ticket workflow. A remote
+copy is only an optional fallback when the operator explicitly supplies one.
+Do not assume that the current project is a checkout of the Missis repository.
 
 This is a project bootstrap guide. It is not a ticket, and it does not create
 a sample ticket. After setup, the agent can continue using the project's own
 context and Missis tickets.
 
-## URL and reproducibility
+## Published references and reproducibility (optional)
+
+Do not search for or open these links during ordinary local setup. They are
+provided only when an operator explicitly chooses a remote copy or a
+published installation ref.
 
 The human-readable form is:
 
@@ -31,13 +37,13 @@ published as a Go module version.
 
 Required:
 
-- Access to GitHub or another way to read this guide and download the Missis
-  module.
+- Either a local Missis checkout or an explicit published module/ref to install.
 - A shell or terminal running in the project that should receive Missis.
 - Permission to write the current project directory and create its local
   Missis metadata and store.
 - Go 1.26 or newer for the published-module installation path below.
-- Network access for the first Go module download.
+- Network access is needed only for the published-module installation path; a
+  local checkout can be used without web search.
 
 The target project may be empty, may already contain source code, or may
 already have Missis initialized. The setup must inspect that state and must
@@ -61,6 +67,12 @@ The required setup must:
 - Preserve an existing marker, store, context file, active pointer, and ticket
   data.
 - Verify the installed binary, store health, project context, and agent brief.
+- Preflight explicit project/group IDs before creating them, and use a stable
+  idempotency key for every logical create or mutation.
+- Treat groups as link scopes, not ticket tags, and verify the returned ticket
+  ref plus project/group views before reporting success.
+- Do not use web search for this local workflow unless the operator explicitly
+  asks for external research.
 - Avoid secrets, hidden conversation state, machine-specific absolute paths,
   destructive cleanup, and automatic edits to unrelated project instructions.
 
@@ -75,15 +87,30 @@ return to the target project for initialization:
 
 ```bash
 export MISSIS_REF=v0.2.0
-go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
-go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
-export PATH="$(go env GOPATH)/bin:$PATH"
+export MISSIS_BIN_DIR="$HOME/go/bin"
+mkdir -p "$MISSIS_BIN_DIR"
+export PATH="$MISSIS_BIN_DIR:$PATH"
+GOBIN="$MISSIS_BIN_DIR" go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
+GOBIN="$MISSIS_BIN_DIR" go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
 
 command -v missis
 command -v missis-tools
+file "$MISSIS_BIN_DIR/missis" "$MISSIS_BIN_DIR/missis-tools"
 missis --version
 missis-tools --help
 ```
+
+The explicit `MISSIS_BIN_DIR` is intentional. Go installs into `GOBIN` when
+that variable is set, and mise can set `GOBIN` to a tool-managed directory
+that is not on `PATH`. A successful `go install` is not sufficient; the
+commands above verify that the shell resolves the newly installed binaries.
+
+When this setup runs inside WSL, use the Linux binaries without `.exe`. WSL
+normally imports the Windows user `PATH`, so Windows Missis directories may be
+visible under `/mnt/c/...`; they must not be used for a project and store under
+`/home/...`. Keep the binary, project filesystem, and SQLite store in one OS
+environment. Use backup/remote synchronization to move logical ticket data
+between Windows and WSL rather than opening one live SQLite file from both.
 
 Confirm the current directory is the intended target, then initialize it:
 
@@ -118,6 +145,46 @@ missis --ag-brief
 echo "active pointer: $active_pointer"
 ```
 
+## First project, group, and ticket
+
+Project and group IDs are canonical. Check each requested ID before creating
+it. If a create command times out or its output is lost, repeat it with the
+same idempotency key; do not issue a fresh create command.
+
+```bash
+if ! missis show project:proj --json >/dev/null 2>&1; then
+  missis new --kind project --id proj "Project title" \
+    --idempotency-key setup-project-proj --json
+fi
+
+if ! missis show group:kb --json >/dev/null 2>&1; then
+  missis new --kind group --id kb "Knowledge base" \
+    --idempotency-key setup-group-kb --json
+fi
+
+ticket=$(missis new --project proj "google analytics 4 has no views" \
+  --idempotency-key first-ticket-ga4 --json)
+ref=$(printf '%s' "$ticket" | sed -n 's/.*"ref":"\([^"]*\)".*/\1/p')
+missis set group:kb/links --add "contains:$ref" \
+  --idempotency-key first-ticket-ga4-group --json
+missis show --project proj --group kb --json
+```
+
+The `--project` option sets the ticket's home project. A group is assigned by
+the `group:<id>/links` `contains` relation; scope-shaped tags such as
+`--tag group:<id>` are rejected and cannot create group membership. If the
+exact project or group already exists, preserve it and continue rather than
+creating a new ID.
+
+The repository also has a hermetic black-box proof for this sequence. It uses
+a fresh temporary store, performs the preflight, retries every create/link
+operation with the same keys, and asserts exactly one project, group, and
+ticket in the final scoped views. Run it from this checkout with:
+
+```bash
+go test -v ./testsuite/blackbox -run '^TestAgentFacingHermeticScopedOnboarding$' -count=1
+```
+
 For a fresh project, expect an `initialized` JSON status, the marker and local
 database paths above, generated context metadata, a successful health check,
 project context output, and the agent-facing command brief. For an existing
@@ -146,16 +213,26 @@ For Windows PowerShell, use the corresponding commands:
 
 ```powershell
 $env:MISSIS_REF = "v0.2.0"
+$env:MISSIS_BIN_DIR = "$env:LOCALAPPDATA\MissisTools\bin"
+New-Item -ItemType Directory -Force $env:MISSIS_BIN_DIR | Out-Null
+$env:Path = "$env:MISSIS_BIN_DIR;$env:Path"
+$env:GOBIN = $env:MISSIS_BIN_DIR
 go install "github.com/ravinsharma7/missis/cmd/missis@$env:MISSIS_REF"
 go install "github.com/ravinsharma7/missis/tools/missis-tools@$env:MISSIS_REF"
-$env:Path = "$(go env GOPATH)\bin;$env:Path"
 
 Get-Command missis
 Get-Command missis-tools
+Format-Hex -Path "$env:MISSIS_BIN_DIR\missis.exe" -Count 2
+Format-Hex -Path "$env:MISSIS_BIN_DIR\missis-tools.exe" -Count 2
 missis --version
 missis-tools --help
 Get-Location
 ```
+
+Run the PowerShell block in native Windows PowerShell or Windows Terminal,
+from a project on a native Windows path such as `C:\Projects\example`.
+Do not run the Windows block from WSL and do not use `missis-tools.exe` for a
+project stored under `/home/...`.
 
 Initialize only when the current project does not already contain a `.missis`
 marker:
@@ -216,6 +293,10 @@ go = "1.26"
 "go:github.com/ravinsharma7/missis/cmd/missis" = "v0.2.0"
 "go:github.com/ravinsharma7/missis/tools/missis-tools" = "v0.2.0"
 ```
+
+After `mise install`, verify both commands in the active shell. If the Go
+tool plugin sets `GOBIN`, it must also expose that directory on `PATH`; the
+explicit installer above is the fallback when it does not.
 
 ## Optional agent integrations
 

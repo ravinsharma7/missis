@@ -7,6 +7,11 @@ the ticket-filter picker and help view leave it inert. The in-app cheatsheet is
 generated from the same key map as the bottom help bar, so it cannot drift from
 the actual bindings. This document is the human-readable equivalent.
 
+To select a store explicitly, use `missis-tools tui --store
+/path/to/project/.missis-store/missis.db`. Use the Linux binary inside WSL and
+the Windows `.exe` only from native Windows terminals. Do not open one SQLite
+store concurrently across the WSL and Windows boundary.
+
 ## Global keys
 
 | Key | Action |

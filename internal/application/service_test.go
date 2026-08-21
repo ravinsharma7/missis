@@ -3,8 +3,10 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +99,24 @@ func TestDiagnosticsFileClosesWithService(t *testing.T) {
 	}
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenPathErrorIncludesStoreContext(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "store-directory")
+	if err := os.Mkdir(storePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := OpenPath(storePath)
+	if err == nil {
+		t.Fatal("expected opening a directory as a store to fail")
+	}
+	message := err.Error()
+	for _, want := range []string{"open missis store", fmt.Sprintf("%q", storePath), "discovery=flag", "runtime="} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("error %q missing %q", message, want)
+		}
 	}
 }
 

@@ -75,6 +75,28 @@ func TestInitSchedulesRefresh(t *testing.T) {
 	}
 }
 
+func TestParseRunArgsSupportsExplicitStoreAndSmokeOptions(t *testing.T) {
+	got, err := parseRunArgs([]string{
+		"--store", "/tmp/project/.missis-store/missis.db",
+		"--smoke",
+		"--view", "detail",
+		"--kind", "projects",
+		"--input", "draft",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.storePath != "/tmp/project/.missis-store/missis.db" || !got.smoke || got.view != "detail" || got.kind != "projects" || got.input != "draft" {
+		t.Fatalf("parsed options = %+v", got)
+	}
+}
+
+func TestParseRunArgsRejectsMissingStorePath(t *testing.T) {
+	if _, err := parseRunArgs([]string{"--store"}); err == nil || !strings.Contains(err.Error(), "--store requires a path") {
+		t.Fatalf("error = %v, want missing --store path", err)
+	}
+}
+
 func TestViewDetailResizeDoesNotPanic(t *testing.T) {
 	m := tuiModel{
 		view:   "detail",

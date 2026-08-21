@@ -3,9 +3,11 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -37,7 +39,7 @@ func Open(storeFlag string) (*Service, error) {
 func OpenWithClock(storeFlag string, clock missis.Clock) (*Service, error) {
 	resolved, err := missis.ResolveStore(storeFlag)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve missis store runtime=%s: %w", runtime.GOOS, err)
 	}
 	return openResolved(resolved, clock)
 }
@@ -67,7 +69,7 @@ func openResolved(resolved missis.ResolvedStore, clock missis.Clock) (*Service, 
 		if diagCloser != nil {
 			_ = diagCloser.Close()
 		}
-		return nil, err
+		return nil, fmt.Errorf("open missis store path=%q discovery=%s runtime=%s: %w", resolved.Path, resolved.Source, runtime.GOOS, err)
 	}
 	return &Service{
 		store:      s,

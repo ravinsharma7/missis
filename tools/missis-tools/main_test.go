@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -144,5 +146,28 @@ func TestRunTUISmoke(t *testing.T) {
 	code := run([]string{"tui", "--smoke"}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 || !strings.Contains(stdout.String(), "missis / tickets") || stderr.Len() != 0 {
 		t.Fatalf("tui smoke: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestTUIExplicitStoreAndOpenDiagnostics(t *testing.T) {
+	storePath := newTestStore(t)
+	envPath := filepath.Join(t.TempDir(), "env-store.db")
+	t.Setenv("MISSIS_STORE", envPath)
+
+	code, stdout, stderr := runCommand(t, "tui", "--store", storePath, "--smoke")
+	if code != 0 || !strings.Contains(stdout, "missis / tickets") || stderr != "" {
+		t.Fatalf("explicit store smoke: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("explicit --store should outrank MISSIS_STORE; env path stat error=%v", err)
+	}
+
+	badPath := filepath.Join(t.TempDir(), "store-directory")
+	if err := os.Mkdir(badPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = runCommand(t, "tui", "--store", badPath, "--smoke")
+	if code != 1 || !strings.Contains(stderr, "open missis store") || !strings.Contains(stderr, fmt.Sprintf("%q", badPath)) || !strings.Contains(stderr, "discovery=flag") || !strings.Contains(stderr, "runtime="+runtime.GOOS) || !strings.Contains(stderr, "hint:") || !strings.Contains(stderr, "missis-tools") {
+		t.Fatalf("diagnostic open failure: code=%d stderr=%q", code, stderr)
 	}
 }

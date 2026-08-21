@@ -30,6 +30,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes shellcheck
           shellcheck scripts/*.sh testsuite/scripts/*.sh testsuite/benchmarks/*.sh
+      - name: POSIX installer harness
+        run: bash testsuite/scripts/test-install.sh
       - name: test
         run: go test -count=1 ./...
       - name: consolidated tools build
@@ -86,6 +88,29 @@ jobs:
         run: go run ./tools/coverage --registry specs/requirements-registry.v3.json
       - name: consolidated tools build
         run: go build ./tools/missis-tools
+      - name: PowerShell installer syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$pwd\scripts\install.ps1",
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+          Write-Host "PowerShell installer syntax passed"
+      - name: PowerShell installer smoke
+        shell: pwsh
+        run: |
+          $bin = Join-Path $env:RUNNER_TEMP "missis-install-bin"
+          New-Item -ItemType Directory -Force $bin | Out-Null
+          $env:Path = "$bin;$env:Path"
+          & .\scripts\install.ps1 -Ref v0.2.0 -BinDir $bin
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: TUI smoke
         run: go test -count=1 -run '^TestRunTUISmoke$' -v ./tools/missis-tools
       - name: store diagnostic summary
