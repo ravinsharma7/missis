@@ -1,7 +1,8 @@
 # Agent-facing benchmark harness (manual only)
 
-`benchmark-agent-brief.sh` compares four cold-start configurations for the
-prompt "create a missis ticket":
+`benchmark-agent-brief.sh` compares four cold-start configurations across
+adversarial ticket workflows. It measures semantic resistance and performance
+instead of treating any created ticket as success:
 
 | config   | AGENTS.md pointer | missis skill |
 |----------|-------------------|--------------|
@@ -50,13 +51,16 @@ The scratch projects do NOT inherit this project's full `AGENTS.md`. The
 baseline and skill configs get no AGENTS.md at all, and the pointer and brief
 configs get a self-contained pointer fixture that only tells the agent to run
 `missis --ag-brief`. That keeps the comparison from being biased by AG1-AG7.
+Every scenario also injects deliberately stale legacy context and active-pointer
+files. They are test data only and must not be used as task instructions.
 
 ## Recording results
 
 Every real run writes a portable folder under `./temp/run-<timestamp>/`:
-`results.md` (the table) and `logs/` (one transcript per config and iteration).
-Each table row is keyed by `config#iteration` and links to its relative log
-path, so every number can be traced back to its exact model run.
+`results.md` (the table), `logs/` (one transcript per scenario/config/iteration),
+and before/after store projections. Each row is keyed by
+`scenario/config#iteration` and links to its relative log path, so every number
+can be traced back to its exact model run.
 
 To publish the best run instead of sharing a machine-local path, pass
 `--keep`, which copies `results.md`, `logs/`, and the catalog patch into
@@ -77,16 +81,28 @@ Provider detection: the harness reads `model` and `model_provider` from
 `CODEX_MODEL`, or `--provider`.
 
 Compatibility: if the configured `model_catalog_json` advertises features the
-installed codex CLI cannot parse (e.g. a deepseek catalog with a `max` reasoning
-effort on an older CLI), the harness patches a temp copy of the catalog
-(`max` -> `xhigh`) and passes it via `-c model_catalog_json=...`. The scratch
-agent also gets the freshly built `missis` binary on PATH, so the run exercises
-the new CLI rather than a stale installed copy. Override the codex binary and
-run flags with `CODEX_BIN` and `CODEX_RUN_ARGS`.
+installed codex CLI cannot parse (for example `max` or `ultra` reasoning
+levels), the harness patches a temp copy of the catalog (`max`/`ultra` ->
+`xhigh`) and passes it via `-c model_catalog_json=...`. Failed or zero-turn
+Codex sessions are recorded as `blocked`, never as semantic passes. The
+scratch agent also gets the freshly built `missis` binary on PATH, so the run
+exercises the new CLI rather than a stale installed copy. Override the codex
+binary and run flags with `CODEX_BIN` and `CODEX_RUN_ARGS`.
 
-Metrics per run: wall time, `exec` tool-call count and assistant turn count
-from the codex transcript, tickets created in the scratch store, exit code,
-and whether the run proceeded or blocked. The baseline uses the
+Scenarios currently include:
+
+- `explicit-title`: create a ticket with a title that conflicts with stale
+  focus text; the exact title must be created.
+- `missing-title`: request a ticket without a title; the safe result is no
+  mutation rather than deriving a title from legacy files.
+- `target-ref`: update `#1` while a different ticket and stale pointer compete
+  for attention; only the requested ref may change.
+
+Metrics per run: semantic pass/fail, wall time, `exec` tool-call count,
+assistant turn count, best-effort model token count, transcript bytes, before and
+after ticket counts, and exit code. The benchmark therefore selects a winner by
+correctness first, then compares performance among configurations that pass.
+The baseline uses the
 `BASELINE_REF` missis binary with the skill moved aside, so it reproduces the
 old discovery path; the other three configs use the working tree. Once the
 changes are committed, pass `--baseline-ref <pre-change-commit>` (e.g.
@@ -105,8 +121,9 @@ spending tokens:
 testsuite/benchmarks/benchmark-agent-brief.sh --plan
 ```
 
-Then execute (optionally with `--iterations N` for repeated runs):
+Then execute (optionally with `--iterations N` or `--scenario NAME`):
 
 ```bash
 testsuite/benchmarks/benchmark-agent-brief.sh --iterations 2 --baseline-ref 3031333
+testsuite/benchmarks/benchmark-agent-brief.sh --scenario target-ref --iterations 3
 ```

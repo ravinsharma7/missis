@@ -1,9 +1,10 @@
 # Schema declarations — separating data from meaning
 
 **Status:** working subspec draft, rev 2 (2026-08-19). Transient, not merged,
-not normative. Merge into the main spec only after hardening (see
-`## Merge checklist`); the repo convention is to delete the subspec file once
-merged.
+not normative, and never an agent bootstrap source. Keep it only while the
+merge decision remains open; merge into the main spec after hardening (see
+`## Merge checklist`), then delete this file. If the design is rejected or
+duplicated by the canonical spec, delete it after recording that decision.
 
 **Proposed insertion (deferred):** `specs/missues-issue-specification.v2.md`,
 new subsection `## 12.11 Declared value kinds and schema parts`, immediately

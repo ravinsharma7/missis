@@ -1,5 +1,9 @@
 # Provenance-First Temporal Issue Kernel
 
+> Historical specification only. This file is retained for comparison and
+> migration work; it is not active implementation or agent guidance. Use the
+> v2 specification and the Phase 1 requirements for the current contract.
+
 ## Unified specification for a three-command, agent-friendly and human-friendly issue system
 
 **Status:** Design specification  

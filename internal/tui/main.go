@@ -205,21 +205,6 @@ func newModel(storePath string) (*tuiModel, error) {
 	}
 	client := missis.NewClient(svc)
 	projectValues, groupValues := []string(nil), []string(nil)
-	activePath := filepath.Join(".missis.d", "active.local.md")
-	if _, statErr := os.Stat(activePath); statErr != nil {
-		activePath = filepath.Join(".missis.d", "active.example.md")
-	}
-	if data, readErr := os.ReadFile(activePath); readErr == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "project:") {
-				projectValues = append(projectValues, strings.TrimSpace(strings.TrimPrefix(line, "project:")))
-			}
-			if strings.HasPrefix(line, "group:") {
-				groupValues = append(groupValues, strings.TrimSpace(strings.TrimPrefix(line, "group:")))
-			}
-		}
-	}
 	if env := os.Getenv("MISSIS_PROJECT"); env != "" {
 		projectValues = []string{env}
 	}
@@ -3531,7 +3516,10 @@ func valueText(value any) string {
 }
 
 func exportTicket(client *missis.Client, summary missis.TicketSummary) (string, error) {
-	dir := filepath.Join(".", ".missis.d", "exports")
+	dir := os.Getenv("MISSIS_EXPORT_DIR")
+	if dir == "" {
+		dir = filepath.Join(filepath.Dir(client.StorePath()), "exports")
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

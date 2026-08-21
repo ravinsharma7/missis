@@ -47,6 +47,13 @@ func TestShowTrailingFlagsAfterRef(t *testing.T) {
 	if !strings.Contains(markdownResult.stdout, "# Trailing flags") {
 		t.Fatalf("trailing --format markdown not honored:\n%s", markdownResult.stdout)
 	}
+	bareMarkdown := runMissis(t, store, "show", strings.TrimPrefix(ref, "#"), "--format", "markdown")
+	if bareMarkdown.code != 0 {
+		t.Fatalf("show bare %s --format markdown failed: %d %s", ref, bareMarkdown.code, bareMarkdown.stderr)
+	}
+	if !strings.Contains(bareMarkdown.stdout, "# Trailing flags") {
+		t.Fatalf("bare --format markdown not honored:\n%s", bareMarkdown.stdout)
+	}
 }
 
 func TestShowUnknownFlagsRejected(t *testing.T) {

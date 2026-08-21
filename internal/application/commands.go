@@ -1566,7 +1566,21 @@ func (s *Service) resolveAnyRef(ctx context.Context, ref string, effectiveAt tim
 		}
 		return model.Ref{Kind: model.KindPart, Entity: string(partID), Path: path}, nil
 	}
-	return model.Ref{}, notFound("unsupported reference: %s", ref)
+	// Bare ticket numbers and canonical ticket IDs are accepted everywhere a
+	// ticket reference is accepted. This keeps JSON and Markdown rendering
+	// consistent with the shell-safe guidance (`missis show 55`).
+	ticket, path, err := s.resolveTicketRef(ctx, ref, effectiveAt)
+	if err != nil {
+		return model.Ref{}, err
+	}
+	if len(path) == 0 {
+		return model.Ref{Kind: model.KindTicket, Entity: string(ticket)}, nil
+	}
+	_, partID, _, err := s.resolvePartRef(ctx, ref, effectiveAt)
+	if err != nil {
+		return model.Ref{}, err
+	}
+	return model.Ref{Kind: model.KindPart, Entity: string(partID), Path: path}, nil
 }
 
 func parseActor(value string) model.ActorRef {

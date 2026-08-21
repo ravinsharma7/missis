@@ -121,7 +121,7 @@ else
   missis --init --json
 fi
 
-# Verify the store and project context before ticket work.
+# Verify the store and optional project/group scope before ticket work.
 missis show --health
 missis show --context
 missis --ag-brief
@@ -136,7 +136,7 @@ fi
 
 # First ticket and everyday workflow
 missis new "First ticket" --idempotency-key first-ticket --json
-missis show 1 --format markdown
+missis show '#1' --format markdown
 missis set 1/status doing
 missis set '#1/notes' "some context"
 
@@ -217,7 +217,7 @@ store path to replace an existing project store.
 
 ```text
 .missis                       marker pointing to the local SQLite store
-.missis.d/                    committed project metadata and manifests
+.missis.d/                    committed project metadata
 .missis-store/                ignored local SQLite database
 internal/                     model, store, and application packages
 pkg/missis/                   reusable Go SDK facade
@@ -249,7 +249,6 @@ Store discovery order:
 Committed metadata paths are configurable:
 
 ```bash
-MISSIS_MANIFEST_PATH
 MISSIS_SHOULD_BACKLOG_PATH
 MISSIS_PHASE1_REQUIREMENTS_PATH
 ```
@@ -280,7 +279,9 @@ missis-tools remote download <destination>
 never repairs in place: accepted events are immutable, so recovery from gaps means
 restoring a backup or creating a new store.
 
-Backup and remote scripts live in `scripts/`.
+Backup and remote scripts live in `scripts/`. They compute manifests directly
+from the live store; no committed manifest snapshot is required. Set
+`MISSIS_BACKUP_DIR` to choose a backup directory for the convenience scripts.
 
 Install reusable tools globally:
 

@@ -4,6 +4,7 @@
 backups/
 .env.local
 .missis.d/exports/
+.missis.d/manifest.json
 .missis.d/active.local.md
 /temp/
 testsuite/benchmarks/results/

@@ -35,6 +35,7 @@ func TestAgentSetupGuideContract(t *testing.T) {
 		"missis show --health",
 		"missis show --context",
 		"missis --ag-brief",
+		"Do not create or require `.missis.d/context.md` or an active ticket pointer",
 		"already initialized",
 		"Never use destructive cleanup",
 		"Recommended agent handoff",
@@ -70,11 +71,12 @@ func TestExternalProjectAgentHandoffContract(t *testing.T) {
 		"This project uses Missis as its local ticket system",
 		".missis",
 		"AGENTS.md",
-		".missis.d/context.md",
 		"missis --ag-brief",
 		"missis show --context",
-		"If `missis` is unavailable",
-		"parallel ticket workflow",
+		"MISSIS_PROJECT",
+		"task direction",
+		"unavailable, report the setup problem",
+		"parallel ticket",
 	} {
 		if !strings.Contains(pointer, want) {
 			t.Errorf("--ag-pointer missing %q:\n%s", want, pointer)
@@ -113,12 +115,20 @@ func TestAgentSetupFreshAndRepeat(t *testing.T) {
 	paths := []string{
 		".missis",
 		filepath.Join(".missis-store", "missis.db"),
-		filepath.Join(".missis.d", "context.md"),
-		filepath.Join(".missis.d", "active.example.md"),
 	}
 	for _, path := range paths {
 		if _, err := os.Stat(filepath.Join(project, path)); err != nil {
 			t.Fatalf("setup artifact %s missing: %v", path, err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(".missis.d", "context.md"),
+		filepath.Join(".missis.d", "active.example.md"),
+	} {
+		if _, err := os.Stat(filepath.Join(project, path)); err == nil {
+			t.Fatalf("legacy agent artifact %s was generated", path)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("check legacy agent artifact %s: %v", path, err)
 		}
 	}
 
@@ -133,6 +143,9 @@ func TestAgentSetupFreshAndRepeat(t *testing.T) {
 		}
 	}
 
+	if err := os.MkdirAll(filepath.Join(project, ".missis.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	contextPath := filepath.Join(project, ".missis.d", "context.md")
 	activePath := filepath.Join(project, ".missis.d", "active.example.md")
 	if err := os.WriteFile(contextPath, []byte("project-owned context\n"), 0o644); err != nil {

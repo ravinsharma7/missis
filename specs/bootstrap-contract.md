@@ -1,5 +1,9 @@
 # Phase 1 bootstrap contract
 
+> Temporary implementation contract. This file is not a general agent
+> bootstrap guide and will be retired as its rules land in the canonical v2
+> specification.
+
 This document is temporary. It pins the first runnable contract for the Phase
 1 implementation and testsuite. Stabilized rules will be back-ported into
 `specs/missues-issue-specification.v2.md`, after which this document and the

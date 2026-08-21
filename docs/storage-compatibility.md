@@ -70,8 +70,11 @@ A single SQLite database file, holding:
 - `missis-tools backup` writes a consistent copy.
 - `missis-tools remote upload/download` uses content-addressed keys
   (`<store_id>/<head_hash>.db`), and download verifies store identity, head
-  hash, schema version, and event count against the local manifest.
-- `tools/verify-restore.sh` verifies a local backup the same way.
+  hash, schema version, and event count against a manifest computed from the
+  live local store.
+- `scripts/verify-restore.sh` verifies a local backup against the live local
+  store; pass an explicit backup path or let it derive the current
+  content-addressed path.
 
 ## Relation vocabulary
 

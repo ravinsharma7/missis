@@ -5,13 +5,13 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 store_path="${MISSIS_STORE:-.missis-store/missis.db}"
-manifest_path="${MISSIS_MANIFEST_PATH:-.missis.d/manifest.json}"
-manifest="$(MISSIS_STORE="$store_path" MISSIS_MANIFEST_PATH="$manifest_path" bash "$root/scripts/write-store-manifest.sh" >/dev/null; cat "$manifest_path")"
+backup_dir="${MISSIS_BACKUP_DIR:-backups}"
+manifest="$(MISSIS_STORE="$store_path" go run ./tools/missis-tools manifest)"
 store_id="$(printf '%s' "$manifest" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"
 head_hash="$(printf '%s' "$manifest" | sed -n 's/.*"head_hash": "\([^"]*\)".*/\1/p')"
-mkdir -p backups
+mkdir -p "$backup_dir"
 backup_name="${store_id//:/_}-${head_hash}.db"
-dst="backups/$backup_name"
+dst="$backup_dir/$backup_name"
 
 if [ -f "$dst" ]; then
   echo "backup already exists: $dst (identical head is safe to skip)"

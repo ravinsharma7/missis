@@ -3,12 +3,19 @@
 ## Unified specification for a three-command, agent-friendly and human-friendly issue system
 
 **Status:** Design specification  
-**Primary interface:** `issue new`, `issue show`, `issue set`  
+**Primary interface:** `missis new`, `missis show`, `missis set`
 **Primary storage model:** immutable event ledger  
 **Primary content unit:** recursive addressable part  
 **Primary connection unit:** typed link  
 **Primary semantic layer:** versioned ontology  
-**Primary extension mechanism:** provenance-bearing processors and hooks  
+**Primary extension mechanism:** provenance-bearing processors and hooks
+
+**Implementation status:** This document contains both the current three-command
+contract and aspirational future design. The currently implemented command
+surface is the output of `missis --ag-brief` and the Phase 1 requirements. Any
+flag or workflow not present there, including `--next`, `--blocked`,
+`--obligations`, `--verification`, and `--effects`, is aspirational and MUST
+NOT be used as current agent guidance until implemented and tested.
 **Revision:** 2026-08-15 — recursive part hierarchy and temporal containment made explicit
 
 ---
@@ -37,20 +44,20 @@ The public command vocabulary is deliberately limited to three domain verbs,
 plus a small allowlist of global operational flags:
 
 ```text
-issue new
-issue show
-issue set
+missis new
+missis show
+missis set
 ```
 
 Global operational flags:
 
 ```text
-issue --version
-issue --help
-issue --self-update-check
-issue --self-update
-issue --init
-issue --start
+missis --version
+missis --help
+missis --self-update-check
+missis --self-update
+missis --init
+missis --start
 ```
 
 The internal design is based on three lower-level primitives:
@@ -258,9 +265,9 @@ These are not equivalent.
 ## 5.1 Commands
 
 ```text
-issue new
-issue show
-issue set
+missis new
+missis show
+missis set
 ```
 
 The implementation MUST NOT require separate top-level subcommands such as:
@@ -276,10 +283,10 @@ Those behaviors are forms of `show` or `set`.
 The binary MAY accept a small allowlist of global flags before a domain verb:
 
 ```text
-issue --version
-issue --help
-issue --self-update-check
-issue --self-update
+missis --version
+missis --help
+missis --self-update-check
+missis --self-update
 ```
 
 Global flags are process-level maintenance or inspection operations. They do
@@ -289,14 +296,14 @@ general ticket operations.
 The allowlist MAY grow only for additional process-level maintenance or
 inspection flags. It MUST NOT grow for flags that introduce a new command
 subpath, mutate ticket state, or start a domain workflow. Those behaviors MUST
-still be expressed through `issue new`, `issue show`, or `issue set`.
+still be expressed through `missis new`, `missis show`, or `missis set`.
 
 ## 5.2 General command grammar
 
 ```text
-issue new  [title] [input-options] [metadata-options]
-issue show [reference] [view-options] [query-options] [format-options]
-issue set  <reference> [value] [mutation-options] [provenance-options]
+missis new  [title] [input-options] [metadata-options]
+missis show [reference] [view-options] [query-options] [format-options]
+missis set  <reference> [value] [mutation-options] [provenance-options]
 ```
 
 All commands SHOULD support:
@@ -310,27 +317,51 @@ All commands SHOULD support:
 
 The system MUST assign `recorded_at` itself. A caller MUST NOT be able to forge transaction time through the normal interface.
 
+### 5.2.1 Reference forms
+
+Reference examples in this specification are suggestive, but every form MUST
+resolve to one unambiguous entity or part. The implementation and agent brief
+define the accepted spelling for the current release:
+
+```text
+#184                         human ticket alias; quote in a shell
+184                          shell-safe ticket alias
+ticket:01K...                canonical ticket identifier
+#184/problem                 ticket part by alias and path
+part:01K...                  canonical part identifier
+@e114                       event alias
+project:safedesign           canonical project identifier
+group:security               canonical group identifier
+```
+
+Bare ticket numbers and `#N` are equivalent for ticket operations. Canonical
+IDs and event aliases are distinct from human aliases; a caller MUST NOT
+silently reinterpret one kind as another.
+
 ## 5.3 No implicit current ticket
 
 This is invalid as the only protocol:
 
 ```text
-issue next
-issue claim
-issue finish
+missis next
+missis claim
+missis finish
 ```
 
 because the later commands may depend on hidden terminal state.
 
-The preferred agent flow carries the ticket ID explicitly:
+The current agent flow carries the ticket ID explicitly:
 
 ```bash
-issue show --next --json
-issue set 184/status doing
+missis show --status doing --json
+missis set 184/status doing
 # perform work
-issue set 184/evidence/test-run --from result.json
-issue set 184/status done
+missis set 184/evidence/test-run --from result.json
+missis set 184/status done
 ```
+
+An automatic selector such as `missis show --next --json` is aspirational. It
+must not be treated as an implemented replacement for an explicit reference.
 
 Invariant:
 
@@ -338,18 +369,18 @@ Invariant:
 Every invocation must be interpretable without prior terminal state.
 ```
 
-## 5.4 `issue new`
+## 5.4 `missis new`
 
 Create from a title:
 
 ```bash
-issue new "Fix retry race in worker pool"
+missis new "Fix retry race in worker pool"
 ```
 
 Create with metadata:
 
 ```bash
-issue new "Fix retry race" \
+missis new "Fix retry race" \
   --project safedesign \
   --type bug \
   --type concurrency-defect \
@@ -360,20 +391,20 @@ issue new "Fix retry race" \
 Create from Markdown:
 
 ```bash
-issue new --from bug.md
+missis new --from bug.md
 ```
 
 Create from standard input:
 
 ```bash
-cat bug.md | issue new --stdin
+cat bug.md | missis new --stdin
 ```
 
 Create another entity while preserving the same three-command vocabulary:
 
 ```bash
-issue new --kind project --id safedesign "SafeDesign"
-issue new --kind group --id engineering "Engineering"
+missis new --kind project --id safedesign "SafeDesign"
+missis new --kind group --id engineering "Engineering"
 ```
 
 Example human output:
@@ -398,12 +429,12 @@ Example JSON output:
 }
 ```
 
-## 5.5 `issue show`
+## 5.5 `missis show`
 
 With no reference, `show` presents the most useful current view:
 
 ```bash
-issue show
+missis show
 ```
 
 Example:
@@ -418,118 +449,118 @@ ID    STATUS       PRIORITY   TITLE
 Show a complete ticket:
 
 ```bash
-issue show 184
+missis show 184
 ```
 
 Show one part:
 
 ```bash
-issue show 184/hypothesis
+missis show 184/hypothesis
 ```
 
 Show one exact event:
 
 ```bash
-issue show @e114
+missis show @e114
 ```
 
 Filter or navigate:
 
 ```bash
-issue show --status open
-issue show --tag parser
-issue show --blocked
-issue show --next
-issue show --project safedesign
-issue show --group security
-issue show --type concurrency-defect
-issue show --search "retry race"
+missis show --status open
+missis show --tag parser
+missis show --blocked
+missis show --next
+missis show --project safedesign
+missis show --group security
+missis show --type concurrency-defect
+missis show --search "retry race"
 ```
 
 Temporal and provenance views:
 
 ```bash
-issue show 184 --history
-issue show 184 --at "2026-08-15T13:00:00+08:00"
-issue show 184 --effective-at "2026-08-15T13:00:00+08:00" \
+missis show 184 --history
+missis show 184 --at "2026-08-15T13:00:00+08:00"
+missis show 184 --effective-at "2026-08-15T13:00:00+08:00" \
                --known-at "2026-08-15T14:00:00+08:00"
-issue show 184 --since "2026-08-15T12:00:00+08:00"
-issue show 184 --between "13:00..13:15"
-issue show 184/status --why
-issue show 184 --effects
-issue show 184 --references
-issue show 184 --lineage
+missis show 184 --since "2026-08-15T12:00:00+08:00"
+missis show 184 --between "13:00..13:15"
+missis show 184/status --why
+missis show 184 --effects
+missis show 184 --references
+missis show 184 --lineage
 ```
 
 Search views:
 
 ```bash
-issue show --search "retry race" --project safedesign
-issue show --search "authentication" --group security
-issue show --search "race" --type concurrency-defect --since 7d
-issue show --search "retry" --at "2026-07-01"
-issue show --search "why was the worker changed" --lineage --explain
+missis show --search "retry race" --project safedesign
+missis show --search "authentication" --group security
+missis show --search "race" --type concurrency-defect --since 7d
+missis show --search "retry" --at "2026-07-01"
+missis show --search "why was the worker changed" --lineage --explain
 ```
 
-## 5.6 `issue set`
+## 5.6 `missis set`
 
 Set a scalar part:
 
 ```bash
-issue set 184/status doing
-issue set 184/priority high
-issue set 184/problem "Worker retries after shutdown."
+missis set 184/status doing
+missis set 184/priority high
+missis set 184/problem "Worker retries after shutdown."
 ```
 
 Set a nested or deeply nested part:
 
 ```bash
-issue set 184/evidence/race-test \
+missis set 184/evidence/race-test \
   "go test -race failed at iteration 417"
 
-issue set 184/evidence/race-test/run-417/stderr \
+missis set 184/evidence/race-test/run-417/stderr \
   "Retry was enqueued after context cancellation."
 ```
 
 Rename or move a part while preserving its canonical identity:
 
 ```bash
-issue set part:01K2MR7B8Q --name race-detector
-issue set part:01K2MR7B8Q --parent 184/verification
+missis set part:01K2MR7B8Q --name race-detector
+missis set part:01K2MR7B8Q --parent 184/verification
 ```
 
 Retract a complete subtree explicitly:
 
 ```bash
-issue set 184/evidence/race-test --retract --recursive \
+missis set 184/evidence/race-test --retract --recursive \
   --reason "Imported under the wrong ticket."
 ```
 
 Append instead of replace:
 
 ```bash
-issue set 184/notes --add "Observed on Linux arm64."
+missis set 184/notes --add "Observed on Linux arm64."
 ```
 
 Set a blocked state with a reason:
 
 ```bash
-issue set 184/status blocked \
+missis set 184/status blocked \
   --reason "Waiting for #171"
 ```
 
 Add a relationship:
 
 ```bash
-issue set 219/links --add blocked-by:#184
-issue set 220/links --add caused-by:#184
-issue set 221/links --add duplicates:#184
+missis set 219/links --add blocked-by:#184
+missis set 220/links --add caused-by:#184
+missis set 221/links --add duplicates:#184
 ```
 
 Add a code reference:
 
 ```bash
-issue set 184/code --add \
+missis set 184/code --add \
   --repo safedesign \
   --commit 9bd781a82b \
   --path internal/worker/retry.go \
@@ -539,7 +570,7 @@ issue set 184/code --add \
 Add a symbol reference:
 
 ```bash
-issue set 184/code --add \
+missis set 184/code --add \
   --repo safedesign \
   --commit 9bd781a82b \
   --path internal/worker/queue.go \
@@ -549,7 +580,7 @@ issue set 184/code --add \
 Add a Git range:
 
 ```bash
-issue set 184/git --add \
+missis set 184/git --add \
   --repo https://github.com/acme/safedesign.git \
   --range 813ac22..9bd781a
 ```
@@ -557,20 +588,20 @@ issue set 184/git --add \
 Import or merge Markdown into an existing ticket:
 
 ```bash
-issue set 184 --from investigation.md
+missis set 184 --from investigation.md
 ```
 
 Retract rather than delete:
 
 ```bash
-issue set 184/hypothesis --retract \
+missis set 184/hypothesis --retract \
   --reason "Contradicted by #184/evidence/test-7"
 ```
 
 Correct a prior exact event:
 
 ```bash
-issue set 184/hypothesis \
+missis set 184/hypothesis \
   "Cancellation happens after enqueue." \
   --supersedes @e100 \
   --because @e118
@@ -704,10 +735,10 @@ These names are conventions, not a mandatory closed schema. Arbitrary parts rema
 Example:
 
 ```bash
-issue set 184/experiment-1 \
+missis set 184/experiment-1 \
   "Run worker tests 1000 times with the race detector."
 
-issue set 184/result-1 \
+missis set 184/result-1 \
   "Failed on iteration 417."
 ```
 
@@ -735,17 +766,17 @@ evidence
 Incremental writes remain ordinary `set` operations:
 
 ```bash
-issue set 184/evidence/race-test/command \
+missis set 184/evidence/race-test/command \
   'go test -race ./internal/worker/...'
 
-issue set 184/evidence/race-test/run-417/result \
+missis set 184/evidence/race-test/run-417/result \
   'failed'
 
-issue set 184/evidence/race-test/run-417/stderr \
+missis set 184/evidence/race-test/run-417/stderr \
   'Retry was enqueued after context cancellation.'
 ```
 
-`issue show 184/evidence` returns the subtree without requiring a separate list or tree command.
+`missis show 184/evidence` returns the subtree without requiring a separate list or tree command.
 
 ## 6.5 Stable identity versus human-readable path
 
@@ -830,7 +861,7 @@ pathAt(part, t)
 This lets a historical view reconstruct the hierarchy that existed at a selected time:
 
 ```bash
-issue show 184 --at "2026-08-15 14:00"
+missis show 184 --at "2026-08-15 14:00"
 ```
 
 Containment changes MUST use events such as:
@@ -953,7 +984,7 @@ The system MUST NOT discard unrecognized headings, fields, or descendants merely
 Retracting a parent value MUST NOT silently destroy its children.
 
 ```bash
-issue set 184/evidence --retract
+missis set 184/evidence --retract
 ```
 
 By default, this retracts only the value stored directly on `#184/evidence`. Descendants remain current:
@@ -966,7 +997,7 @@ By default, this retracts only the value stored directly on `#184/evidence`. Des
 Removing or detaching an entire subtree must be explicit:
 
 ```bash
-issue set 184/evidence --retract --recursive
+missis set 184/evidence --retract --recursive
 ```
 
 Even a recursive removal MUST append retraction or containment events rather than erase history. A recursive request SHOULD be represented as one atomic event batch containing the affected identities and relations.
@@ -1323,13 +1354,13 @@ At 14:15 the relation is retracted.
 Therefore:
 
 ```bash
-issue show 219 --at 13:45
+missis show 219 --at 13:45
 ```
 
 may show the blocker, while:
 
 ```bash
-issue show 219 --at 15:00
+missis show 219 --at 15:00
 ```
 
 may not.
@@ -1387,7 +1418,7 @@ Lineage queries SHOULD support:
 Example:
 
 ```bash
-issue show #184/hypothesis --lineage \
+missis show '#184/hypothesis' --lineage \
   --direction both \
   --depth 4 \
   --relations derived-from,supports,contradicts,verified-by
@@ -1473,7 +1504,7 @@ The full guarantees and performance inventory lives in
 Command:
 
 ```bash
-issue set 184/status doing
+missis set 184/status doing
 ```
 
 creates an event similar to:
@@ -1578,7 +1609,7 @@ This permits evaluation of how claims evolved and prevents silent history rewrit
 Example:
 
 ```bash
-issue show 184 --between "13:00..13:15"
+missis show 184 --between "13:00..13:15"
 ```
 
 Possible output:
@@ -2030,7 +2061,7 @@ SecurityFinding(x)
     → Requires(x, IndependentReview)
 ```
 
-`issue show --next` may choose the highest-priority unsatisfied obligation.
+`missis show --next` may choose the highest-priority unsatisfied obligation.
 
 ## 12.5 Completion contracts
 
@@ -2055,7 +2086,7 @@ verification_requires_one_of:
 Attempt:
 
 ```bash
-issue set 184/status done
+missis set 184/status done
 ```
 
 may be rejected:
@@ -2763,14 +2794,17 @@ memberships must not make resolution nondeterministic (14.5, N081).
   SDK filter contract. The SDK exposes `CountTicketsFiltered` with the same
   semantics as listing.
 
-### 14.8.6 Context is client-side
+### 14.8.6 Context is client-side scope only
 
 Context is a client preference, not a model concept. `MISSIS_PROJECT` /
 `MISSIS_GROUP` act as default scope filters when no explicit `--project` /
 `--group` / `--unscoped` selector is given; explicit selectors override. The
 `--unscoped` selector cannot be combined with project or group selectors. A TUI
-may switch context explicitly in-session. The active pointer file is never
-written implicitly by the command surface. The core and SDK remain stateless.
+may switch scope explicitly in-session. Context MUST contain only optional
+project/group scope. It MUST NOT select a ticket, define an agent focus, derive
+a task, or supply instructions. Legacy context and active-pointer Markdown is
+not an authoritative input and is ignored by normal agent bootstrap. The core
+and SDK remain stateless.
 
 ### 14.8.7 Changes and retraction
 
@@ -2791,13 +2825,13 @@ written implicitly by the command surface. The core and SDK remain stateless.
 Humans may prefer one complete document:
 
 ```bash
-issue new --from bug.md
+missis new --from bug.md
 ```
 
 Agents may prefer small mutations:
 
 ```bash
-issue set 184/hypothesis "Cancellation occurs after enqueue."
+missis set 184/hypothesis "Cancellation occurs after enqueue."
 ```
 
 Both MUST produce the same internal concepts:
@@ -2870,10 +2904,10 @@ Default mapping:
 The same internal structure can be assembled incrementally:
 
 ```bash
-issue set 184/evidence/race-test/command \
+missis set 184/evidence/race-test/command \
   'go test -race ./internal/worker/...'
 
-issue set 184/evidence/race-test/run-417/result \
+missis set 184/evidence/race-test/run-417/result \
   'failed'
 ```
 
@@ -2935,7 +2969,7 @@ processor: markdown-parts@2
 Then:
 
 ```bash
-issue show 184/hypothesis --why
+missis show 184/hypothesis --why
 ```
 
 may show:
@@ -2960,7 +2994,7 @@ One Markdown import SHOULD be one atomic batch by default. If any required part 
 ## 15.6 Export and round-trip
 
 ```bash
-issue show 184 --format markdown
+missis show 184 --format markdown
 ```
 
 SHOULD export a readable document. Optional hidden or visible identifiers SHOULD preserve part identity on re-import.
@@ -3158,19 +3192,19 @@ not on one vendor-specific schema.
 Current knowledge:
 
 ```bash
-issue show --search "retry race"
+missis show --search "retry race"
 ```
 
 Knowledge effective at a historical time:
 
 ```bash
-issue show --search "retry race" --at 2026-07-01
+missis show --search "retry race" --at 2026-07-01
 ```
 
 Knowledge recorded during a period:
 
 ```bash
-issue show --search "retry race" --since 7d
+missis show --search "retry race" --since 7d
 ```
 
 Full bitemporal search SHOULD support separate effective and known times.
@@ -3215,9 +3249,9 @@ Query intent may alter traversal:
 ## 16.9 Scope-aware search
 
 ```bash
-issue show --search "retry" --project safedesign
-issue show --search "authentication" --group security
-issue show --search "race" \
+missis show --search "retry" --project safedesign
+missis show --search "authentication" --group security
+missis show --search "race" \
   --project safedesign \
   --type concurrency-defect
 ```
@@ -3261,10 +3295,10 @@ Candidate generation may operate on leaf or non-leaf parts. Reranking MAY includ
 Useful retrieval forms include:
 
 ```bash
-issue show --search "context cancellation" \
+missis show --search "context cancellation" \
   --within 184/evidence
 
-issue show 184/evidence --search "failed" \
+missis show 184/evidence --search "failed" \
   --descendants
 ```
 
@@ -3310,20 +3344,20 @@ effects
 Command mapping:
 
 ```bash
-issue show 184                    # current
-issue show 184/evidence             # subtree rooted at a part
-issue show 184/evidence --depth 2   # bounded subtree
-issue show 184 --history             # history
-issue show 184 --at ...           # temporal
-issue show 184 --between ...      # temporal diff
-issue show 184/status --why       # provenance
-issue show 184 --lineage          # lineage
-issue show --project safedesign   # project
-issue show --group security       # group
-issue show --search "..."        # search
-issue show 184 --obligations      # ontology obligations
-issue show 184 --verification     # verification
-issue show 184 --effects          # observed effects
+missis show 184                    # current
+missis show 184/evidence             # subtree rooted at a part
+missis show 184/evidence --depth 2   # bounded subtree
+missis show 184 --history             # history
+missis show 184 --at ...           # temporal
+missis show 184 --between ...      # temporal diff
+missis show 184/status --why       # provenance
+missis show 184 --lineage          # lineage
+missis show --project safedesign   # project
+missis show --group security       # group
+missis show --search "..."        # search
+missis show 184 --obligations      # ontology obligations
+missis show 184 --verification     # verification
+missis show 184 --effects          # observed effects
 ```
 
 The system MUST avoid duplicating authoritative data for each view. Materialized projections are caches and indexes that can be regenerated.
@@ -3783,10 +3817,10 @@ Internally, once an event batch has passed validation and entered the ledger, pr
 
 ## 21.1 Optimistic concurrency
 
-Two agents may update the same part concurrently. `issue set` SHOULD support an expected revision:
+Two agents may update the same part concurrently. `missis set` SHOULD support an expected revision:
 
 ```bash
-issue set 184/hypothesis "..." --if-current @e118
+missis set 184/hypothesis "..." --if-current @e118
 ```
 
 Precondition:
@@ -4133,7 +4167,7 @@ Referenced by:
 ## 25.5 Subtree and breadcrumb view
 
 ```bash
-issue show 184/evidence/race-test
+missis show 184/evidence/race-test
 ```
 
 ```text
@@ -4168,7 +4202,7 @@ A temporal view MAY show the path that was valid at the selected time while also
 Input:
 
 ```bash
-issue new --from retry-race.md
+missis new --from retry-race.md
 ```
 
 Pipeline:
@@ -4207,7 +4241,7 @@ Every part retains the original Markdown line span.
 ## 26.2 Agent performs a safe work loop
 
 ```bash
-issue show --next --project safedesign --json
+missis show --next --project safedesign --json
 ```
 
 The ontology-derived next obligation is:
@@ -4228,13 +4262,13 @@ The ontology-derived next obligation is:
 Agent claims explicit state:
 
 ```bash
-issue set 184/status doing --if-current @e120
+missis set 184/status doing --if-current @e120
 ```
 
 Agent records intended action:
 
 ```bash
-issue set 184/intent \
+missis set 184/intent \
   "Move cancellation check before enqueue."
 ```
 
@@ -4250,13 +4284,13 @@ changed path: internal/worker/retry.go
 A test processor records evidence:
 
 ```bash
-issue set 184/evidence/race-test --from test-result.json
+missis set 184/evidence/race-test --from test-result.json
 ```
 
 The ontology evaluates verification. Only then may:
 
 ```bash
-issue set 184/status done
+missis set 184/status done
 ```
 
 succeed.
@@ -4266,7 +4300,7 @@ succeed.
 At 14:00, logs reveal an incident at 12:37:
 
 ```bash
-issue set 184/evidence/crash \
+missis set 184/evidence/crash \
   "Worker crashed" \
   --effective-at "2026-08-15T12:37:00+08:00"
 ```
@@ -4281,13 +4315,13 @@ effective_at: 2026-08-15T12:37:00+08:00
 Queries:
 
 ```bash
-issue show 184 --effective-at 13:00 --known-at 13:00
+missis show 184 --effective-at 13:00 --known-at 13:00
 ```
 
 shows what was known then.
 
 ```bash
-issue show 184 --effective-at 13:00 --known-at 15:00
+missis show 184 --effective-at 13:00 --known-at 15:00
 ```
 
 shows what is now known about that earlier time.
@@ -4295,14 +4329,14 @@ shows what is now known about that earlier time.
 ## 26.4 Cross-project virtual connection
 
 ```bash
-issue set safedesign#184/problem/links \
+missis set safedesign#184/problem/links \
   --add same-origin:aici#73/problem
 ```
 
 The parts remain separate. Search and lineage may cross the link:
 
 ```bash
-issue show safedesign#184/problem --lineage --depth 3
+missis show safedesign#184/problem --lineage --depth 3
 ```
 
 No ticket duplication or project move occurs.
@@ -4331,7 +4365,7 @@ History is not rewritten. The old verification remains historically true under i
 Query:
 
 ```bash
-issue show --search "why did retry handling change" \
+missis show --search "why did retry handling change" \
   --project safedesign \
   --lineage \
   --explain
@@ -4362,7 +4396,7 @@ Implement first:
 - recursive parts with value, children, or both;
 - temporal containment and historical path resolution;
 - rename, move, attach, detach, and recursive retraction events;
-- `issue new`, `issue show`, `issue set`;
+- `missis new`, `missis show`, `missis set`;
 - current part-tree projection;
 - history projection;
 - JSON output;
@@ -4496,7 +4530,7 @@ Swappability should exist at component boundaries, not through user-visible comm
 
 ### 29.1 Interface
 
-- [ ] `issue new`, `issue show`, and `issue set` are the only required domain subcommands.
+- [ ] `missis new`, `missis show`, and `missis set` are the only required domain subcommands.
 - [ ] A small allowlist of global operational flags may appear before a domain verb.
 - [ ] Every agent operation can use explicit references and stable JSON.
 - [ ] No operation depends on an implicit current ticket.
@@ -4663,7 +4697,7 @@ Input: title, Markdown, part update, link      │
                              rerank
                                 │
                                 ▼
-                         `issue show`
+                         `missis show`
 ```
 
 The public model remains small:

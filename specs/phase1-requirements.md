@@ -1,5 +1,8 @@
 # Phase 1 bootstrap requirement register
 
+> Temporary traceability register, not active agent guidance. Use the
+> canonical v2 specification and `missis --ag-brief` for current workflows.
+
 This file is a temporary bootstrap artifact. It is not a long-term document
 store for the project.
 

@@ -10,6 +10,9 @@ go test ./...
 echo "== rclone backup script tests =="
 bash testsuite/scripts/test-rclone-backup.sh
 
+echo "== manifest freshness script tests =="
+bash testsuite/scripts/test-manifest-freshness.sh
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 bin="$tmpdir/missis"

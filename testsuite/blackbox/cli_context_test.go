@@ -10,23 +10,22 @@ func TestShowContext(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	project := filepath.Join(tmp, "project")
-	if err := os.MkdirAll(filepath.Join(project, ".missis.d"), 0o755); err != nil {
+	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(project, ".missis"), []byte("./.missis-store/missis.db\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	active := filepath.Join(project, ".missis.d", "active.example.md")
-	if err := os.WriteFile(active, []byte("project: test-project\ngroup: test-group\nfocus: context-test\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	result := runMissisWithEnv(t, "", project, nil, "show", "--context", "--json")
+	result := runMissisWithEnv(t, "", project, []string{"MISSIS_PROJECT=test-project", "MISSIS_GROUP=test-group"}, "show", "--context", "--json")
 	if result.code != 0 {
 		t.Fatalf("context failed: %d %s", result.code, result.stderr)
 	}
 	body := mustJSON(t, result)
 	if body["project"] != "test-project" || body["group"] != "test-group" {
 		t.Fatalf("unexpected context: %v", body)
+	}
+	if _, ok := body["focus"]; ok {
+		t.Fatalf("context must not expose task focus: %v", body)
 	}
 }
 
@@ -115,5 +114,9 @@ func TestCommandsDoNotOverwriteActiveContext(t *testing.T) {
 	}
 	if string(after) != string(original) {
 		t.Fatalf("active context changed unexpectedly:\nwant %q\ngot  %q", original, after)
+	}
+	ctx := mustJSON(t, runMissisWithEnv(t, "", project, nil, "show", "--context", "--json"))
+	if ctx["project"] != "none" || ctx["group"] != "none" {
+		t.Fatalf("legacy active pointer must not select scope: %v", ctx)
 	}
 }

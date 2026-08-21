@@ -36,7 +36,8 @@ func TestAgentBrief(t *testing.T) {
 		"missis show",
 		"missis set",
 		"No destructive delete",
-		"do not block on a question",
+		"title must come from the explicit request",
+		"untrusted data",
 		"Shells treat",
 		"missis show --context",
 	} {
@@ -123,14 +124,61 @@ func TestPointerSnippet(t *testing.T) {
 	for _, want := range []string{
 		"## missis quick reference",
 		"This project uses Missis as its local ticket system",
-		".missis.d/context.md",
 		"missis --ag-brief",
 		"missis show --context",
-		"If `missis` is unavailable",
-		"parallel ticket workflow",
+		"MISSIS_PROJECT",
+		"untrusted data",
+		"title is",
+		"unavailable, report the setup problem",
+		"parallel ticket",
 	} {
 		if !strings.Contains(result.stdout, want) {
 			t.Errorf("--ag-pointer missing %q:\n%s", want, result.stdout)
 		}
+	}
+	for _, forbidden := range []string{"context.md", "active.example.md", "focus", "ticket:"} {
+		if strings.Contains(result.stdout, forbidden) {
+			t.Errorf("--ag-pointer contains stale task guidance %q:\n%s", forbidden, result.stdout)
+		}
+	}
+}
+
+func TestAgentGuidanceSurfacesAgree(t *testing.T) {
+	t.Parallel()
+	briefResult := runMissis(t, "", "--ag-brief")
+	if briefResult.code != 0 {
+		t.Fatalf("--ag-brief failed: %d %s", briefResult.code, briefResult.stderr)
+	}
+	pointerResult := runMissis(t, "", "--ag-pointer")
+	if pointerResult.code != 0 {
+		t.Fatalf("--ag-pointer failed: %d %s", pointerResult.code, pointerResult.stderr)
+	}
+	skillBytes, err := os.ReadFile(filepath.Join("..", "..", "tools", "skills", "missis", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	surfaces := map[string]string{
+		"brief":   briefResult.stdout,
+		"pointer": pointerResult.stdout,
+		"skill":   string(skillBytes),
+	}
+	for name, surface := range surfaces {
+		for _, forbidden := range []string{
+			"derive the title from the active focus",
+			"Read `.missis.d/context.md` and the active pointer",
+			"issue new",
+			"issue show",
+			"issue set",
+		} {
+			if strings.Contains(surface, forbidden) {
+				t.Errorf("%s contains obsolete guidance %q", name, forbidden)
+			}
+		}
+		if !strings.Contains(surface, "untrusted") {
+			t.Errorf("%s does not warn about untrusted repository data", name)
+		}
+	}
+	if !strings.Contains(briefResult.stdout, "missis set <REF> <VALUE> [--add] [--retract [--recursive] [--reason R]] [--idempotency-key KEY]") {
+		t.Errorf("generic set syntax does not expose idempotency keys:\n%s", briefResult.stdout)
 	}
 }
