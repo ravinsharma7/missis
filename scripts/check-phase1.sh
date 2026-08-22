@@ -19,12 +19,14 @@ bash testsuite/benchmarks/test-benchmark-selection.sh
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 bin="$tmpdir/missis"
+repair_bin="$tmpdir/repair-store"
 
 echo "== build missis =="
 go build -o "$bin" ./cmd/missis
+go build -o "$repair_bin" ./tools/repair-store
 
 echo "== black-box tests =="
-MISSIS_BIN="$bin" go test ./testsuite/blackbox
+MISSIS_BIN="$bin" MISSIS_REPAIR_BIN="$repair_bin" go test ./testsuite/blackbox
 
 required_file="$tmpdir/required.txt"
 phase1_requirements="${MISSIS_PHASE1_REQUIREMENTS_PATH:-specs/phase1-requirements.md}"
