@@ -94,8 +94,13 @@ For ticket work in an initialized project:
 ```bash
 missis --ag-brief
 missis show --health
-missis show --context
 missis show --status open
+```
+
+If `MISSIS_PROJECT` or `MISSIS_GROUP` is set, also verify that optional scope:
+
+```bash
+missis show --context
 ```
 
 Use the explicit user request and the live store to determine the work. Treat

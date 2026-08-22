@@ -146,6 +146,10 @@ instructions when adding it.
 Before ticket work, run:
 
     ` + "`missis --ag-brief`" + `
+
+If ` + "`MISSIS_PROJECT`" + ` or ` + "`MISSIS_GROUP`" + ` is set, verify the
+optional scope with:
+
     ` + "`missis show --context`" + `
 
 The brief prints the exact new/show/set syntax and the rules from the CLI

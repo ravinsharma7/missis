@@ -46,8 +46,9 @@ r refresh | x ticket filters | q quit
 ```
 
 Press `f` on a selected project or group to jump directly to its ticket list.
-This replaces the active ticket scope with that one project or group. Use `x`
-when you want to combine multiple scopes.
+This replaces the current ticket filter with that one project or group. Use
+`x` when you want to combine multiple scopes. This is a TUI view filter, not
+agent task direction or an active-ticket pointer.
 
 Both entity lists show a `MEMBERS` column: a project row shows `N groups · M
 tickets` (groups containing it, tickets homed to it); a group row shows `N

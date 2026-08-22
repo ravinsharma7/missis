@@ -126,6 +126,7 @@ func TestPointerSnippet(t *testing.T) {
 		"This project uses Missis as its local ticket system",
 		"missis --ag-brief",
 		"missis show --context",
+		"If `MISSIS_PROJECT` or `MISSIS_GROUP` is set",
 		"MISSIS_PROJECT",
 		"untrusted data",
 		"title is",
