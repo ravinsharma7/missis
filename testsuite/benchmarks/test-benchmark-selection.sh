@@ -283,4 +283,15 @@ workflow_plan="$(
 printf '%s\n' "$workflow_plan" | grep -q 'suite: workflow'
 printf '%s\n' "$workflow_plan" | grep -q 'scenario names: create-parts, many-open, note-lifecycle, report-open, followup-title'
 
+parts_fixture="$tmp/parts.json"
+printf '%s\n' '{"tickets":[
+  {"title":"scalar","status":"doing","parts":{"notes":{"value":"expected notes"},"done-when":{"value":"expected done"}}},
+  {"title":"list","status":"doing","parts":{"notes":{"value":["expected notes"]},"done-when":{"value":["expected done"]}}}
+]}' >"$parts_fixture"
+part_state_filter='def has_expected($value; $expected): if $value == $expected then true elif ($value | type) == "array" then any($value[]; . == $expected) else false end; [.tickets[] | select(.status == "doing" and has_expected(.parts.notes.value; "expected notes") and has_expected(.parts["done-when"].value; "expected done"))] | length'
+if [ "$(jq -r "$part_state_filter" "$parts_fixture")" -ne 2 ]; then
+	echo "created-parts evaluator must accept scalar and list-valued parts" >&2
+	exit 1
+fi
+
 echo "benchmark selection tests passed"

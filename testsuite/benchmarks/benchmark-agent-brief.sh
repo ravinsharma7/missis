@@ -754,7 +754,15 @@ run_config() {
 			created-parts)
 				IFS=';' read -r expected_title expected_notes expected_done_when <<<"$expected_value"
 				matches="$(jq --arg title "$expected_title" '[.tickets[] | select(.title == $title)] | length' "$after" 2>/dev/null || echo 0)"
-				part_state="$(jq -r --arg title "$expected_title" --arg notes "$expected_notes" --arg done_when "$expected_done_when" '[.tickets[] | select(.title == $title and .status == "doing" and .parts.notes.value == $notes and (.parts["done-when"].value // "") == $done_when)] | length' "$after" 2>/dev/null || echo 0)"
+				part_state="$(jq -r --arg title "$expected_title" --arg notes "$expected_notes" --arg done_when "$expected_done_when" '
+					def has_expected($value; $expected):
+						if $value == $expected then true
+						elif ($value | type) == "array" then any($value[]; . == $expected)
+						else false
+						end;
+					[.tickets[] | select(.title == $title and .status == "doing" and
+						has_expected(.parts.notes.value; $notes) and
+						has_expected((.parts["done-when"].value // null); $done_when))] | length' "$after" 2>/dev/null || echo 0)"
 				if [ "$matches" -eq 1 ] && [ "$part_state" -eq 1 ] && [ "$tickets" -gt "$before_tickets" ] && [ "$mid_tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
 				;;
 			blocked)
