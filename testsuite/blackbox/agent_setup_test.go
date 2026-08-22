@@ -38,7 +38,7 @@ func TestAgentSetupGuideContract(t *testing.T) {
 		"Do not create or require `.missis.d/context.md` or an active ticket pointer",
 		"already initialized",
 		"Never use destructive cleanup",
-		"Optional durable agent handoff",
+		"Optional reviewed project handoff",
 		"AGENTS.md",
 		"If a future agent cannot resolve",
 		"Optional provider integrations",
@@ -83,14 +83,40 @@ func TestExternalProjectAgentHandoffContract(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"## Optional durable agent handoff",
-		"optional durable handoff",
-		"provider-specific skill is only an optional",
+		"## Optional reviewed project handoff",
+		"durable project handoff",
+		"skill is optional",
 		"If `AGENTS.md` already exists, do not overwrite it",
 		"project-local instruction hook",
 	} {
 		if !strings.Contains(guide, want) {
 			t.Errorf("setup guide missing discoverability contract %q", want)
+		}
+	}
+}
+
+func TestOnboardingWorkflowContract(t *testing.T) {
+	path := filepath.Join("..", "..", "docs", "onboarding-workflows.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read onboarding workflow guide %s: %v", path, err)
+	}
+	guide := string(data)
+	flatGuide := strings.Join(strings.Fields(guide), " ")
+	for _, want := range []string{
+		"# Missis onboarding workflows",
+		"Choose the entry point",
+		"missis --ag-brief",
+		"missis --get-started",
+		"missis --ag-pointer",
+		"What “normal agent work” means",
+		"does not mean every coding session",
+		"becomes persistent only when a human reviews it",
+		"missis-migration-prompt.md",
+		"phase1-should-backlog.md",
+	} {
+		if !strings.Contains(guide, want) && !strings.Contains(flatGuide, want) {
+			t.Errorf("onboarding workflow guide missing %q", want)
 		}
 	}
 }

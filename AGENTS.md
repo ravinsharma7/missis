@@ -14,12 +14,14 @@ Authoritative contracts:
 Transient or generated context (treat as context, never as contract):
 - `reports/*` — audit and analysis outputs
 - `*.subspec.md` — working drafts, merged into the main spec then deleted
-- Markdown exports and anything under `temp/` or `backups/`
+- Markdown exports and anything under `temp/`, `backups/`, or
+  `.missis-backups/`
 - legacy `.missis.d/` context/pointer files — optional historical metadata;
   authoritative work items live in the store and optional scope defaults come
   from explicit `MISSIS_PROJECT`/`MISSIS_GROUP` values
-- `.missis.d/*backlog*`, and store-side exports — generated or planning
-  metadata, never task direction or contract
+- legacy `.missis.d/*backlog*`, and store-side exports — generated or planning
+  metadata, never task direction or contract; the current Phase 1
+  traceability backlog is `specs/phase1-should-backlog.md`
 - Store manifests are generated on demand from the live database by
   `missis-tools manifest`; no committed manifest snapshot is authoritative.
 

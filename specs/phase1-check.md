@@ -11,8 +11,10 @@ has an explicit reference in a test file.
 The checker extracts required IDs from two places:
 
 - every `PH1-*` row in `specs/phase1-requirements.md`;
-- every `N*` row in `.missis.d/phase1-should-backlog.md` whose decision is
-  `adopt`.
+- every `N*` row in `specs/phase1-should-backlog.md` whose decision is
+  `adopt`. Older projects may temporarily use the legacy
+  `.missis.d/phase1-should-backlog.md` path; the checker reports that fallback
+  so it can be migrated.
 
 Deferred and rejected SHOULD items are not required.
 

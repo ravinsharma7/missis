@@ -15,6 +15,11 @@ agent instruction hook for future discovery; the canonical `missis --ag-brief`
 path remains sufficient. The hook is provider-neutral; a provider-specific
 skill is optional.
 
+When using a Missis checkout, use the [onboarding workflow guide](onboarding-workflows.md)
+to choose between setup, ordinary agent work, the optional instruction-file
+handoff, and legacy migration. This document remains the standalone detailed
+setup reference for external projects.
+
 ## Canonical agent bootstrap
 
 For every initialized project, agents enter the Missis workflow through:
@@ -23,11 +28,14 @@ For every initialized project, agents enter the Missis workflow through:
 missis --ag-brief
 ```
 
-The brief is the canonical command and rule surface. `missis --get-started`
-is only an installation/initialization wrapper for people setting up a new
-project. `missis --ag-pointer` is only an optional, reviewed handoff block for
-an instruction file; it does not select a ticket, focus, or task. Existing
-projects with legacy `.missis.d` metadata should use the
+The brief is the canonical command and rule surface for a session that will
+perform Missis ticket or store work. It is not required for unrelated coding
+sessions. `missis --get-started` is only an installation/initialization
+wrapper for people setting up a new project. `missis --ag-pointer` is only an
+optional, reviewed block to insert into an instruction file; it becomes a
+durable project handoff only after review and commit. It does not select a
+ticket, focus, or task. Existing projects with legacy `.missis.d` metadata
+should use the
 [legacy migration prompt](missis-migration-prompt.md).
 
 ## Published references and reproducibility (optional)
@@ -159,14 +167,15 @@ missis show --context
 missis --ag-brief
 ```
 
-## Optional durable agent handoff
+## Optional reviewed project handoff
 
 Installation and initialization make the command available, but they do not
 tell a future agent that Missis is this project's ticket system. If the
-project uses an instruction hook, add the generated, provider-neutral pointer
-after reviewing it. This is an optional durable handoff; it is not a second
-bootstrap contract, and a provider-specific skill is only an optional
-accelerator.
+project uses an instruction hook, add the generated, provider-neutral block
+after reviewing it. The command only prints the block. It becomes a durable
+project handoff when the reviewed text is inserted into the instruction file
+and committed; it is not a second bootstrap contract, and a provider-specific
+skill is only an optional accelerator.
 
 If the project has no existing `AGENTS.md`, review the output and then create
 the file:
@@ -183,7 +192,7 @@ documented instruction file). The block tells future agents that `.missis`
 enables Missis and to run `missis --ag-brief` before ticket work. It does not
 select a task, ticket, or focus.
 
-The handoff must remain project-local and committed with the project
+The handoff must remain project-local and be committed with the project
 instructions when appropriate. It must not depend on a user-level skill,
 hidden conversation state, or a web search. If a future agent cannot resolve
 `missis` on `PATH`, it should report the installation problem rather than

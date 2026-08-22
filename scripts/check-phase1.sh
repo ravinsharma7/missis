@@ -28,7 +28,11 @@ MISSIS_BIN="$bin" go test ./testsuite/blackbox
 
 required_file="$tmpdir/required.txt"
 phase1_requirements="${MISSIS_PHASE1_REQUIREMENTS_PATH:-specs/phase1-requirements.md}"
-should_backlog="${MISSIS_SHOULD_BACKLOG_PATH:-.missis.d/phase1-should-backlog.md}"
+should_backlog="${MISSIS_SHOULD_BACKLOG_PATH:-specs/phase1-should-backlog.md}"
+if [ ! -f "$should_backlog" ] && [ -f ".missis.d/phase1-should-backlog.md" ]; then
+  echo "warning: using legacy .missis.d/phase1-should-backlog.md; migrate it to specs/" >&2
+  should_backlog=".missis.d/phase1-should-backlog.md"
+fi
 grep -E '^\| PH1-' "$phase1_requirements" | sed -E 's/^\| ([^ ]+) .*/\1/' > "$required_file"
 awk -F'|' '/^\| N[0-9]+ / {
   id=$2; decision=$3;

@@ -16,6 +16,16 @@ The canonical agent workflow is the output of:
 missis --ag-brief
 ```
 
+Use [`docs/onboarding-workflows.md`](../docs/onboarding-workflows.md) for the
+human decision guide covering setup, ordinary agent work, reviewed project
+handoffs, and migration. It is navigation, not an additional contract.
+
+## Traceability metadata
+
+- `phase1-should-backlog.md` — decisions for Phase 1 SHOULD requirements used
+  by the traceability checker; it is not agent task direction or a product
+  contract.
+
 ## Retained, non-authoritative material
 
 - `missues-issue-specification.z.v1.md` — historical specification, retained

@@ -2,6 +2,7 @@
 /bin/
 .missis-store/
 backups/
+.missis-backups/
 .env.local
 .missis.d/exports/
 .missis.d/manifest.json

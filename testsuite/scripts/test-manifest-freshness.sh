@@ -61,4 +61,35 @@ fi
     bash scripts/verify-restore.sh >/dev/null
 )
 
+external_project="$tmp/external-project"
+external_store="$external_project/.missis-store/missis.db"
+mkdir -p "$(dirname "$external_store")"
+(
+  cd "$repo_root"
+  "$real_go" run ./cmd/missis new --store "$external_store" "external default backup" >/dev/null
+)
+external_manifest="$(
+  cd "$repo_root"
+  MISSIS_STORE="$external_store" "$real_go" run ./tools/missis-tools manifest
+)"
+external_store_id="$(printf '%s\n' "$external_manifest" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"
+external_head="$(printf '%s\n' "$external_manifest" | sed -n 's/.*"head_hash": "\([^"]*\)".*/\1/p')"
+external_expected="$external_project/.missis-backups/${external_store_id//:/_}-${external_head}.db"
+external_output="$(
+  cd "$repo_root"
+  env -u MISSIS_BACKUP_DIR MISSIS_STORE="$external_store" bash scripts/backup-store.sh
+)"
+
+if [ "$external_output" != "$external_expected" ] || [ ! -f "$external_expected" ]; then
+  echo "external store used the wrong default backup directory: $external_output" >&2
+  exit 1
+fi
+
+(
+  cd "$repo_root"
+  env -u MISSIS_BACKUP_DIR MISSIS_STORE="$external_store" \
+    bash scripts/verify-restore.sh >/dev/null
+)
+
+echo "external default backup path tests passed"
 echo "manifest freshness tests passed"

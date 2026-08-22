@@ -100,6 +100,9 @@ use Missis backup/remote synchronization instead of sharing the live database.
 
 ## Getting started
 
+For a precise choice between the setup, agent, handoff, and migration paths,
+see the [onboarding workflow guide](docs/onboarding-workflows.md).
+
 For an agent working in an existing Missis project, the canonical bootstrap
 path is the CLI brief:
 
@@ -136,8 +139,8 @@ missis show --health
 missis show --context
 missis --ag-brief
 
-# Optional durable handoff: review this generated block before adding it to
-# an existing instruction file; do not overwrite unrelated project guidance.
+# Optional reviewed project handoff: review this generated block before adding
+# it to an instruction file; commit it only after preserving unrelated guidance.
 if [ -f AGENTS.md ]; then
   missis --ag-pointer
 else
@@ -156,7 +159,7 @@ missis set '#1/notes' --retract --reason "moved elsewhere"
 
 # Backup, manifest, health, repair
 MISSIS_STORE="$PWD/.missis-store/missis.db" \
-  missis-tools backup "$PWD/backups/missis.db"
+  missis-tools backup "$PWD/.missis-backups/missis.db"
 missis-tools manifest
 missis-tools gaps .missis-store/missis.db
 missis-tools repair .missis-store/missis.db
@@ -290,8 +293,11 @@ never repairs in place: accepted events are immutable, so recovery from gaps mea
 restoring a backup or creating a new store.
 
 Backup and remote scripts live in `scripts/`. They compute manifests directly
-from the live store; no committed manifest snapshot is required. Set
-`MISSIS_BACKUP_DIR` to choose a backup directory for the convenience scripts.
+from the live store; no committed manifest snapshot is required. The scripts
+default to the hidden `.missis-backups/` directory next to the selected store,
+so an external project does not write into the Missis checkout. Set
+`MISSIS_BACKUP_DIR` to an absolute directory, or to a path relative to the
+project containing the store, when a different destination is required.
 
 Install reusable tools globally:
 

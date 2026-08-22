@@ -405,8 +405,10 @@ For an existing initialized project, the canonical agent bootstrap is:
      missis --ag-brief
 
 This command is only the human-oriented local-first setup wrapper for a new
-project. It does not define a second agent workflow:
+project. It is not needed before each ticket session and does not define a
+second agent workflow:
      Read docs/agent-setup.md from the current Missis checkout when available.
+     Read docs/onboarding-workflows.md when choosing an entry point from a checkout.
      No web search is required for setup or ticket work.
      If no checkout is available, use an operator-supplied published ref.
 
@@ -437,7 +439,8 @@ project. It does not define a second agent workflow:
      else
        missis --ag-pointer > AGENTS.md
      fi
-     # This is a durable handoff only; it does not select a ticket or focus.
+     # Review and commit the block to make it a project handoff; it does not
+     # select a ticket, focus, or task by itself.
      # Use the provider's equivalent instruction file when it does not read AGENTS.md.
 
 4. First project, group, ticket, and everyday workflow (when requested):
@@ -462,19 +465,21 @@ project. It does not define a second agent workflow:
 
 7. Backup, manifest, health, repair, and remote sync:
      MISSIS_STORE="$PWD/.missis-store/missis.db" \
-       missis-tools backup "$PWD/backups/missis.db"
+       missis-tools backup "$PWD/.missis-backups/missis.db"
      missis-tools manifest
      missis-tools gaps .missis-store/missis.db
      missis-tools repair .missis-store/missis.db
      missis-tools remote upload
-     missis-tools remote download "$PWD/backups/restored.db"
+     missis-tools remote download "$PWD/.missis-backups/restored.db"
 
 8. Optional: consume via the Go SDK:
      import "github.com/ravinsharma7/missis/pkg/missis"
 
 For fresh-project, existing-project, PowerShell, and project-local agent
-handoff details, read docs/agent-setup.md. This output and that guide are
-standalone; no Missis README or repository checkout is required.
+handoff details, read docs/agent-setup.md. When using a checkout, read
+docs/onboarding-workflows.md for the entry-point decision table. This output
+and the setup guide are standalone; no Missis README or repository checkout is
+required.
 `
 
 func runPointer() int {

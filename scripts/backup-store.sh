@@ -3,9 +3,10 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+. "$root/scripts/lib/backup-path.sh"
 
 store_path="${MISSIS_STORE:-.missis-store/missis.db}"
-backup_dir="${MISSIS_BACKUP_DIR:-backups}"
+backup_dir="$(resolve_missis_backup_dir "$store_path")"
 manifest="$(MISSIS_STORE="$store_path" go run ./tools/missis-tools manifest)"
 store_id="$(printf '%s' "$manifest" | sed -n 's/.*"store_id": "\([^"]*\)".*/\1/p')"
 head_hash="$(printf '%s' "$manifest" | sed -n 's/.*"head_hash": "\([^"]*\)".*/\1/p')"
