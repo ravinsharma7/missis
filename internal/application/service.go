@@ -11,7 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ravinsharma7/missis/internal/artifact"
 	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/plugin"
+	"github.com/ravinsharma7/missis/internal/plugin/builtin"
+	"github.com/ravinsharma7/missis/internal/schema"
 	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
@@ -20,14 +24,21 @@ import (
 // owns store access and all New/Show/Set orchestration; the public facade in
 // pkg/missis delegates to it.
 type Service struct {
-	store      *store.Store
-	path       string
-	supplied   string
-	source     missis.DiscoverySource
-	clock      missis.Clock
-	diagCloser io.Closer
-	closeOnce  sync.Once
-	closeErr   error
+	store           *store.Store
+	artifactLease   *store.Lease
+	path            string
+	supplied        string
+	source          missis.DiscoverySource
+	clock           missis.Clock
+	kinds           *schema.Catalog
+	artifacts       artifact.Store
+	artifactRoot    string
+	artifactWarning string
+	artifactBackend string
+	ingestion       *plugin.IngestionRegistry
+	diagCloser      io.Closer
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 // Open resolves the store (flag/env/marker/default) and opens the service.
@@ -41,7 +52,7 @@ func OpenWithClock(storeFlag string, clock missis.Clock) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve missis store runtime=%s: %w", runtime.GOOS, err)
 	}
-	return openResolved(resolved, clock)
+	return openResolved(resolved, clock, "")
 }
 
 // OpenPath opens a service at an explicit store path.
@@ -51,14 +62,18 @@ func OpenPath(path string) (*Service, error) {
 
 // OpenPathWithClock opens a service at an explicit path with a test clock.
 func OpenPathWithClock(path string, clock missis.Clock) (*Service, error) {
-	return openResolved(missis.ResolvedStore{Path: path, Supplied: path, Source: missis.DiscoveryFlag}, clock)
+	return openResolved(missis.ResolvedStore{Path: path, Supplied: path, Source: missis.DiscoveryFlag}, clock, "")
 }
 
-func openResolved(resolved missis.ResolvedStore, clock missis.Clock) (*Service, error) {
-	var (
-		s   *store.Store
-		err error
-	)
+// OpenPathWithClockAndArtifactRoot is used by isolated tests and deployments
+// that need an explicit local artifact root without changing MISSIS_STORE.
+func OpenPathWithClockAndArtifactRoot(path string, clock missis.Clock, artifactRoot string) (*Service, error) {
+	return openResolved(missis.ResolvedStore{Path: path, Supplied: path, Source: missis.DiscoveryFlag}, clock, artifactRoot)
+}
+
+func openResolved(resolved missis.ResolvedStore, clock missis.Clock, artifactRootOverride string) (*Service, error) {
+	var s *store.Store
+	var err error
 	diag, diagCloser := storeDiagnosticsFromEnv()
 	if diag != nil {
 		s, err = store.OpenWithDiag(resolved.Path, diag)
@@ -71,14 +86,132 @@ func openResolved(resolved missis.ResolvedStore, clock missis.Clock) (*Service, 
 		}
 		return nil, fmt.Errorf("open missis store path=%q discovery=%s runtime=%s: %w", resolved.Path, resolved.Source, runtime.GOOS, err)
 	}
+	storeID, storeIDErr := s.StoreID()
+	if storeIDErr != nil {
+		_ = s.Close()
+		if diagCloser != nil {
+			_ = diagCloser.Close()
+		}
+		return nil, fmt.Errorf("read store identity for artifact namespace: %w", storeIDErr)
+	}
+	if artifactRootOverride == "" {
+		artifactRootOverride = os.Getenv("MISSIS_ARTIFACT_STORE")
+	}
+	rootResolution, rootErr := resolveArtifactRoot(resolved, storeID, artifactRootOverride)
+	if rootErr != nil {
+		_ = s.Close()
+		if diagCloser != nil {
+			_ = diagCloser.Close()
+		}
+		return nil, fmt.Errorf("resolve artifact store root for store %s: %w", storeID, rootErr)
+	}
+	artifactLease, leaseErr := store.AcquireSharedLease(rootResolution.root)
+	if leaseErr != nil {
+		_ = s.Close()
+		if diagCloser != nil {
+			_ = diagCloser.Close()
+		}
+		return nil, fmt.Errorf("acquire shared artifact lease root=%q: %w; set MISSIS_ARTIFACT_STORE to a shorter usable path", rootResolution.root, leaseErr)
+	}
+	artifactStore, artifactErr := artifact.NewLocalStore(rootResolution.root)
+	if artifactErr != nil {
+		_ = s.Close()
+		if diagCloser != nil {
+			_ = diagCloser.Close()
+		}
+		_ = artifactLease.Close()
+		return nil, fmt.Errorf("open missis artifact store root=%q: %w; set MISSIS_ARTIFACT_STORE to a shorter usable path", rootResolution.root, artifactErr)
+	}
+	ingestion := plugin.NewIngestionRegistry()
+	if err := ingestion.Register(plugin.IngestionRegistration{
+		Manifest: builtin.MarkdownManifest(),
+		ID:       "markdown",
+		Selector: plugin.IngestSelector{Operation: "import-markdown", MediaType: "text/markdown", TargetKind: model.KindTicket},
+		Plugin:   builtin.NewMarkdownImporter(),
+	}); err != nil {
+		_ = s.Close()
+		if diagCloser != nil {
+			_ = diagCloser.Close()
+		}
+		_ = artifactLease.Close()
+		return nil, err
+	}
+	if err := ingestion.Register(plugin.IngestionRegistration{
+		Manifest: builtin.ArtifactManifest(),
+		ID:       "attach",
+		Selector: plugin.IngestSelector{Operation: "attach-artifact"},
+		Plugin:   builtin.NewArtifactAttacher(),
+	}); err != nil {
+		_ = s.Close()
+		if diagCloser != nil {
+			_ = diagCloser.Close()
+		}
+		_ = artifactLease.Close()
+		return nil, err
+	}
 	return &Service{
-		store:      s,
-		path:       resolved.Path,
-		supplied:   resolved.Supplied,
-		source:     resolved.Source,
-		clock:      clock,
-		diagCloser: diagCloser,
+		store:           s,
+		artifactLease:   artifactLease,
+		path:            resolved.Path,
+		supplied:        resolved.Supplied,
+		source:          resolved.Source,
+		clock:           clock,
+		kinds:           schema.NewCatalog(),
+		artifacts:       artifactStore,
+		artifactRoot:    rootResolution.root,
+		artifactWarning: rootResolution.warning,
+		artifactBackend: "local",
+		ingestion:       ingestion,
+		diagCloser:      diagCloser,
 	}, nil
+}
+
+// RegisterPluginKind installs a validator-backed kind during composition. It
+// is intentionally not a storage mutation and must happen before writes that
+// use the kind. External plugin loading will call this only after manifest and
+// capability validation.
+func (s *Service) RegisterPluginKind(reg plugin.KindRegistration) error {
+	if s.kinds == nil {
+		s.kinds = schema.NewCatalog()
+	}
+	return s.kinds.Register(reg)
+}
+
+// RegisterIngestionPlugin installs an ingestion implementation during
+// composition. Selection remains metadata-driven; callers never switch on a
+// plugin ID to decide behavior.
+func (s *Service) RegisterIngestionPlugin(reg plugin.IngestionRegistration) error {
+	if s.ingestion == nil {
+		s.ingestion = plugin.NewIngestionRegistry()
+	}
+	return s.ingestion.Register(reg)
+}
+
+func (s *Service) ArtifactStore() artifact.Store {
+	return s.artifacts
+}
+
+func (s *Service) ArtifactRoot() string {
+	return s.artifactRoot
+}
+
+func (s *Service) ArtifactRootWarning() string {
+	return s.artifactWarning
+}
+
+// RecordArtifact indexes metadata after an artifact.Store has durably written
+// the bytes. The event ledger receives only references/metadata; this method
+// never copies blob content into SQLite.
+func (s *Service) RecordArtifact(ctx context.Context, metadata artifact.Metadata, backend string) error {
+	return s.store.RecordArtifact(ctx, store.ArtifactRecord{
+		Ref:        metadata.Ref.String(),
+		Algorithm:  metadata.Algorithm,
+		Digest:     metadata.Digest,
+		MediaType:  metadata.MediaType,
+		Size:       metadata.Size,
+		Backend:    backend,
+		RecordedAt: s.now(),
+	})
 }
 
 // storeDiagnosticsFromEnv wires append-path diagnostics (ticket #65).
@@ -141,6 +274,12 @@ func (s *Service) Close() error {
 				storeErr = diagErr
 			}
 		}
+		if s.artifactLease != nil {
+			leaseErr := s.artifactLease.Close()
+			if storeErr == nil {
+				storeErr = leaseErr
+			}
+		}
 		s.closeErr = storeErr
 	})
 	return s.closeErr
@@ -199,7 +338,7 @@ func (s *Service) CheckConsistency(ctx context.Context) error {
 }
 
 func (s *Service) Backup(ctx context.Context, dst string) error {
-	return s.store.BackupContext(ctx, dst)
+	return s.backupTo(ctx, dst)
 }
 
 func (s *Service) SequenceGaps(ctx context.Context) ([]store.SequenceGap, error) {
@@ -267,6 +406,22 @@ func (s *Service) AppendBatch(ctx context.Context, events []model.Event, idempot
 
 func (s *Service) AppendTicketBatch(ctx context.Context, events []model.Event, idempotencyKey string, result any) (store.AppendOutcome, uint64, error) {
 	outcome, alias, err := s.store.AppendTicketBatchContext(ctx, events, idempotencyKey, result)
+	if errors.Is(err, store.ErrConflict) {
+		return outcome, alias, conflict(err)
+	}
+	return outcome, alias, err
+}
+
+func (s *Service) AppendArtifactTicketBatch(ctx context.Context, events []model.Event, idempotencyKey string, result any, artifacts []store.ArtifactRecord) (store.AppendOutcome, uint64, error) {
+	outcome, alias, err := s.store.AppendArtifactTicketBatchContext(ctx, events, idempotencyKey, result, artifacts)
+	if errors.Is(err, store.ErrConflict) {
+		return outcome, alias, conflict(err)
+	}
+	return outcome, alias, err
+}
+
+func (s *Service) AppendArtifactTicketBatchWithResult(ctx context.Context, events []model.Event, idempotencyKey string, result any, resultFactory func(uint64) any, artifacts []store.ArtifactRecord) (store.AppendOutcome, uint64, error) {
+	outcome, alias, err := s.store.AppendArtifactTicketBatchContextWithResult(ctx, events, idempotencyKey, result, resultFactory, artifacts)
 	if errors.Is(err, store.ErrConflict) {
 		return outcome, alias, conflict(err)
 	}

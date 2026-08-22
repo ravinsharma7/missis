@@ -118,7 +118,7 @@ func normalizeEmbed(descriptor Descriptor) Descriptor {
 
 func isMediaKind(kind model.ValueKind) bool {
 	switch kind {
-	case model.ValueKindImage, model.ValueKindVideo, model.ValueKindEmbed:
+	case model.ValueKindImage, model.ValueKindVideo, model.ValueKindAudio, model.ValueKindEmbed:
 		return true
 	default:
 		return false
@@ -152,6 +152,8 @@ func FallbackLines(value Descriptor) []string {
 	case model.ValueKindImage:
 		lines = append(lines, "  display: terminal image protocol not enabled")
 	case model.ValueKindVideo:
+		lines = append(lines, "  playback: external player required")
+	case model.ValueKindAudio:
 		lines = append(lines, "  playback: external player required")
 	case model.ValueKindEmbed:
 		lines = append(lines, "  display: external or web renderer required")

@@ -14,6 +14,14 @@ func RunBackup(args []string, stdout, stderr io.Writer) int {
 }
 
 func RunBackupWithName(args []string, stdout, stderr io.Writer, commandName string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "verify":
+			return runBackupVerify(args[1:], stdout, stderr, commandName+" verify")
+		case "cleanup":
+			return runBackupCleanup(args[1:], stdout, stderr, commandName+" cleanup")
+		}
+	}
 	return runBackup(args, stdout, stderr, commandName, true)
 }
 

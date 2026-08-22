@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,8 +10,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/artifact"
+	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -25,6 +29,178 @@ func newTestStore(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestArtifactMigrationIsIdempotentAndQuarantinesLegacyRoot(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "user-data"))
+	storePath := newTestStore(t)
+	legacyRoot := filepath.Join(filepath.Dir(storePath), "artifacts")
+	legacy, err := artifact.NewLocalStore(legacyRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := legacy.Put(context.Background(), bytes.NewBufferString("legacy bytes"), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordArtifact(context.Background(), store.ArtifactRecord{Ref: metadata.Ref.String(), Algorithm: metadata.Algorithm, Digest: metadata.Digest, MediaType: metadata.MediaType, Size: metadata.Size, Backend: "local"}); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runCommand(t, "artifacts", "migrate", "--store", storePath, "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("migration: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var report struct {
+		Status      string `json:"status"`
+		Quarantine  string `json:"quarantine"`
+		Destination string `json:"destination"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "migrated" || report.Quarantine == "" || report.Destination == "" {
+		t.Fatalf("migration report = %+v", report)
+	}
+	if _, err := os.Stat(legacyRoot); !os.IsNotExist(err) {
+		t.Fatalf("legacy root still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(report.Quarantine, "sha256")); err != nil {
+		t.Fatalf("quarantined legacy root missing: %v", err)
+	}
+	target, err := artifact.NewLocalStore(report.Destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.Verify(context.Background(), metadata.Ref); err != nil {
+		t.Fatalf("migrated object: %v", err)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "migrate", "--store", storePath, "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "not-needed") {
+		t.Fatalf("repeat migration: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestArtifactGCDefaultsToDryRunAndPreservesIndexedObjects(t *testing.T) {
+	storePath := newTestStore(t)
+	root := filepath.Join(t.TempDir(), "artifact-root")
+	local, err := artifact.NewLocalStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexed, err := local.Put(context.Background(), bytes.NewBufferString("indexed"), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan, err := local.Put(context.Background(), bytes.NewBufferString("orphan"), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordArtifact(context.Background(), store.ArtifactRecord{Ref: indexed.Ref.String(), Algorithm: indexed.Algorithm, Digest: indexed.Digest, MediaType: indexed.MediaType, Size: indexed.Size, Backend: "local"}); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runCommand(t, "artifacts", "gc", "--store", storePath, "--artifact-root", root, "--grace", "0s", "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "dry-run") {
+		t.Fatalf("gc dry-run: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if exists, err := local.Exists(context.Background(), orphan.Ref); err != nil || !exists {
+		t.Fatalf("dry-run removed orphan: exists=%v err=%v", exists, err)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "gc", "--store", storePath, "--artifact-root", root, "--grace", "0s", "--confirm", "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "deleted") {
+		t.Fatalf("gc confirm: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if exists, err := local.Exists(context.Background(), orphan.Ref); err != nil || exists {
+		t.Fatalf("orphan remains after gc: exists=%v err=%v", exists, err)
+	}
+	if exists, err := local.Exists(context.Background(), indexed.Ref); err != nil || !exists {
+		t.Fatalf("indexed object removed: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestArtifactMaintenanceRejectsActiveStoreClients(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "store.db")
+	svc, err := application.OpenPath(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	code, stdout, stderr := runCommand(t, "artifacts", "migrate", "--store", storePath, "--json")
+	if code == 0 || stdout != "" || stderr == "" || !strings.Contains(stderr, "maintenance_busy") {
+		t.Fatalf("active migration: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "gc", "--store", storePath, "--artifact-root", filepath.Join(t.TempDir(), "artifacts"), "--grace", "0s", "--json")
+	if code == 0 || stdout != "" || stderr == "" || !strings.Contains(stderr, "maintenance_busy") {
+		t.Fatalf("active gc: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestBackupVerifyAndCleanupRecognizeCompletionMarker(t *testing.T) {
+	storePath := newTestStore(t)
+	t.Setenv("MISSIS_STORE", storePath)
+	directory := t.TempDir()
+	backup := filepath.Join(directory, "backup.db")
+	if code, _, stderr := runCommand(t, "backup", backup); code != 0 || stderr != "" {
+		t.Fatalf("backup: code=%d stderr=%q", code, stderr)
+	}
+	if code, stdout, stderr := runCommand(t, "backup", "verify", backup); code != 0 || stdout != "state=complete: backup verified\n" || stderr != "" {
+		t.Fatalf("backup verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if err := os.Remove(backup + ".complete.json"); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runCommand(t, "backup", "verify", backup); code == 0 || !strings.Contains(stderr, "completion marker") {
+		t.Fatalf("incomplete verify: code=%d stderr=%q", code, stderr)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	for _, path := range []string{backup, backup + ".manifest.json", backup + ".artifacts"} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tmp := filepath.Join(directory, ".backup.db-123")
+	if err := os.WriteFile(tmp, []byte("staging"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(tmp, old, old); err != nil {
+		t.Fatal(err)
+	}
+	tmpDir := filepath.Join(directory, ".backup.db.artifacts-123")
+	if err := os.MkdirAll(filepath.Join(tmpDir, "sha256"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(tmpDir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if code, stdout, stderr := runCommand(t, "backup", "cleanup", directory, "--older-than", "1h"); code != 0 || stderr != "" || !strings.Contains(stdout, "removed") {
+		t.Fatalf("backup cleanup: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Fatalf("incomplete backup remains after cleanup: %v", err)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("staging file remains after cleanup: %v", err)
+	}
+	if _, err := os.Stat(tmpDir); !os.IsNotExist(err) {
+		t.Fatalf("staging directory remains after cleanup: %v", err)
+	}
 }
 
 func runCommand(t *testing.T, args ...string) (int, string, string) {

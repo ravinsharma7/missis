@@ -4770,3 +4770,64 @@ per-stream sequences. Scope history is O(stream).
   preconditions), 14.8 (v1 project/group membership), the `has-home` /
   `home-of` vocabulary pair (9.2), and this guarantees appendix (31).
   Companion docs: `docs/guarantees.md`, `docs/storage-compatibility.md`.
+
+## 33. Artifact lifecycle and ordered containment hardening
+
+The local artifact backend is content-addressed and durable before an
+artifact reference becomes visible in the event ledger or SQLite artifact
+index. New stores use a per-store isolated root under the platform user-data
+directory, namespaced by a hash of the immutable store identity. The
+`MISSIS_ARTIFACT_STORE` environment variable is an explicit root override.
+
+The only legacy layout is `<store-directory>/artifacts/`. A valid legacy root
+is used with visible migration guidance when no isolated root exists. If both
+roots exist, opening the store fails rather than choosing one silently.
+`missis-tools artifacts migrate` validates and copies the legacy CAS objects,
+verifies every indexed artifact, and quarantines the old root as
+`artifacts.legacy-<timestamp>`. The quarantine is retained for rollback and
+is never removed automatically. `missis-tools artifacts gc` is an offline,
+exclusive, dry-run-by-default operation that deletes only unindexed objects
+older than an explicit grace period after confirmation.
+
+Application clients and backup readers hold a shared store lease. Migration
+and GC require an exclusive lease and fail with an explicit busy diagnostic
+when active clients are present. `store.Open` and `store.OpenWithDiag` own a
+shared database lease for the returned Store lifetime; maintenance callers
+use `OpenWithLease`, and temporary backup databases use `OpenSnapshot`.
+Advisory lock files may remain after a crash, but ownership is held by the
+open descriptor and is released by the operating system. No stale PID cleanup
+or timeout is used; lock failure is fail-closed and busy errors are returned
+without indefinite waiting. The same lease abstraction protects artifact
+roots, so restore takes exclusive leases for both its new database and its
+artifact root before publication.
+
+The rebuildable `parts_current` projection stores the core-assigned opaque
+containment `order_key`. Migration `0006_ordered_parts` adds the column with
+an empty legacy default. Projection refresh, rebuild, and consistency checks
+must match the key carried by the current containment event. Events without a
+key retain deterministic stream-sequence/Part-ID ordering. Reordering emits a
+new provenance-bearing event; clients do not calculate keys. Sparse numeric
+keys are used first because ordinary insertion changes only the moved child.
+If a decimal midpoint is exhausted, the core assigns fresh sparse keys in the
+requested final sibling order and emits all changed containment events in one
+atomic batch. It never silently appends to satisfy an unrepresentable
+position, rewrites history, or patches only the projection.
+
+Version-2 logical backups stage and validate the SQLite snapshot, manifest,
+and embedded artifact sidecar before publication, then write
+`backup.db.complete.json` last. The marker contains database and manifest
+hashes, bundle version, and completion time. `missis-tools backup verify`
+reports complete, legacy-v1, incomplete, or corrupt state. Cleanup removes
+only stale staging paths and explicitly incomplete bundles; valid published
+backups are never removed automatically. Database-only and version-1 backups
+remain readable.
+
+Markdown remains raw data. Goldmark AST parsing protects fenced code, while
+typed CodeRef, GitRef, media, and artifact child Parts provide explicit mixed
+content. Markdown URLs and embedded media are inert and are never fetched or
+executed by renderers. An explicit `inline-sequence` value is available when
+one Part needs semantic inline order; its core-assigned item IDs and typed
+items are rendered through `missis-inline` Markdown markers. Unmarked URLs,
+images, audio, and video remain raw Markdown. Ordered mixed-content traversal
+is verified across import, typed attachment, export/re-import, reorder,
+close/reopen, and projection rebuild.

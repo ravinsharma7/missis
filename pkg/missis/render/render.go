@@ -60,11 +60,13 @@ func TicketText(projection missis.TicketProjection) string {
 	var b strings.Builder
 	b.WriteString(projection.Ref + "  " + projection.Title + "\n")
 	b.WriteString("status: " + projection.Status + "\n")
-	paths := make([]string, 0, len(projection.Parts))
-	for path := range projection.Parts {
-		paths = append(paths, path)
+	paths := append([]string(nil), projection.PartOrder...)
+	if len(paths) == 0 {
+		for path := range projection.Parts {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
 	}
-	sort.Strings(paths)
 	for _, path := range paths {
 		if path == "title" || path == "status" {
 			continue
@@ -86,6 +88,7 @@ type partJSON struct {
 	DeclaredSchema string `json:"declared_schema,omitempty"`
 	ParentID       any    `json:"parent_id"`
 	CreatedBy      string `json:"created_by"`
+	OrderKey       string `json:"order_key,omitempty"`
 }
 
 type ticketJSON struct {
@@ -95,6 +98,7 @@ type ticketJSON struct {
 	Status     string              `json:"status"`
 	RecordedAt string              `json:"recorded_at"`
 	Parts      map[string]partJSON `json:"parts"`
+	PartOrder  []string            `json:"part_order,omitempty"`
 }
 
 func TicketJSON(projection missis.TicketProjection) ([]byte, error) {
@@ -108,6 +112,7 @@ func TicketJSON(projection missis.TicketProjection) ([]byte, error) {
 			DeclaredSchema: part.DeclaredSchema,
 			ParentID:       part.ParentID,
 			CreatedBy:      part.CreatedBy,
+			OrderKey:       part.OrderKey,
 		}
 	}
 	return json.Marshal(ticketJSON{
@@ -117,6 +122,7 @@ func TicketJSON(projection missis.TicketProjection) ([]byte, error) {
 		Status:     projection.Status,
 		RecordedAt: projection.RecordedAt.UTC().Format(time.RFC3339),
 		Parts:      parts,
+		PartOrder:  projection.PartOrder,
 	})
 }
 
@@ -279,10 +285,14 @@ func ShowMarkdown(projection missis.TicketProjection, links []missis.LinkView) s
 	var b strings.Builder
 	b.WriteString("# " + title + "\n\n")
 	paths := make([]string, 0, len(projection.Parts))
-	for path := range projection.Parts {
-		paths = append(paths, path)
+	if len(projection.PartOrder) > 0 {
+		paths = append(paths, projection.PartOrder...)
+	} else {
+		for path := range projection.Parts {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
 	}
-	sort.Strings(paths)
 	for _, path := range paths {
 		if path == "title" || path == "status" {
 			continue
@@ -315,6 +325,14 @@ func ShowMarkdown(projection missis.TicketProjection, links []missis.LinkView) s
 // renderPartValue renders a part from its resolved kind contract. It never
 // infers meaning from key names or content.
 func renderPartValue(part missis.PartView) string {
+	if part.ValueKind == string(model.ValueKindInlineSequence) {
+		if sequence, ok := part.Value.(model.InlineSequence); ok {
+			encoded, err := model.InlineSequenceMarkdown(sequence)
+			if err == nil {
+				return strings.TrimSuffix(encoded, "\n")
+			}
+		}
+	}
 	switch part.ValueKind {
 	case "list", "map", "json":
 		if list, ok := part.Value.([]string); ok {

@@ -1,10 +1,39 @@
 package blackbox
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestThreeCommandSurfaceAndArtifactAttachment(t *testing.T) {
+	t.Parallel()
+	store := filepath.Join(t.TempDir(), "missis.db")
+	created := newTicket(t, store, "Attachment")
+	ref := created["ref"].(string)
+	artifact := filepath.Join(t.TempDir(), "diagram.png")
+	if err := os.WriteFile(artifact, []byte("png bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attached := runMissis(t, store, "set", "--json", ref, "--attach", artifact, "--media-type", "image/png")
+	if attached.code != 0 {
+		t.Fatalf("attach failed: %d %s", attached.code, attached.stderr)
+	}
+	view := mustJSON(t, runMissis(t, store, "show", "--json", ref))
+	parts, ok := view["parts"].(map[string]any)
+	if !ok {
+		t.Fatalf("parts missing from projection: %v", view)
+	}
+	if _, ok := parts["diagram"]; !ok {
+		t.Fatalf("attached Part missing: %v", parts)
+	}
+
+	unknown := runMissis(t, store, "ingest", "--help")
+	if unknown.code != 2 || !strings.Contains(unknown.stderr, "unknown command: ingest") {
+		t.Fatalf("fourth top-level ingest command still available: code=%d stderr=%q", unknown.code, unknown.stderr)
+	}
+}
 
 func TestNewShowSetLifecycle(t *testing.T) {
 	t.Parallel()

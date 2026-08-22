@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +63,12 @@ func normalizeScopeInputs(values []string) []string {
 	return result
 }
 
+func warnArtifactRoot(svc *application.Service) {
+	if warning := svc.ArtifactRootWarning(); warning != "" {
+		fmt.Fprintf(os.Stderr, "missis: warning: %s\n", warning)
+	}
+}
+
 type newResult struct {
 	Ref        string  `json:"ref"`
 	ID         string  `json:"id"`
@@ -77,6 +85,7 @@ type showTicket struct {
 	Status     string              `json:"status"`
 	RecordedAt string              `json:"recorded_at"`
 	Parts      map[string]showPart `json:"parts"`
+	PartOrder  []string            `json:"part_order,omitempty"`
 }
 
 type showPart struct {
@@ -86,6 +95,7 @@ type showPart struct {
 	ValueKind string `json:"value_kind"`
 	ParentID  any    `json:"parent_id"`
 	CreatedBy string `json:"created_by"`
+	OrderKey  string `json:"order_key,omitempty"`
 }
 
 type showEvent struct {
@@ -653,6 +663,7 @@ func runInit(args []string) int {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
+	warnArtifactRoot(svc)
 	client := missis.NewClient(svc)
 	defer client.Close()
 	if jsonMode {
@@ -813,6 +824,7 @@ func runNew(args []string) int {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
+	warnArtifactRoot(svc)
 	client := missis.NewClient(svc)
 	defer client.Close()
 	effectiveTime := time.Now().UTC()
@@ -981,6 +993,7 @@ func runShow(args []string) int {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
+	warnArtifactRoot(svc)
 	client := missis.NewClient(svc)
 	defer client.Close()
 	ctx := stdctx.Background()
@@ -1228,7 +1241,8 @@ func runSet(args []string) int {
 		"parent": true, "supersedes": true, "because": true,
 		"if-current": true, "idempotency-key": true, "store": true, "kind": true,
 		"assertion": true, "allow-duplicate": true,
-		"from": true,
+		"from": true, "data-json": true, "attach": true, "media-type": true,
+		"source-name": true,
 	})
 	fs := flag.NewFlagSet("set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -1249,7 +1263,11 @@ func runSet(args []string) int {
 		storeFlag      string
 		fromFile       string
 		stdin          bool
+		attachFile     string
+		mediaType      string
+		sourceName     string
 		kind           string
+		dataJSON       string
 		assertion      string
 		allowDuplicate bool
 	)
@@ -1269,7 +1287,11 @@ func runSet(args []string) int {
 	fs.StringVar(&storeFlag, "store", "", "store path")
 	fs.StringVar(&fromFile, "from", "", "import Markdown from file")
 	fs.BoolVar(&stdin, "stdin", false, "import Markdown from stdin")
+	fs.StringVar(&attachFile, "attach", "", "attach an immutable artifact to this Part")
+	fs.StringVar(&mediaType, "media-type", "", "attached artifact media type")
+	fs.StringVar(&sourceName, "source-name", "", "attached artifact source name")
 	fs.StringVar(&kind, "kind", "", "explicit value kind (required when no schema declaration matches)")
+	fs.StringVar(&dataJSON, "data-json", "", "structured JSON value for CodeRef, GitRef, media, artifact, or plugin kinds")
 	fs.StringVar(&assertion, "assertion", "", "assertion event alias to retract (optional; without it, all active assertions are retracted)")
 	fs.BoolVar(&allowDuplicate, "allow-duplicate", false, "allow another active assertion of an identical link")
 	if err := fs.Parse(args); err != nil {
@@ -1288,6 +1310,7 @@ func runSet(args []string) int {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
+	warnArtifactRoot(svc)
 	client := missis.NewClient(svc)
 	defer client.Close()
 	ctx := stdctx.Background()
@@ -1308,6 +1331,10 @@ func runSet(args []string) int {
 	}
 
 	if fromFile != "" || stdin {
+		if attachFile != "" {
+			printError(fmt.Errorf("--attach cannot be combined with --from or --stdin"), exitInvalid, jsonMode, &ref)
+			return exitInvalid
+		}
 		content, artifact, err := readImportSource(fromFile, stdin)
 		if err != nil {
 			printError(err, exitInvalid, jsonMode, &ref)
@@ -1322,6 +1349,41 @@ func runSet(args []string) int {
 			writeJSON(result)
 		} else {
 			fmt.Printf("%s import %d parts\n", ref, result.Value)
+		}
+		return exitSuccess
+	}
+
+	if attachFile != "" {
+		if stdin || fromFile != "" || dataJSON != "" || add || retract || name != "" || parent != "" || supersedes != "" {
+			printError(fmt.Errorf("--attach cannot be combined with another mutation or import flag"), exitInvalid, jsonMode, &ref)
+			return exitInvalid
+		}
+		content, err := os.ReadFile(attachFile)
+		if err != nil {
+			printError(err, exitInvalid, jsonMode, &ref)
+			return exitInvalid
+		}
+		if sourceName == "" {
+			sourceName = filepath.Base(attachFile)
+		}
+		if mediaType == "" {
+			mediaType = mime.TypeByExtension(filepath.Ext(attachFile))
+			if mediaType == "" {
+				mediaType = "application/octet-stream"
+			}
+		}
+		result, err := client.Ingest(ctx, req, missis.IngestOptions{
+			Operation: "attach-artifact", Target: ref, MediaType: mediaType,
+			SourceName: sourceName, Content: bytes.NewReader(content),
+		})
+		if err != nil {
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
+		}
+		if jsonMode {
+			writeJSON(result)
+		} else {
+			fmt.Printf("%s attached to %s\n", result.Artifact, ref)
 		}
 		return exitSuccess
 	}
@@ -1357,6 +1419,10 @@ func runSet(args []string) int {
 		printError(fmt.Errorf("conflicting mutation flags: --retract, --add, --name, --parent, and --supersedes are mutually exclusive"), exitInvalid, jsonMode, &ref)
 		return exitInvalid
 	}
+	if dataJSON != "" && mutationCount > 0 {
+		printError(fmt.Errorf("--data-json cannot be combined with another mutation flag"), exitInvalid, jsonMode, &ref)
+		return exitInvalid
+	}
 	var mutation missis.Mutation
 	switch {
 	case retract && recursive:
@@ -1372,6 +1438,15 @@ func runSet(args []string) int {
 	case add:
 		mutation = missis.AddValue{Target: ref, Value: value, Reason: reason}
 	default:
+		if dataJSON != "" {
+			var data any
+			if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
+				printError(fmt.Errorf("--data-json must be valid JSON: %w", err), exitInvalid, jsonMode, &ref)
+				return exitInvalid
+			}
+			mutation = missis.SetValueData{Target: ref, Data: data, Kind: model.ValueKind(kind), Reason: reason}
+			break
+		}
 		if value == "" {
 			printError(fmt.Errorf("value or mutation flag is required"), exitInvalid, jsonMode, &ref)
 			return exitInvalid
@@ -1622,6 +1697,7 @@ func outputProjectionSDK(proj missis.TicketProjection, pathFilter []string, json
 			ValueKind: part.ValueKind,
 			ParentID:  part.ParentID,
 			CreatedBy: part.CreatedBy,
+			OrderKey:  part.OrderKey,
 		}
 	}
 	writeJSON(showTicket{
@@ -1631,6 +1707,7 @@ func outputProjectionSDK(proj missis.TicketProjection, pathFilter []string, json
 		Status:     proj.Status,
 		RecordedAt: proj.RecordedAt.UTC().Format(time.RFC3339),
 		Parts:      parts,
+		PartOrder:  proj.PartOrder,
 	})
 }
 
@@ -1643,6 +1720,7 @@ func outputMarkdownProjectionSDK(proj missis.TicketProjection, pathFilter []stri
 			Status:     proj.Status,
 			RecordedAt: proj.RecordedAt,
 			Parts:      make(map[string]missis.PartView, len(proj.Parts)),
+			PartOrder:  append([]string(nil), proj.PartOrder...),
 		}
 		for path, part := range proj.Parts {
 			if pathMatches(path, pathFilter) {

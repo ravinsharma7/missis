@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 

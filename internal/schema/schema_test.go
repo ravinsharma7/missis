@@ -146,6 +146,16 @@ func TestNoImplicitKindWithoutDeclaration(t *testing.T) {
 	}
 }
 
+func TestAudioIsAnExplicitBaseKind(t *testing.T) {
+	spec, err := ParseKind("audio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Base != model.ValueKindAudio || !ValidBaseKind(model.ValueKindAudio) {
+		t.Fatalf("audio kind = %+v", spec)
+	}
+}
+
 func TestBitemporalSelectionAndNoRetroactiveInvalidation(t *testing.T) {
 	early := decl(ScopeProject, "safedesign", []string{"problem"}, "text")
 	early.EventRef = "event:early"

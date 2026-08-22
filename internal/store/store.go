@@ -59,6 +59,7 @@ type TicketSummary struct {
 type Store struct {
 	writer *sql.DB
 	reader *sql.DB
+	lease  *Lease
 
 	// diag is an optional side-channel sink for append-path diagnostics
 	// (ticket #65). When nil, diagnostics are disabled with zero overhead.
@@ -79,17 +80,56 @@ type Store struct {
 var migrationsFS embed.FS
 
 func Open(path string) (*Store, error) {
-	return open(path, nil)
+	lease, err := AcquireSharedLease(path)
+	if err != nil {
+		return nil, err
+	}
+	s, err := OpenWithLease(path, lease, nil)
+	if err != nil {
+		_ = lease.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 // OpenWithDiag opens a store and attaches a side-channel diagnostics sink.
 // Diagnostics must not affect store behavior; they are write-only evidence for
 // CI and debugging (ticket #65).
 func OpenWithDiag(path string, diag Diagnostics) (*Store, error) {
-	return open(path, diag)
+	lease, err := AcquireSharedLease(path)
+	if err != nil {
+		return nil, err
+	}
+	s, err := OpenWithLease(path, lease, diag)
+	if err != nil {
+		_ = lease.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
-func open(path string, diag Diagnostics) (*Store, error) {
+// OpenWithLease opens a live store using an already-held compatible lease.
+// Ownership transfers to the Store on success; callers must close the Store
+// rather than closing the lease separately.
+func OpenWithLease(path string, lease *Lease, diag Diagnostics) (*Store, error) {
+	if lease == nil {
+		return nil, fmt.Errorf("store lease is required")
+	}
+	absPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil || lease.Path() != absPath {
+		return nil, fmt.Errorf("store lease does not protect path %q", path)
+	}
+	return open(path, diag, lease)
+}
+
+// OpenSnapshot opens an explicitly temporary SQLite snapshot without a live
+// store lease. It is only for VACUUM INTO output, backup verification, and
+// restore staging; application clients must use Open.
+func OpenSnapshot(path string) (*Store, error) {
+	return open(path, nil, nil)
+}
+
+func open(path string, diag Diagnostics, lease *Lease) (*Store, error) {
 	if path == "" {
 		return nil, fmt.Errorf("store path is empty")
 	}
@@ -142,7 +182,7 @@ func open(path string, diag Diagnostics) (*Store, error) {
 	}
 	writer.SetMaxOpenConns(1)
 	reader.SetMaxOpenConns(4)
-	return &Store{writer: writer, reader: reader, diag: diag}, nil
+	return &Store{writer: writer, reader: reader, diag: diag, lease: lease}, nil
 }
 
 func (s *Store) emit(event string, fields map[string]any) {
@@ -155,10 +195,17 @@ func (s *Store) emit(event string, fields map[string]any) {
 func (s *Store) Close() error {
 	readerErr := s.reader.Close()
 	writerErr := s.writer.Close()
+	leaseErr := error(nil)
+	if s.lease != nil {
+		leaseErr = s.lease.Close()
+	}
 	if writerErr != nil {
 		return writerErr
 	}
-	return readerErr
+	if readerErr != nil {
+		return readerErr
+	}
+	return leaseErr
 }
 
 func (s *Store) StoreID() (string, error) {
@@ -369,6 +416,7 @@ func computeEventHash(event model.Event, previousHash string) string {
 	canonical.AliasSeq = 0
 	canonical.PreviousHash = ""
 	canonical.Hash = ""
+	canonical.Value = model.NormalizeValueDataForCanonical(canonical.Value)
 	data, _ := json.Marshal(canonical)
 	sum := sha256.Sum256([]byte(previousHash + "\n" + string(data)))
 	return hex.EncodeToString(sum[:])
@@ -693,7 +741,7 @@ func (s *Store) RepairSequenceGaps() error {
 }
 
 func (s *Store) AppendBatch(events []model.Event, idempotencyKey string, preconditions []Precondition, result any) (AppendOutcome, error) {
-	outcome, _, err := s.appendBatchWithRetry(context.Background(), events, idempotencyKey, preconditions, result, false)
+	outcome, _, err := s.appendBatchWithRetry(context.Background(), events, idempotencyKey, preconditions, result, false, nil)
 	return outcome, err
 }
 
@@ -701,22 +749,57 @@ func (s *Store) AppendBatchContext(ctx context.Context, events []model.Event, id
 	if err := ctx.Err(); err != nil {
 		return AppendOutcome{}, err
 	}
-	outcome, _, err := s.appendBatchWithRetry(ctx, events, idempotencyKey, preconditions, result, false)
+	outcome, _, err := s.appendBatchWithRetry(ctx, events, idempotencyKey, preconditions, result, false, nil)
 	return outcome, err
 }
 
+// AppendArtifactBatchContext commits artifact metadata and proposed events in
+// one SQLite transaction. Blob bytes must already be durable in the artifact
+// backend; a failed proposal therefore cannot leave ledger/index rows behind.
+func (s *Store) AppendArtifactBatchContext(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, artifacts []ArtifactRecord) (AppendOutcome, error) {
+	if err := ctx.Err(); err != nil {
+		return AppendOutcome{}, err
+	}
+	outcome, _, err := s.appendBatchWithRetry(ctx, events, idempotencyKey, preconditions, result, false, artifacts)
+	return outcome, err
+}
+
+// AppendArtifactTicketBatchContext commits artifact metadata and a ticket
+// event batch in one SQLite transaction. The ticket alias is allocated inside
+// the same transaction so concurrent clients cannot observe a ticket without
+// its imported Parts or artifact index entry.
+func (s *Store) AppendArtifactTicketBatchContext(ctx context.Context, events []model.Event, idempotencyKey string, result any, artifacts []ArtifactRecord) (AppendOutcome, uint64, error) {
+	return s.AppendArtifactTicketBatchContextWithResult(ctx, events, idempotencyKey, result, nil, artifacts)
+}
+
+// AppendArtifactTicketBatchContextWithResult is the alias-aware form used by
+// workflows whose persisted result contains the ticket's allocated #alias.
+// The result factory runs inside the transaction after alias allocation and
+// before the idempotency record is written, so concurrent retries receive the
+// same complete result rather than a partially populated one.
+func (s *Store) AppendArtifactTicketBatchContextWithResult(ctx context.Context, events []model.Event, idempotencyKey string, result any, resultFactory func(uint64) any, artifacts []ArtifactRecord) (AppendOutcome, uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return AppendOutcome{}, 0, err
+	}
+	return s.appendBatchWithRetryFactory(ctx, events, idempotencyKey, nil, result, true, artifacts, resultFactory)
+}
+
 func (s *Store) AppendTicketBatch(events []model.Event, idempotencyKey string, result any) (AppendOutcome, uint64, error) {
-	return s.appendBatchWithRetry(context.Background(), events, idempotencyKey, nil, result, true)
+	return s.appendBatchWithRetry(context.Background(), events, idempotencyKey, nil, result, true, nil)
 }
 
 func (s *Store) AppendTicketBatchContext(ctx context.Context, events []model.Event, idempotencyKey string, result any) (AppendOutcome, uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return AppendOutcome{}, 0, err
 	}
-	return s.appendBatchWithRetry(ctx, events, idempotencyKey, nil, result, true)
+	return s.appendBatchWithRetry(ctx, events, idempotencyKey, nil, result, true, nil)
 }
 
-func (s *Store) appendBatchWithRetry(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool) (AppendOutcome, uint64, error) {
+func (s *Store) appendBatchWithRetry(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord) (AppendOutcome, uint64, error) {
+	return s.appendBatchWithRetryFactory(ctx, events, idempotencyKey, preconditions, result, allocateAlias, artifacts, nil)
+}
+
+func (s *Store) appendBatchWithRetryFactory(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord, resultFactory func(uint64) any) (AppendOutcome, uint64, error) {
 	var (
 		outcome AppendOutcome
 		alias   uint64
@@ -732,7 +815,7 @@ func (s *Store) appendBatchWithRetry(ctx context.Context, events []model.Event, 
 		for i := range attemptEvents {
 			attemptEvents[i].Sequence = originalSequences[i]
 		}
-		outcome, alias, err = s.appendBatchOnce(ctx, attemptEvents, idempotencyKey, preconditions, result, allocateAlias)
+		outcome, alias, err = s.appendBatchOnce(ctx, attemptEvents, idempotencyKey, preconditions, result, allocateAlias, artifacts, resultFactory)
 		if err == nil || !isRetryableAppendError(err) {
 			if err != nil {
 				s.emit("append-attempt", map[string]any{
@@ -763,7 +846,7 @@ func (s *Store) appendBatchWithRetry(ctx context.Context, events []model.Event, 
 	return outcome, alias, err
 }
 
-func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool) (AppendOutcome, uint64, error) {
+func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord, resultFactory func(uint64) any) (AppendOutcome, uint64, error) {
 	if len(events) == 0 {
 		return AppendOutcome{}, 0, fmt.Errorf("event batch is empty")
 	}
@@ -811,6 +894,11 @@ func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idemp
 		return AppendOutcome{}, 0, err
 	} else if replayed {
 		return outcome, replayAlias, nil
+	}
+	for _, record := range artifacts {
+		if err := insertArtifactTxContext(ctx, tx, record); err != nil {
+			return AppendOutcome{}, 0, err
+		}
 	}
 
 	streams := make(map[streamKey][]model.Event, len(events))
@@ -954,8 +1042,12 @@ func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idemp
 		}
 		idsJSON, _ := json.Marshal(ids)
 		resultJSON := "null"
-		if result != nil {
-			raw, err := json.Marshal(result)
+		persistedResult := result
+		if resultFactory != nil {
+			persistedResult = resultFactory(alias)
+		}
+		if persistedResult != nil {
+			raw, err := json.Marshal(persistedResult)
 			if err != nil {
 				return AppendOutcome{}, 0, err
 			}
@@ -1505,10 +1597,10 @@ func upsertTicketDerivedTxContext(ctx context.Context, tx *sql.Tx, ticketID mode
 			parentID = string(*part.ParentID)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO parts_current (ticket_id, path, part_id, value_json, value_kind, parent_id, created_by, current_event)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO parts_current (ticket_id, path, part_id, value_json, value_kind, parent_id, created_by, current_event, order_key)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			string(ticketID), path, string(part.ID), valueJSON, string(part.ValueKind),
-			parentID, string(part.CreatedBy), string(part.CurrentFrom),
+			parentID, string(part.CreatedBy), string(part.CurrentFrom), part.OrderKey,
 		); err != nil {
 			return err
 		}
@@ -1685,11 +1777,11 @@ func verifyDerivedVsLedger(ctx context.Context, tx contextSQL, byStream map[stri
 		if dbTitle != title || dbStatus != status {
 			return fmt.Errorf("derived ticket mismatch for %s: title %q/%q status %q/%q", ticketID, dbTitle, title, dbStatus, status)
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT path, value_json, parent_id FROM parts_current WHERE ticket_id = ?`, string(ticketID))
+		rows, err := tx.QueryContext(ctx, `SELECT path, value_json, parent_id, order_key FROM parts_current WHERE ticket_id = ?`, string(ticketID))
 		if err != nil {
 			return err
 		}
-		gotParts := make(map[string][2]any)
+		gotParts := make(map[string][3]any)
 		for rows.Next() {
 			if err := ctx.Err(); err != nil {
 				rows.Close()
@@ -1698,11 +1790,12 @@ func verifyDerivedVsLedger(ctx context.Context, tx contextSQL, byStream map[stri
 			var path string
 			var valueJSON any
 			var parentID any
-			if err := rows.Scan(&path, &valueJSON, &parentID); err != nil {
+			var orderKey string
+			if err := rows.Scan(&path, &valueJSON, &parentID, &orderKey); err != nil {
 				rows.Close()
 				return err
 			}
-			gotParts[path] = [2]any{valueJSON, parentID}
+			gotParts[path] = [3]any{valueJSON, parentID, orderKey}
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
@@ -1729,7 +1822,7 @@ func verifyDerivedVsLedger(ctx context.Context, tx contextSQL, byStream map[stri
 			if !ok {
 				return fmt.Errorf("derived part row missing for %s/%s", ticketID, path)
 			}
-			if got[0] != wantValue || got[1] != wantParent {
+			if got[0] != wantValue || got[1] != wantParent || got[2] != part.OrderKey {
 				return fmt.Errorf("derived part mismatch for %s/%s", ticketID, path)
 			}
 			delete(gotParts, path)

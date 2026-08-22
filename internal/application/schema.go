@@ -50,7 +50,7 @@ func (s *Service) schemaDeclarations(ctx context.Context, effectiveAt, knownAt t
 			if err != nil {
 				return nil, fmt.Errorf("malformed declaration %s on %s (part %s): %w", path, streamText(stream), partID, err)
 			}
-			kind, err := schema.ParseKind(part.Value.Text)
+			kind, err := s.kinds.ParseKind(part.Value.Text)
 			if err != nil {
 				return nil, fmt.Errorf("malformed declaration kind %q on %s (%s): %w", part.Value.Text, streamText(stream), path, err)
 			}
@@ -142,13 +142,19 @@ func (s *Service) resolveWriteKind(ctx context.Context, stream model.Ref, path [
 		if explicit == "" {
 			return "", validation("value kind required (no inference); pass --kind or declare the key")
 		}
+		if !s.kinds.ValidBaseKind(explicit) {
+			return "", validation("unknown value kind: %s", explicit)
+		}
+		if err := s.validatePluginValue(value, explicit); err != nil {
+			return "", err
+		}
 		return explicit, nil
 	}
 	decls, err := s.schemaDeclarations(ctx, effectiveAt, knownAt)
 	if err != nil {
 		return "", err
 	}
-	if explicit != "" && !schema.ValidBaseKind(explicit) {
+	if explicit != "" && !s.kinds.ValidBaseKind(explicit) {
 		return "", validation("unknown value kind: %s", explicit)
 	}
 	tc, err := s.schemaContext(ctx, model.TicketID(stream.Entity), effectiveAt, knownAt)
@@ -173,6 +179,9 @@ func (s *Service) resolveWriteKind(ctx context.Context, stream model.Ref, path [
 		if proposedKind == "" {
 			proposedKind = resolved.Declared.StoredKind()
 		}
+		if err := s.validatePluginValue(value, proposedKind); err != nil {
+			return "", err
+		}
 		shape := shapeForValue(model.Value{Kind: proposedKind, Ref: value.Ref, List: value.List})
 		if rej := resolver.ValidateWrite(tc, path, shape, effectiveAt); rej != nil {
 			return "", validation("%s", rej.Reason)
@@ -182,11 +191,30 @@ func (s *Service) resolveWriteKind(ctx context.Context, stream model.Ref, path [
 	if explicit == "" {
 		return "", validation("value kind required (no inference); pass --kind or declare the key")
 	}
+	if err := s.validatePluginValue(value, explicit); err != nil {
+		return "", err
+	}
 	shape := shapeForValue(value)
 	if rej := resolver.ValidateWrite(tc, path, shape, effectiveAt); rej != nil {
 		return "", validation("%s", rej.Reason)
 	}
 	return explicit, nil
+}
+
+func (s *Service) validatePluginValue(value model.Value, kind model.ValueKind) error {
+	value.Kind = kind
+	coerced, err := model.CoerceBuiltInValue(value)
+	if err != nil {
+		return validation("structured value: %v", err)
+	}
+	value = coerced
+	if err := model.ValidateBuiltInValue(value); err != nil {
+		return validation("%v", err)
+	}
+	if err := s.kinds.ValidateValue(value); err != nil {
+		return validation("%v", err)
+	}
+	return nil
 }
 
 // validateListElements enforces the declared element kind for list writes.
@@ -272,6 +300,14 @@ func (s *Service) validateImportEvents(ctx context.Context, stream model.Ref, ev
 	var violations []string
 	for _, event := range events {
 		if event.Target.Kind != model.KindPart || event.Value.Kind == "" {
+			continue
+		}
+		if err := s.kinds.ValidateValue(event.Value); err != nil {
+			violations = append(violations, err.Error())
+			continue
+		}
+		if err := model.ValidateBuiltInValue(event.Value); err != nil {
+			violations = append(violations, err.Error())
 			continue
 		}
 		if rej := resolver.ValidateWrite(tc, event.Target.Path, shapeForValue(event.Value), event.EffectiveAt); rej != nil {

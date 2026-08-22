@@ -15,6 +15,17 @@ type Client struct {
 	service Service
 }
 
+// ArtifactRootWarning exposes migration guidance from the application
+// composition root without making the stable Service interface depend on
+// storage-specific diagnostics.
+func (c *Client) ArtifactRootWarning() string {
+	provider, ok := c.service.(interface{ ArtifactRootWarning() string })
+	if !ok {
+		return ""
+	}
+	return provider.ArtifactRootWarning()
+}
+
 // NewClient wraps an application-layer Service in the public facade.
 func NewClient(service Service) *Client {
 	return &Client{service: service}
@@ -164,6 +175,10 @@ func (c *Client) ReimportMarkdown(ctx context.Context, req RequestContext, opts 
 	return c.service.ReimportMarkdown(ctx, req, opts)
 }
 
+func (c *Client) Ingest(ctx context.Context, req RequestContext, opts IngestOptions) (IngestResult, error) {
+	return c.service.Ingest(ctx, req, opts)
+}
+
 func (c *Client) ListTicketSummaries(ctx context.Context, effectiveAt time.Time) ([]TicketSummary, error) {
 	return c.service.ListTicketSummaries(ctx, effectiveAt)
 }
@@ -178,6 +193,10 @@ func (c *Client) ShowTicket(ctx context.Context, ref string, opts ShowOptions) (
 
 func (c *Client) ShowEntity(ctx context.Context, ref string, opts ShowOptions) (TicketProjection, error) {
 	return c.service.ShowEntity(ctx, ref, opts)
+}
+
+func (c *Client) ExportMarkdown(ctx context.Context, ref string, opts ShowOptions) (string, error) {
+	return c.service.ExportMarkdown(ctx, ref, opts)
 }
 
 func (c *Client) ShowHistory(ctx context.Context, ref string, opts HistoryOptions) ([]EventView, error) {
@@ -266,6 +285,10 @@ func (c *Client) BackupTo(ctx context.Context, dst string) error {
 
 func (c *Client) Restore(ctx context.Context, backupPath, dst string) error {
 	return c.service.Restore(ctx, backupPath, dst)
+}
+
+func (c *Client) RestoreWithOptions(ctx context.Context, backupPath, dst string, opts RestoreOptions) error {
+	return c.service.RestoreWithOptions(ctx, backupPath, dst, opts)
 }
 
 func (c *Client) VerifyRestore(ctx context.Context, backupPath string, expect ManifestInfo) error {

@@ -19,12 +19,12 @@ import (
 // value (0-2 -> open/doing/done).
 func FuzzProjectionWinnerRule(f *testing.F) {
 	// Seeds mirror the truth-table cases.
-	f.Add([]byte{2, 0, 0, 0, 0, 0, 2, 2, 1})       // normal update
+	f.Add([]byte{2, 0, 0, 0, 0, 0, 2, 2, 1})             // normal update
 	f.Add([]byte{3, 0, 0, 0, 0, 0, 2, 2, 1, 0, 3, 1, 2}) // backdated update
-	f.Add([]byte{2, 0, 0, 0, 0, 0, 0, 4, 1})       // future update
-	f.Add([]byte{2, 0, 0, 2, 0, 0, 1, 2, 1})       // same effective time
-	f.Add([]byte{2, 0, 1, 0, 0, 1, 5, 2, 0})       // retraction
-	f.Add([]byte{2, 0, 1, 4, 1, 0, 0, 2, 0})       // out-of-order import
+	f.Add([]byte{2, 0, 0, 0, 0, 0, 0, 4, 1})             // future update
+	f.Add([]byte{2, 0, 0, 2, 0, 0, 1, 2, 1})             // same effective time
+	f.Add([]byte{2, 0, 1, 0, 0, 1, 5, 2, 0})             // retraction
+	f.Add([]byte{2, 0, 1, 4, 1, 0, 0, 2, 0})             // out-of-order import
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) < 1 {

@@ -19,8 +19,14 @@ func RunRepairWithName(args []string, stdout, stderr io.Writer, commandName stri
 		return 2
 	}
 
-	db, err := store.Open(args[0])
+	lease, err := store.AcquireExclusiveLease(args[0])
 	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 8
+	}
+	db, err := store.OpenWithLease(args[0], lease, nil)
+	if err != nil {
+		_ = lease.Close()
 		fmt.Fprintln(stderr, err)
 		return 8
 	}

@@ -105,6 +105,36 @@ func TestParseMarkdownPreambleOnlyDocument(t *testing.T) {
 	}
 }
 
+func TestParseMarkdownDoesNotTreatFencedHeadingAsPart(t *testing.T) {
+	content := "## Evidence\n\n```markdown\n## Not a part\nbody\n```\n\n### Actual child\nchild body\n"
+	parts, err := ParseMarkdownParts(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		paths = append(paths, joinPath(part.Path))
+	}
+	want := []string{"evidence", "evidence/actual-child"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+	if parts[0].Body != "```markdown\n## Not a part\nbody\n```" {
+		t.Fatalf("fenced body = %q", parts[0].Body)
+	}
+}
+
+func TestParseMarkdownRecognizesSetextHeading(t *testing.T) {
+	content := "Problem\n=======\n\nThe body.\n"
+	parts, err := ParseMarkdownParts(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 1 || joinPath(parts[0].Path) != "problem" || parts[0].Body != "The body." {
+		t.Fatalf("parts = %+v", parts)
+	}
+}
+
 func joinPath(path []string) string {
 	out := ""
 	for i, segment := range path {

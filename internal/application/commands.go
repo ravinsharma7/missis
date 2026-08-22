@@ -13,6 +13,7 @@ import (
 	"github.com/ravinsharma7/missis/internal/schema"
 	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/pkg/missis"
+	missisrender "github.com/ravinsharma7/missis/pkg/missis/render"
 )
 
 // ----- creation workflows -----
@@ -104,15 +105,31 @@ func (s *Service) NewEntity(ctx context.Context, req missis.RequestContext, opts
 }
 
 func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext, opts missis.ImportOptions) (missis.NewTicketResult, error) {
+	req, _ = s.normalize(req)
+	if req.IdempotencyKey != "" {
+		var replay missis.NewTicketResult
+		replayed, err := s.LookupIdempotencyContext(ctx, req.IdempotencyKey, &replay)
+		if err != nil {
+			return missis.NewTicketResult{}, keepStorage(err)
+		}
+		if replayed {
+			if replay.ID == "" {
+				return missis.NewTicketResult{}, validation("idempotency key already belongs to another operation: %s", req.IdempotencyKey)
+			}
+			return replay, nil
+		}
+	}
 	parts, err := model.ParseMarkdownParts(opts.Content)
 	if err != nil {
 		return missis.NewTicketResult{}, validation("%v", err)
 	}
 	title := opts.Title
+	titleFromContent := false
 	if title == "" {
 		for i, part := range parts {
 			if len(part.Path) == 1 && part.Path[0] != "preamble" {
 				title = part.Path[0]
+				titleFromContent = true
 				parts = append(parts[:i], parts[i+1:]...)
 				break
 			}
@@ -121,9 +138,49 @@ func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext,
 	if title == "" {
 		title = artifactTitle(opts.Artifact)
 	}
-	return s.createTicket(ctx, req, title, opts.Project, func(stream model.Ref, actor model.ActorRef, now, effectiveAt time.Time, batchID model.BatchID) []model.Event {
-		return buildImportEvents(stream, parts, actor, now, effectiveAt, batchID, opts.Artifact)
-	})
+	excludeTitle := titleFromContent && len(parts) > 0
+	plan, err := s.planTicketCreation(ctx, req, title, opts.Project, nil)
+	if err != nil {
+		return missis.NewTicketResult{}, err
+	}
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(plan.ticketID)}
+	prepared, err := s.prepareIngest(ctx, req, missis.IngestOptions{
+		Operation:            "import-markdown",
+		Target:               string(plan.ticketID),
+		MediaType:            "text/markdown",
+		SourceName:           opts.Artifact,
+		LegacySource:         opts.Artifact,
+		ExcludeTopLevelTitle: excludeTitle,
+		Content:              strings.NewReader(opts.Content),
+	}, stream, nil, nil, plan.batchID, plan.now)
+	if err != nil {
+		return missis.NewTicketResult{}, err
+	}
+	*plan.result = missis.NewTicketResult{
+		ID:         string(plan.ticketID),
+		Title:      title,
+		Status:     "open",
+		Project:    stringPtrOrNil(opts.Project),
+		RecordedAt: plan.now.Format(time.RFC3339),
+	}
+	events := append(append([]model.Event(nil), plan.events...), prepared.proposal.Events...)
+	resultFactory := func(alias uint64) any {
+		result := *plan.result
+		result.Ref = "#" + strconv.FormatUint(alias, 10)
+		return &result
+	}
+	outcome, alias, err := s.AppendArtifactTicketBatchWithResult(ctx, events, req.IdempotencyKey, plan.result, resultFactory, []store.ArtifactRecord{prepared.record})
+	if err != nil {
+		return missis.NewTicketResult{}, err
+	}
+	if outcome.Replayed {
+		if plan.result.Ref == "" {
+			return missis.NewTicketResult{}, validation("idempotency key replay did not contain an imported ticket result: %s", req.IdempotencyKey)
+		}
+		return *plan.result, nil
+	}
+	plan.result.Ref = "#" + strconv.FormatUint(alias, 10)
+	return *plan.result, nil
 }
 
 func (s *Service) ReimportMarkdown(ctx context.Context, req missis.RequestContext, opts missis.ImportOptions) (missis.ImportResult, error) {
@@ -224,6 +281,7 @@ func (s *Service) ShowTicket(ctx context.Context, ref string, opts missis.ShowOp
 		Status:     status,
 		RecordedAt: summary.RecordedAt,
 		Parts:      parts,
+		PartOrder:  orderedPartPaths(proj),
 	}, nil
 }
 
@@ -238,6 +296,26 @@ func (s *Service) ShowEntity(ctx context.Context, ref string, opts missis.ShowOp
 		return missis.TicketProjection{}, invalidInput("ShowEntity requires a project or group reference")
 	}
 	return s.showScope(ctx, ref, opts)
+}
+
+// ExportMarkdown traverses the ordered projection and renders typed inline
+// values as explicit inert markers. It never fetches or executes references.
+func (s *Service) ExportMarkdown(ctx context.Context, ref string, opts missis.ShowOptions) (string, error) {
+	var projection missis.TicketProjection
+	var err error
+	if strings.HasPrefix(ref, "project:") || strings.HasPrefix(ref, "group:") {
+		projection, err = s.ShowEntity(ctx, ref, opts)
+	} else {
+		projection, err = s.ShowTicket(ctx, ref, opts)
+	}
+	if err != nil {
+		return "", err
+	}
+	links, err := s.ShowReferences(ctx, ref, opts)
+	if err != nil {
+		return "", err
+	}
+	return missisrender.ShowMarkdown(projection, links), nil
 }
 
 func (s *Service) showScope(ctx context.Context, ref string, opts missis.ShowOptions) (missis.TicketProjection, error) {
@@ -276,6 +354,7 @@ func (s *Service) showScope(ctx context.Context, ref string, opts missis.ShowOpt
 		Status:     status,
 		RecordedAt: recordedAt,
 		Parts:      partsFromProjection(proj),
+		PartOrder:  orderedPartPaths(proj),
 	}, nil
 }
 
@@ -295,9 +374,28 @@ func partsFromProjection(proj *model.Projection) map[string]missis.PartView {
 			CreatedBy:   string(part.CreatedBy),
 			Name:        part.Name,
 			DisplayName: part.DisplayName,
+			OrderKey:    part.OrderKey,
 		}
 	}
 	return parts
+}
+
+func orderedPartPaths(proj *model.Projection) []string {
+	if proj == nil {
+		return nil
+	}
+	pathByID := make(map[model.PartID]string, len(proj.Paths))
+	for path, id := range proj.Paths {
+		pathByID[id] = path
+	}
+	ids := model.OrderedPartIDs(proj)
+	paths := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if path, ok := pathByID[id]; ok {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 func (s *Service) ShowHistory(ctx context.Context, ref string, opts missis.HistoryOptions) ([]missis.EventView, error) {
@@ -738,9 +836,13 @@ type setSpec struct {
 	mode       setMode
 	target     string
 	value      string
+	data       any
+	hasData    bool
 	kind       model.ValueKind
 	name       string
 	parent     string
+	before     string
+	after      string
 	supersedes string
 	reason     string
 }
@@ -751,6 +853,8 @@ func (s *Service) Set(ctx context.Context, req missis.RequestContext, mutation m
 	switch m := mutation.(type) {
 	case missis.SetValue:
 		spec = setSpec{mode: modeSet, target: m.Target, value: m.Value, kind: m.Kind, reason: m.Reason}
+	case missis.SetValueData:
+		spec = setSpec{mode: modeSet, target: m.Target, data: m.Data, hasData: true, kind: m.Kind, reason: m.Reason}
 	case missis.AddValue:
 		spec = setSpec{mode: modeAdd, target: m.Target, value: m.Value, reason: m.Reason}
 	case missis.RetractValue:
@@ -760,7 +864,7 @@ func (s *Service) Set(ctx context.Context, req missis.RequestContext, mutation m
 	case missis.RenamePart:
 		spec = setSpec{mode: modeRename, target: m.Target, name: m.Name, reason: m.Reason}
 	case missis.MovePart:
-		spec = setSpec{mode: modeMove, target: m.Target, parent: m.Parent, reason: m.Reason}
+		spec = setSpec{mode: modeMove, target: m.Target, parent: m.Parent, before: m.Before, after: m.After, reason: m.Reason}
 	case missis.SupersedeEvent:
 		spec = setSpec{mode: modeSupersede, target: m.Target, value: m.Value, kind: m.Kind, supersedes: m.Supersedes, reason: m.Reason}
 	default:
@@ -771,11 +875,12 @@ func (s *Service) Set(ctx context.Context, req missis.RequestContext, mutation m
 
 func (s *Service) applySet(ctx context.Context, req missis.RequestContext, now time.Time, actor model.ActorRef, batchID model.BatchID, spec setSpec) (missis.SetResult, error) {
 	var (
-		partID         model.PartID
-		currentPath    []string
-		creationEvents []model.Event
-		partExisted    bool
-		stream         model.Ref
+		partID            model.PartID
+		currentPath       []string
+		creationEvents    []model.Event
+		containmentEvents []model.Event
+		partExisted       bool
+		stream            model.Ref
 	)
 	requiresExisting := spec.mode == modeRetract || spec.mode == modeRetractSubtree ||
 		spec.mode == modeRename || spec.mode == modeMove
@@ -817,7 +922,7 @@ func (s *Service) applySet(ctx context.Context, req missis.RequestContext, now t
 		if _, _, err := schema.ParseDeclarationPath(currentPath[1:]); err != nil {
 			return missis.SetResult{}, validation("%v", err)
 		}
-		if _, err := schema.ParseKind(spec.value); err != nil {
+		if _, err := s.kinds.ParseKind(spec.value); err != nil {
 			return missis.SetResult{}, validation("%v", err)
 		}
 	}
@@ -839,6 +944,95 @@ func (s *Service) applySet(ctx context.Context, req missis.RequestContext, now t
 		}
 		event.Operation = model.OpMovePart
 		event.Value = model.Value{Ref: &parentRef}
+		projection, projectionErr := s.CurrentStreamProjection(ctx, stream, req.EffectiveAt)
+		if projectionErr != nil {
+			return missis.SetResult{}, keepStorage(projectionErr)
+		}
+		var parentID *model.PartID
+		if parentRef.Kind == model.KindPart {
+			id := model.PartID(parentRef.Entity)
+			parentID = &id
+		}
+		children := model.OrderedChildren(projection, parentID)
+		remaining := make([]*model.Part, 0, len(children))
+		for _, child := range children {
+			if child.ID != partID {
+				remaining = append(remaining, child)
+			}
+		}
+		beforeID := model.PartID(strings.TrimPrefix(spec.before, "part:"))
+		afterID := model.PartID(strings.TrimPrefix(spec.after, "part:"))
+		foundBefore, foundAfter := spec.before == "", spec.after == ""
+		for _, child := range children {
+			if child.ID == partID {
+				continue
+			}
+			if (spec.before != "" && child.ID == beforeID) || (spec.after != "" && child.ID == afterID) {
+				if spec.before != "" && child.ID == beforeID {
+					foundBefore = true
+				}
+				if spec.after != "" && child.ID == afterID {
+					foundAfter = true
+				}
+				if !samePartParentIDs(child.ParentID, parentID) {
+					return missis.SetResult{}, invalidInput("move neighbor is not in the destination parent")
+				}
+			}
+		}
+		if !foundBefore || !foundAfter {
+			return missis.SetResult{}, invalidInput("move neighbor was not found in the destination parent")
+		}
+		insertAt := len(remaining)
+		if spec.before != "" {
+			insertAt = indexOfPart(remaining, beforeID)
+		} else if spec.after != "" {
+			insertAt = indexOfPart(remaining, afterID) + 1
+		}
+		if insertAt < 0 || insertAt > len(remaining) {
+			return missis.SetResult{}, invalidInput("move position could not be resolved")
+		}
+		finalOrder := make([]*model.Part, 0, len(remaining)+1)
+		finalOrder = append(finalOrder, remaining[:insertAt]...)
+		moved := projection.Parts[partID]
+		if moved == nil {
+			return missis.SetResult{}, notFound("part not found: %s", partID)
+		}
+		finalOrder = append(finalOrder, moved)
+		finalOrder = append(finalOrder, remaining[insertAt:]...)
+		leftKey, rightKey := "", ""
+		if insertAt > 0 {
+			leftKey = finalOrder[insertAt-1].OrderKey
+		}
+		if insertAt+1 < len(finalOrder) {
+			rightKey = finalOrder[insertAt+1].OrderKey
+		}
+		if key, keyErr := model.BetweenOrderKeys(leftKey, rightKey); keyErr == nil {
+			event.Value.OrderKey = key
+			containmentEvents = []model.Event{event}
+		} else {
+			// A dense interval is repaired by assigning the existing sparse
+			// numeric scheme to the requested final order. Every changed
+			// containment is an event in the same atomic batch; history is
+			// never rewritten and the projection is never patched alone.
+			containmentEvents = make([]model.Event, 0, len(finalOrder))
+			for i, child := range finalOrder {
+				key := model.OrderKeyForIndex(i)
+				if child.ID == partID {
+					event.Value.OrderKey = key
+					containmentEvents = append(containmentEvents, event)
+					continue
+				}
+				if child.OrderKey == key && samePartParentIDs(child.ParentID, parentID) {
+					continue
+				}
+				childPath := currentPathForPart(projection, child.ID)
+				containmentEvents = append(containmentEvents, model.Event{
+					Stream: stream, Target: model.Ref{Kind: model.KindPart, Entity: string(child.ID), Path: childPath},
+					Operation: model.OpMovePart, Value: model.Value{Ref: &parentRef, OrderKey: key},
+					RecordedAt: now, EffectiveAt: req.EffectiveAt, Actor: actor, Reason: "ordered containment rebalance", BatchID: &batchID,
+				})
+			}
+		}
 	case modeSupersede:
 		oldEvent, err := s.GetEventByAlias(ctx, spec.supersedes)
 		if err != nil {
@@ -846,12 +1040,14 @@ func (s *Service) applySet(ctx context.Context, req missis.RequestContext, now t
 		}
 		event.Supersedes = append(event.Supersedes, oldEvent.ID)
 		event.Operation = model.OpSupersedeEvent
-		valueKind, err := s.resolveWriteKind(ctx, stream, currentPath, spec.kind, model.Value{Kind: spec.kind, Text: spec.value}, nil, req.EffectiveAt, now)
+		valueKind, err := s.resolveWriteKind(ctx, stream, currentPath, spec.kind, specValue(spec), nil, req.EffectiveAt, now)
 		if err != nil {
 			return missis.SetResult{}, err
 		}
-		event.Value = model.Value{Kind: valueKind, Text: spec.value}
-		if valueKind == model.ValueKindList || valueKind == model.ValueKindJSON {
+		event.Value = specValue(spec)
+		event.Value.Kind = valueKind
+		event.Value, _ = model.CoerceBuiltInValue(event.Value)
+		if !spec.hasData && (valueKind == model.ValueKindList || valueKind == model.ValueKindJSON) {
 			event.Value.Data = spec.value
 		}
 	default:
@@ -864,13 +1060,15 @@ func (s *Service) applySet(ctx context.Context, req missis.RequestContext, now t
 			event.Value = model.Value{Kind: valueKind, Text: spec.value}
 			event.Value.Data = spec.value
 		} else {
-			valueKind, err := s.resolveWriteKind(ctx, stream, currentPath, spec.kind, model.Value{Kind: spec.kind, Text: spec.value}, nil, req.EffectiveAt, now)
+			valueKind, err := s.resolveWriteKind(ctx, stream, currentPath, spec.kind, specValue(spec), nil, req.EffectiveAt, now)
 			if err != nil {
 				return missis.SetResult{}, err
 			}
 			event.Operation = model.OpSetValue
-			event.Value = model.Value{Kind: valueKind, Text: spec.value}
-			if valueKind == model.ValueKindList || valueKind == model.ValueKindJSON {
+			event.Value = specValue(spec)
+			event.Value.Kind = valueKind
+			event.Value, _ = model.CoerceBuiltInValue(event.Value)
+			if !spec.hasData && (valueKind == model.ValueKindList || valueKind == model.ValueKindJSON) {
 				event.Value.Data = spec.value
 			}
 		}
@@ -881,6 +1079,13 @@ func (s *Service) applySet(ctx context.Context, req missis.RequestContext, now t
 			return missis.SetResult{}, err
 		}
 		event.Causes = append(event.Causes, causeRef)
+	}
+	if len(containmentEvents) == 0 {
+		containmentEvents = []model.Event{event}
+	} else {
+		// The first event is the moved Part. Copy request-level provenance
+		// added after placement calculation into the batch event.
+		containmentEvents[0] = event
 	}
 	if stream.Kind == model.KindTicket &&
 		spec.mode != modeRetract && spec.mode != modeRetractSubtree &&
@@ -908,7 +1113,8 @@ func (s *Service) applySet(ctx context.Context, req missis.RequestContext, now t
 		Operation: string(event.Operation),
 		Value:     valueOrNil(event.Value),
 	}
-	outcome, err := s.AppendBatch(ctx, append(creationEvents, event), req.IdempotencyKey, preconditions, &result)
+	appendEvents := append(creationEvents, containmentEvents...)
+	outcome, err := s.AppendBatch(ctx, appendEvents, req.IdempotencyKey, preconditions, &result)
 	if err != nil {
 		return missis.SetResult{}, keepStorage(err)
 	}
@@ -917,6 +1123,30 @@ func (s *Service) applySet(ctx context.Context, req missis.RequestContext, now t
 		result.Event = "@e" + strconv.FormatUint(last.AliasSeq, 10)
 	}
 	return result, nil
+}
+
+func indexOfPart(parts []*model.Part, id model.PartID) int {
+	for i, part := range parts {
+		if part.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func samePartParentIDs(left, right *model.PartID) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func specValue(spec setSpec) model.Value {
+	value := model.Value{Kind: spec.kind, Text: spec.value}
+	if spec.hasData {
+		value.Data = spec.data
+	}
+	return value
 }
 
 func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts missis.LinkOptions) (missis.SetResult, error) {
@@ -1483,6 +1713,7 @@ func (s *Service) ensurePartPath(ctx context.Context, stream model.Ref, path []s
 		if parentRef != nil {
 			event.Value = model.Value{Ref: parentRef}
 		}
+		event.Value.OrderKey = model.OrderKeyForIndex(len(model.OrderedChildren(proj, parentID)))
 		events = append(events, event)
 		parentID = &newIDValue
 		partID = newIDValue

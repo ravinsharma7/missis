@@ -16,6 +16,7 @@ func buildImportEvents(stream model.Ref, parts []model.MarkdownPart, actor model
 	events := make([]model.Event, 0, len(parts))
 	partIDs := make(map[string]model.PartID)
 	sortParts(parts)
+	orderByParent := make(map[string]int)
 	for _, part := range parts {
 		partIDs[strings.Join(part.Path, "/")] = model.PartID(missis.NewID("part"))
 	}
@@ -39,7 +40,7 @@ func buildImportEvents(stream model.Ref, parts []model.MarkdownPart, actor model
 		}
 		value.Ref = parentRef
 		partID := partIDs[strings.Join(part.Path, "/")]
-		events = append(events, model.Event{
+		event := model.Event{
 			ID:          model.EventID(missis.NewID("event")),
 			Stream:      stream,
 			Operation:   model.OpCreatePart,
@@ -50,7 +51,11 @@ func buildImportEvents(stream model.Ref, parts []model.MarkdownPart, actor model
 			Actor:       actor,
 			BatchID:     &batchID,
 			Sources:     []model.SourceRef{source},
-		})
+		}
+		parentKey := strings.Join(part.Path[:maxInt(len(part.Path)-1, 0)], "/")
+		event.Value.OrderKey = model.OrderKeyForIndex(orderByParent[parentKey])
+		orderByParent[parentKey]++
+		events = append(events, event)
 	}
 	return events
 }
@@ -66,6 +71,7 @@ func buildReimportEvents(proj *model.Projection, ticketID model.TicketID, parts 
 	}
 	matched := make(map[model.PartID]bool)
 	events := make([]model.Event, 0, len(parts))
+	orderByParent := make(map[string]int)
 
 	for _, part := range parts {
 		pathKey := strings.Join(part.Path, "/")
@@ -82,7 +88,10 @@ func buildReimportEvents(proj *model.Projection, ticketID model.TicketID, parts 
 		if partID == "" {
 			partID = model.PartID(missis.NewID("part"))
 			parentRef := parentRefForPath(part.Path, pathToID)
-			events = append(events, importPartEvent(ticketID, partID, part, parentRef, actor, recordedAt, effectiveAt, batchID, artifact, model.OpCreatePart, model.ValueKindMarkdown))
+			event := importPartEvent(ticketID, partID, part, parentRef, actor, recordedAt, effectiveAt, batchID, artifact, model.OpCreatePart, model.ValueKindMarkdown)
+			event.Value.OrderKey = model.OrderKeyForIndex(orderByParent[parentPathKey(part.Path)])
+			orderByParent[parentPathKey(part.Path)]++
+			events = append(events, event)
 			pathToID[pathKey] = partID
 			continue
 		}
@@ -90,15 +99,24 @@ func buildReimportEvents(proj *model.Projection, ticketID model.TicketID, parts 
 		matched[partID] = true
 		existing := proj.Parts[partID]
 		existingPath := currentPathForPart(proj, partID)
+		desiredOrderKey := model.OrderKeyForIndex(orderByParent[parentPathKey(part.Path)])
+		orderByParent[parentPathKey(part.Path)]++
 		if !equalPaths(existingPath, part.Path) {
 			if parentPathsDiffer(existingPath, part.Path) {
 				parentRef := parentRefForPath(part.Path, pathToID)
-				events = append(events, importPartEvent(ticketID, partID, part, parentRef, actor, recordedAt, effectiveAt, batchID, artifact, model.OpMovePart, ""))
+				event := importPartEvent(ticketID, partID, part, parentRef, actor, recordedAt, effectiveAt, batchID, artifact, model.OpMovePart, "")
+				event.Value.OrderKey = desiredOrderKey
+				events = append(events, event)
 			}
 			if len(existingPath) == 0 || existingPath[len(existingPath)-1] != part.Path[len(part.Path)-1] {
 				events = append(events, importPartEvent(ticketID, partID, part, nil, actor, recordedAt, effectiveAt, batchID, artifact, model.OpRenamePart, model.ValueKindText))
 			}
 			pathToID[pathKey] = partID
+		} else if existing != nil && existing.OrderKey != "" && existing.OrderKey != desiredOrderKey {
+			parentRef := parentRefForPath(part.Path, pathToID)
+			event := importPartEvent(ticketID, partID, part, parentRef, actor, recordedAt, effectiveAt, batchID, artifact, model.OpMovePart, "")
+			event.Value.OrderKey = desiredOrderKey
+			events = append(events, event)
 		}
 
 		currentBody := ""
@@ -155,12 +173,21 @@ func importPartEvent(ticketID model.TicketID, partID model.PartID, part model.Ma
 }
 
 func sortParts(parts []model.MarkdownPart) {
-	sort.Slice(parts, func(i, j int) bool {
-		if len(parts[i].Path) != len(parts[j].Path) {
-			return len(parts[i].Path) < len(parts[j].Path)
-		}
-		return strings.Join(parts[i].Path, "/") < strings.Join(parts[j].Path, "/")
-	})
+	sort.SliceStable(parts, func(i, j int) bool { return len(parts[i].Path) < len(parts[j].Path) })
+}
+
+func parentPathKey(path []string) string {
+	if len(path) <= 1 {
+		return ""
+	}
+	return strings.Join(path[:len(path)-1], "/")
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func sourceMatchesArtifact(part *model.Part, artifact string, startLine, endLine int) bool {

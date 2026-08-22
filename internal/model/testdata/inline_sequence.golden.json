@@ -1,0 +1,63 @@
+{
+  "Items": [
+    {
+      "ID": "inline-000001",
+      "Kind": "markdown-text",
+      "Text": "Introduction\n"
+    },
+    {
+      "ID": "inline-000002",
+      "Kind": "image",
+      "Data": {
+        "kind": "image",
+        "uri": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "media_type": "image/png"
+      }
+    },
+    {
+      "ID": "inline-000003",
+      "Kind": "markdown-text",
+      "Text": "The implementation follows."
+    },
+    {
+      "ID": "inline-000004",
+      "Kind": "code-ref",
+      "Data": {
+        "Repository": "github.com/example/missis",
+        "Commit": "abc123",
+        "Path": "main.go"
+      }
+    },
+    {
+      "ID": "inline-000005",
+      "Kind": "audio",
+      "Data": {
+        "kind": "audio",
+        "uri": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "media_type": "audio/mpeg"
+      }
+    },
+    {
+      "ID": "inline-000006",
+      "Kind": "video",
+      "Data": {
+        "kind": "video",
+        "uri": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "media_type": "video/mp4"
+      }
+    },
+    {
+      "ID": "inline-000007",
+      "Kind": "git-ref",
+      "Data": {
+        "Repository": "github.com/example/missis",
+        "Commit": "abc123"
+      }
+    },
+    {
+      "ID": "inline-000008",
+      "Kind": "raw-markdown",
+      "Text": "![ordinary](https://example.test/image.png)"
+    }
+  ]
+}

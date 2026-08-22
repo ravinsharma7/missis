@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // OperationDescriptor declares the durable contract for one operation.
@@ -54,7 +55,10 @@ var operationRegistry = func() map[Operation]OperationDescriptor {
 			return nil
 		}},
 		{Name: OpCreatePart, Version: 1, Validate: func(e Event) error {
-			return requireTargetKind(e, KindPart)
+			if err := requireTargetKind(e, KindPart); err != nil {
+				return err
+			}
+			return validateOptionalOrderKey(e.Value.OrderKey)
 		}},
 		{Name: OpSetValue, Version: 1, Validate: func(e Event) error {
 			if err := requireTargetKind(e, KindPart); err != nil {
@@ -80,16 +84,25 @@ var operationRegistry = func() map[Operation]OperationDescriptor {
 		{Name: OpMovePart, Version: 1, Validate: func(e Event) error {
 			// A move-part may relocate to root (nil parent); attach-child is
 			// the form that always names a parent.
-			return requireTargetKind(e, KindPart)
+			if err := requireTargetKind(e, KindPart); err != nil {
+				return err
+			}
+			return validateOptionalOrderKey(e.Value.OrderKey)
 		}},
 		{Name: OpAttachChild, Version: 1, Validate: func(e Event) error {
 			if err := requireTargetKind(e, KindPart); err != nil {
 				return err
 			}
-			return requireValueRef(e)
+			if err := requireValueRef(e); err != nil {
+				return err
+			}
+			return validateOptionalOrderKey(e.Value.OrderKey)
 		}},
 		{Name: OpDetachChild, Version: 1, Validate: func(e Event) error {
-			return requireTargetKind(e, KindPart)
+			if err := requireTargetKind(e, KindPart); err != nil {
+				return err
+			}
+			return validateOptionalOrderKey(e.Value.OrderKey)
 		}},
 		{Name: OpRetractSubtree, Version: 1, Validate: func(e Event) error {
 			return requireTargetKind(e, KindPart)
@@ -212,6 +225,16 @@ func requireText(e Event) error {
 func requireValueRef(e Event) error {
 	if e.Value.Ref == nil {
 		return fmt.Errorf("operation %s requires a reference value", e.Operation)
+	}
+	return nil
+}
+
+func validateOptionalOrderKey(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 128 || strings.IndexByte(value, '/') >= 0 || strings.IndexByte(value, '\x00') >= 0 {
+		return fmt.Errorf("invalid containment order key")
 	}
 	return nil
 }

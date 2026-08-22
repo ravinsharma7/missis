@@ -158,6 +158,8 @@ func applyEvent(proj *Projection, event Event) error {
 			}
 			part.ParentID = parentIDFromRef(event.Value.Ref)
 			part.CreatedBy = event.ID
+			part.CreatedSequence = event.Sequence
+			part.OrderKey = event.Value.OrderKey
 			part.CurrentFrom = event.ID
 			part.RetractedBy = nil
 			part.Sources = append([]SourceRef(nil), event.Sources...)
@@ -212,6 +214,9 @@ func applyEvent(proj *Projection, event Event) error {
 				part = ensurePart(proj, event.Target, event)
 			}
 			part.ParentID = parentIDFromRef(event.Value.Ref)
+			if event.Value.OrderKey != "" {
+				part.OrderKey = event.Value.OrderKey
+			}
 			part.CurrentFrom = event.ID
 
 		case OpAttachChild:
@@ -219,6 +224,9 @@ func applyEvent(proj *Projection, event Event) error {
 				part = ensurePart(proj, event.Target, event)
 			}
 			part.ParentID = parentIDFromRef(event.Value.Ref)
+			if event.Value.OrderKey != "" {
+				part.OrderKey = event.Value.OrderKey
+			}
 			part.CurrentFrom = event.ID
 
 		case OpDetachChild:
@@ -226,6 +234,9 @@ func applyEvent(proj *Projection, event Event) error {
 				part = ensurePart(proj, event.Target, event)
 			}
 			part.ParentID = nil
+			if event.Value.OrderKey != "" {
+				part.OrderKey = event.Value.OrderKey
+			}
 			part.CurrentFrom = event.ID
 
 		case OpRetractSubtree:
@@ -247,6 +258,8 @@ func applyEvent(proj *Projection, event Event) error {
 			}
 			part.ParentID = parentIDFromRef(event.Value.Ref)
 			part.CreatedBy = event.ID
+			part.CreatedSequence = event.Sequence
+			part.OrderKey = event.Value.OrderKey
 			part.CurrentFrom = event.ID
 			part.RetractedBy = nil
 		}
@@ -261,12 +274,14 @@ func ensurePart(proj *Projection, target Ref, event Event) *Part {
 		return part
 	}
 	part := &Part{
-		ID:          partID,
-		TicketID:    proj.TicketID,
-		Name:        lastSegment(target.Path),
-		DisplayName: lastSegment(target.Path),
-		CreatedBy:   event.ID,
-		CurrentFrom: event.ID,
+		ID:              partID,
+		TicketID:        proj.TicketID,
+		Name:            lastSegment(target.Path),
+		DisplayName:     lastSegment(target.Path),
+		CreatedBy:       event.ID,
+		CurrentFrom:     event.ID,
+		CreatedSequence: event.Sequence,
+		OrderKey:        event.Value.OrderKey,
 	}
 	proj.Parts[partID] = part
 	return part

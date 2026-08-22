@@ -49,10 +49,12 @@ type Service interface {
 	NewEntity(ctx context.Context, req RequestContext, opts EntityOptions) (EntityResult, error)
 	ImportMarkdown(ctx context.Context, req RequestContext, opts ImportOptions) (NewTicketResult, error)
 	ReimportMarkdown(ctx context.Context, req RequestContext, opts ImportOptions) (ImportResult, error)
+	Ingest(ctx context.Context, req RequestContext, opts IngestOptions) (IngestResult, error)
 	ListTicketSummaries(ctx context.Context, effectiveAt time.Time) ([]TicketSummary, error)
 	ListEntities(ctx context.Context, kind model.Kind, filter ListFilter) ([]EntitySummary, error)
 	ShowTicket(ctx context.Context, ref string, opts ShowOptions) (TicketProjection, error)
 	ShowEntity(ctx context.Context, ref string, opts ShowOptions) (TicketProjection, error)
+	ExportMarkdown(ctx context.Context, ref string, opts ShowOptions) (string, error)
 	ShowHistory(ctx context.Context, ref string, opts HistoryOptions) ([]EventView, error)
 	ShowEvent(ctx context.Context, alias string) (EventView, error)
 	ShowReferences(ctx context.Context, ref string, opts ShowOptions) ([]LinkView, error)
@@ -70,5 +72,6 @@ type Service interface {
 	Manifest(ctx context.Context) (ManifestInfo, error)
 	BackupTo(ctx context.Context, dst string) error
 	Restore(ctx context.Context, backupPath, dst string) error
+	RestoreWithOptions(ctx context.Context, backupPath, dst string, opts RestoreOptions) error
 	VerifyRestore(ctx context.Context, backupPath string, expect ManifestInfo) error
 }

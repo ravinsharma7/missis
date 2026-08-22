@@ -29,6 +29,11 @@ func TestLocalRemoteUploadSkipForceAndVerify(t *testing.T) {
 	if _, err := client.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: created.Ref + "/problem", Value: "body", Kind: model.ValueKindText}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.Ingest(ctx, missis.RequestContext{Actor: "test"}, missis.IngestOptions{
+		Target: created.ID, MediaType: "image/png", SourceName: "preview.png", Content: strings.NewReader("png bytes"),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	manifest, err := client.Manifest(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +59,12 @@ func TestLocalRemoteUploadSkipForceAndVerify(t *testing.T) {
 	if err != nil || !exists {
 		t.Fatalf("uploaded key not present: exists=%v err=%v", exists, err)
 	}
+	for _, sidecarKey := range []string{objectManifestKey(key), objectArtifactsKey(key), objectCompletionKey(key)} {
+		exists, err := remote.Exists(ctx, sidecarKey)
+		if err != nil || !exists {
+			t.Fatalf("uploaded sidecar %s not present: exists=%v err=%v", sidecarKey, exists, err)
+		}
+	}
 
 	if _, err := uploadBackup(ctx, remote, manifest, backup, false); err == nil {
 		t.Fatal("expected skip on existing backup without force")
@@ -65,6 +76,15 @@ func TestLocalRemoteUploadSkipForceAndVerify(t *testing.T) {
 	dst := filepath.Join(dir, "nested", "downloaded.db")
 	if err := downloadAndVerify(ctx, remote, manifest, dst); err != nil {
 		t.Fatalf("download verify: %v", err)
+	}
+	if _, err := os.Stat(dst + ".manifest.json"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dst + ".artifacts"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dst + ".complete.json"); err != nil {
+		t.Fatal(err)
 	}
 	restoredSvc, err := application.OpenPath(dst)
 	if err != nil {
@@ -133,6 +153,34 @@ func TestDownloadVerifyRejectsTamperedBackup(t *testing.T) {
 	}
 	if err := downloadAndVerify(ctx, remote, manifest, filepath.Join(dir, "bad.db")); err == nil {
 		t.Fatal("expected verification to reject tampered backup")
+	}
+}
+
+func TestUploadRejectsIncompleteBackupBundle(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	svc, err := application.OpenPath(filepath.Join(dir, "store.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := missis.NewClient(svc)
+	manifest, err := client.Manifest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(dir, "backup.db")
+	if err := client.BackupTo(ctx, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(backup + ".manifest.json"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = uploadBackup(ctx, &localRemote{dir: filepath.Join(dir, "remote")}, manifest, backup, false)
+	if err == nil || !strings.Contains(err.Error(), "incomplete backup bundle") {
+		t.Fatalf("incomplete upload error = %v", err)
 	}
 }
 

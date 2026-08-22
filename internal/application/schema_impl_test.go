@@ -2,10 +2,12 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/plugin"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -29,6 +31,58 @@ func TestScopeEntitySchemaPartsAndShow(t *testing.T) {
 	}
 	if part.ValueKind != string(model.ValueKindText) || part.Value != "status" {
 		t.Fatalf("schema/status part = %+v", part)
+	}
+}
+
+func TestPluginKindIsValidatedBeforeAppend(t *testing.T) {
+	svc := openFixed(t, fixedClock{fixedNow()})
+	if err := svc.RegisterPluginKind(plugin.KindRegistration{
+		Manifest: plugin.Manifest{ID: "plugin.card", Version: "1"},
+		Kind:     model.ValueKind("plugin/card"),
+		Schema:   "plugin/card/v1",
+		Validate: func(value model.Value) error {
+			if value.Text != "ok" {
+				return fmt.Errorf("plugin card must be ok")
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := svc.NewTicket(context.Background(), missis.RequestContext{}, missis.NewTicketOptions{Title: "Plugin value"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Set(context.Background(), missis.RequestContext{}, missis.SetValue{
+		Target: created.Ref + "/card", Value: "rejected", Kind: model.ValueKind("plugin/card"),
+	}); err == nil {
+		t.Fatal("plugin validator rejection did not stop append")
+	}
+	if _, err := svc.Set(context.Background(), missis.RequestContext{}, missis.SetValue{
+		Target: created.Ref + "/card", Value: "ok", Kind: model.ValueKind("plugin/card"),
+	}); err != nil {
+		t.Fatalf("valid plugin value rejected: %v", err)
+	}
+	projection, err := svc.ShowTicket(context.Background(), created.Ref, missis.ShowOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Parts["card"].ValueKind != "plugin/card" {
+		t.Fatalf("stored plugin kind = %q", projection.Parts["card"].ValueKind)
+	}
+	if _, err := svc.Set(context.Background(), missis.RequestContext{}, missis.SetValueData{
+		Target: created.Ref + "/code", Kind: model.ValueKindCodeRef,
+		Data: model.CodeRef{Repository: "github.com/example/project", Commit: "abc123", Path: "main.go"},
+	}); err != nil {
+		t.Fatalf("structured CodeRef rejected: %v", err)
+	}
+	projection, err = svc.ShowTicket(context.Background(), created.Ref, missis.ShowOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, ok := projection.Parts["code"].Value.(model.CodeRef)
+	if !ok || code.Commit != "abc123" || code.Path != "main.go" {
+		t.Fatalf("stored CodeRef = %#v", projection.Parts["code"].Value)
 	}
 }
 

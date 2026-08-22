@@ -18,6 +18,7 @@ import (
 // order follows the reference Go types; the published test vectors pin the
 // exact bytes for cleanroom implementations.
 func CanonicalEventBytesV1(event Event) ([]byte, error) {
+	event.Value = NormalizeValueDataForCanonical(event.Value)
 	var b bytes.Buffer
 	b.WriteByte('{')
 	if err := writeCanonicalField(&b, "ID", event.ID); err != nil {

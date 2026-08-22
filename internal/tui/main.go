@@ -21,13 +21,15 @@ import (
 	"github.com/ravinsharma7/missis/internal/application"
 	"github.com/ravinsharma7/missis/internal/media"
 	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/plugin"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	partRenderers = buildPartRendererRegistry()
 )
 
 const (
@@ -3340,20 +3342,27 @@ func partSubtree(proj missis.TicketProjection, path string, depth int, width int
 	indent := strings.Repeat("  ", depth)
 	lines := []string{indent + "▸ " + name}
 	if part.Value != nil {
-		value := valueText(part.Value)
-		if mediaValue, ok := media.Parse(model.ValueKind(part.ValueKind), part.Value); ok {
-			value = strings.Join(media.FallbackLines(mediaValue), "\n")
-		} else if part.ValueKind == "markdown" {
-			available := width - depth*2 - 3
-			if available < 20 {
-				available = 20
-			}
-			value = renderMarkdownBody(value, available)
-		} else {
-			value = renderMarkdownValue(value)
+		request := plugin.Request{
+			PartPath:  path,
+			ValueKind: model.ValueKind(part.ValueKind),
+			Value:     rendererValue(part.Value, model.ValueKind(part.ValueKind)),
+			Width:     width - depth*2 - 3,
 		}
-		for _, valueLine := range strings.Split(value, "\n") {
+		if request.Width < 20 {
+			request.Width = 20
+		}
+		result, err := partRenderers.Render(request)
+		if err != nil && !errors.Is(err, plugin.ErrKnownFallback) {
+			lines = append(lines, indent+"   [render error] "+plugin.SanitizeText(err.Error()))
+			result.Lines = nil
+		}
+		for _, valueLine := range result.Lines {
 			lines = append(lines, indent+"   "+valueLine)
+		}
+		if result.State == plugin.RenderStateKnownFallback {
+			// The diagnostic is deliberately separate from the raw value lines;
+			// fallback never rewrites or annotates Markdown/data itself.
+			lines = append(lines, indent+"   [fallback] "+plugin.SanitizeText(result.Diagnostic))
 		}
 	}
 	var children []string
@@ -3372,6 +3381,72 @@ func partSubtree(proj missis.TicketProjection, path string, depth int, width int
 		lines = append(lines, partSubtree(proj, childPath, depth+1, width)...)
 	}
 	return lines
+}
+
+func buildPartRendererRegistry() *plugin.Registry {
+	registry := plugin.NewRegistry()
+	if err := registry.Register(plugin.RendererRegistration{
+		Manifest: plugin.Manifest{ID: "missis.builtin", Version: "1"},
+		ID:       "markdown",
+		Selector: plugin.Selector{ValueKind: model.ValueKindMarkdown},
+		Render: func(request plugin.Request) (plugin.RenderResult, error) {
+			value := request.Value.Text
+			if value == "" {
+				value = valueText(request.Value.Data)
+			}
+			return plugin.RenderResult{Lines: strings.Split(renderMarkdownBody(value, request.Width), "\n")}, nil
+		},
+	}); err != nil {
+		panic(err)
+	}
+	for _, kind := range []model.ValueKind{model.ValueKindImage, model.ValueKindVideo, model.ValueKindAudio, model.ValueKindEmbed} {
+		kind := kind
+		if err := registry.Register(plugin.RendererRegistration{
+			Manifest: plugin.Manifest{ID: "missis.media", Version: "1"},
+			ID:       string(kind),
+			Selector: plugin.Selector{ValueKind: kind},
+			Render: func(request plugin.Request) (plugin.RenderResult, error) {
+				value, ok := media.Parse(request.ValueKind, rendererRawValue(request.Value))
+				if !ok {
+					return plugin.Fallback(request), nil
+				}
+				return plugin.RenderResult{Lines: media.FallbackLines(value)}, nil
+			},
+		}); err != nil {
+			panic(err)
+		}
+	}
+	return registry
+}
+
+func rendererValue(value any, kind model.ValueKind) model.Value {
+	result := model.Value{Kind: kind}
+	switch typed := value.(type) {
+	case string:
+		result.Text = typed
+	case []string:
+		result.List = append([]string(nil), typed...)
+	case nil:
+	default:
+		result.Data = typed
+	}
+	return result
+}
+
+func rendererRawValue(value model.Value) any {
+	if value.Data != nil {
+		return value.Data
+	}
+	if value.Text != "" {
+		return value.Text
+	}
+	if value.Ref != nil {
+		return value.Ref
+	}
+	if value.List != nil {
+		return value.List
+	}
+	return nil
 }
 
 func renderMarkdownBody(markdown string, width int) string {

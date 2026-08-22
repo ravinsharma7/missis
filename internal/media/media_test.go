@@ -42,6 +42,22 @@ func TestParseStructuredVideoDescriptor(t *testing.T) {
 	}
 }
 
+func TestParseAudioDescriptorUsesSafeFallback(t *testing.T) {
+	value, ok := Parse(model.ValueKindAudio, model.MediaDescriptor{
+		Kind:      model.ValueKindAudio,
+		URI:       "artifact:sha256:audio",
+		MediaType: "audio/mpeg",
+		Alt:       "voice note",
+	})
+	if !ok || value.Kind != model.ValueKindAudio {
+		t.Fatalf("audio descriptor = %+v, parsed=%v", value, ok)
+	}
+	got := strings.Join(FallbackLines(value), "\n")
+	if !strings.Contains(got, "playback: external player required") || strings.Contains(got, "<audio") {
+		t.Fatalf("audio fallback = %s", got)
+	}
+}
+
 func TestInlineIframeIsNeverEmitted(t *testing.T) {
 	raw := `<iframe src="https://player.example.test/demo" allowfullscreen></iframe>`
 	value, ok := Parse(model.ValueKindEmbed, raw)

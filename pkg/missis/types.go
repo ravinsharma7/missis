@@ -1,6 +1,7 @@
 package missis
 
 import (
+	"io"
 	"time"
 
 	"github.com/ravinsharma7/missis/internal/model"
@@ -58,6 +59,17 @@ type SetValue struct {
 	Reason string
 }
 
+// SetValueData writes an explicitly structured value. It is the API path for
+// CodeRef, GitRef, media, artifact descriptors, and plugin-owned payloads;
+// the application still validates Kind and the registered schema before
+// appending the event.
+type SetValueData struct {
+	Target string
+	Data   any
+	Kind   model.ValueKind
+	Reason string
+}
+
 type AddValue struct {
 	Target string
 	Value  string
@@ -83,6 +95,10 @@ type RenamePart struct {
 type MovePart struct {
 	Target string
 	Parent string
+	// Before and After are neighboring Part references. The core resolves
+	// them and assigns the opaque order key; clients never calculate keys.
+	Before string
+	After  string
 	Reason string
 }
 
@@ -95,6 +111,7 @@ type SupersedeEvent struct {
 }
 
 func (SetValue) isMutation()       {}
+func (SetValueData) isMutation()   {}
 func (AddValue) isMutation()       {}
 func (RetractValue) isMutation()   {}
 func (RetractSubtree) isMutation() {}
@@ -130,6 +147,7 @@ type PartView struct {
 	CreatedBy      string
 	Name           string
 	DisplayName    string
+	OrderKey       string
 }
 
 type TicketProjection struct {
@@ -139,6 +157,7 @@ type TicketProjection struct {
 	Status     string
 	RecordedAt time.Time
 	Parts      map[string]PartView
+	PartOrder  []string
 }
 
 type EventView struct {
@@ -236,6 +255,31 @@ type ImportOptions struct {
 	Content  string
 	Artifact string
 	Project  string
+}
+
+// IngestOptions selects a target Part stream and supplies immutable content.
+// Plugin selection is based on operation and media metadata, not a plugin ID.
+type IngestOptions struct {
+	Operation            string
+	Target               string
+	Path                 []string
+	MediaType            string
+	SourceName           string
+	LegacySource         string
+	ExcludeTopLevelTitle bool
+	DeclaredSchema       string
+	Capabilities         []string
+	Content              io.Reader
+}
+
+type IngestResult struct {
+	Ref         string   `json:"ref"`
+	Artifact    string   `json:"artifact"`
+	Event       string   `json:"event,omitempty"`
+	Operation   string   `json:"operation"`
+	Value       int      `json:"value"`
+	Plugin      string   `json:"plugin"`
+	Diagnostics []string `json:"diagnostics,omitempty"`
 }
 
 type ShowOptions struct {

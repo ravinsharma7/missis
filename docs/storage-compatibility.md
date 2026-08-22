@@ -22,12 +22,15 @@ A single SQLite database file, holding:
 - **Idempotency records:** `idempotency` mapping a client key to the event IDs
   and JSON result it produced.
 - **Migration bookkeeping:** `schema_migrations` recording applied versions.
+- **Artifact metadata:** `artifacts` records durable content-addressed
+  objects; blob bytes remain outside SQLite in the configured artifact root.
 
 ## Versioning and migration policy
 
 - Schema migrations are **forward-only and additive**. Current set:
   `0001_init`, `0002_link_operation_index`, `0003_store_identity`,
-  `0004_projection_snapshots`.
+  `0004_projection_snapshots`, `0005_artifacts`, and
+  `0006_ordered_parts`.
 - On open, the store: (1) applies pending migrations in order, (2) verifies
   store identity and the hash chain, (3) backfills derived tables for stores
   created before migration 0004.
@@ -61,13 +64,44 @@ A single SQLite database file, holding:
 
 - `tickets`/`parts_current` are rebuildable from the ledger via
   `RebuildProjection` (SDK) or the automatic open-time backfill.
+- `parts_current.order_key` is a rebuildable projection of the current
+  containment event. Empty keys preserve the legacy stream-sequence/Part-ID
+  ordering fallback.
 - `CheckConsistency` verifies derived tables against the ledger.
+- Normal `store.Open` calls own one shared advisory lease for the Store
+  lifetime. `OpenWithLease` is reserved for callers that already hold a
+  compatible lease, and `OpenSnapshot` is reserved for temporary backup or
+  restore databases. These variants share one initialization path so schema,
+  hash, and projection behavior cannot drift.
+- Lock files can remain after a crash; only the descriptor owns the lock and
+  the operating system releases it. Missis does not delete stale PID files or
+  wait indefinitely. Migration, GC, and restore fail fast with a structured
+  busy error when a shared client is active. Artifact roots use the same
+  coordination rule.
+- A dense insertion does not append silently. The core first uses a sparse
+  decimal midpoint; if no midpoint remains, it assigns fresh sparse keys in
+  final order and commits the changed containment events atomically.
 - Search remains an in-memory scan over projections; there is no persistent
   search index yet (ticket #52).
 
 ## Backup and restore
 
-- `missis-tools backup` writes a consistent copy.
+- New logical backups contain `backup.db`,
+  `backup.db.manifest.json`, `backup.db.artifacts/`, and the final
+  `backup.db.complete.json` publication marker. The marker is written last
+  and binds the database hash, manifest hash, bundle version, and completion
+  timestamp.
+- `missis-tools backup verify` distinguishes `complete`, `legacy-v1`,
+  `incomplete`, and `corrupt` backups. `backup cleanup` removes only stale
+  staging paths and explicitly incomplete bundles; it never removes a valid
+  published backup automatically.
+- `missis-tools backup` writes a consistent copy while clients are active.
+  Artifact migration and GC require an exclusive store maintenance lease and
+  reject active clients.
+- `missis-tools backup` accepts the existing database-only and version-1
+  backup formats. Restoring a logical bundle verifies every referenced blob
+  before publishing the new database and artifact root. Restore requires a
+  new destination and exclusive leases for both destination resources.
 - `missis-tools remote upload/download` uses content-addressed keys
   (`<store_id>/<head_hash>.db`), and download verifies store identity, head
   hash, schema version, and event count against a manifest computed from the
@@ -97,6 +131,28 @@ A single SQLite database file, holding:
   Windows relies on user-profile ACLs.
 - Remote object keys keep the `store:` prefix for rclone/aws; the local
   filesystem remote sanitizes the colon so keys are valid Windows paths.
+
+## Artifact roots and migration
+
+- The default new artifact root is the platform user-data directory under
+  `missis/artifacts/<hash-of-store-id>/`; the project path is not encoded in
+  the root, preventing project collisions and excessive path length.
+- `MISSIS_ARTIFACT_STORE` overrides the root for tests and deployments. An
+  unusable or overlong root is an explicit error with override guidance.
+- Only `<store-directory>/artifacts/` is legacy. Run
+  `missis-tools artifacts migrate --store PATH` while all clients are
+  stopped. Successful migration quarantines, rather than deletes, the old
+  directory. Run `missis-tools artifacts gc --grace DURATION` for explicit
+  orphan cleanup; dry-run is the default.
+
+## Ordered inline values
+
+An `inline-sequence` is a typed, ordered value for prose, CodeRef, GitRef,
+artifact, image, audio, video, and raw-Markdown items. It is separate from
+recursive child Parts and stores references rather than bytes. The core
+assigns stable item IDs. Markdown export uses explicit `missis-inline`
+markers for typed items; ordinary Markdown media syntax remains inert and is
+not promoted during parsing.
 
 ## Stability promise for v0.1.0
 

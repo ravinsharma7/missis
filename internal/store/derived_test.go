@@ -99,6 +99,42 @@ func TestDerivedTicketsMaintainedOnAppend(t *testing.T) {
 	}
 }
 
+func TestPartsCurrentPersistsOrderKeyAcrossRebuild(t *testing.T) {
+	// covers N105
+	t.Parallel()
+	s := openDerivedStore(t)
+	ticketID := model.TicketID("ticket:ordered")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	at := time.Now().UTC()
+	orderKey := model.OrderKeyForIndex(7)
+	events := []model.Event{
+		{ID: "event:ordered:1", Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: stream, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: "event:ordered:2", Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:ordered:body", Path: []string{"body"}}, Value: model.Value{Kind: model.ValueKindMarkdown, Text: "body", OrderKey: orderKey}, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, _, err := s.AppendTicketBatch(events, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := s.reader.QueryRow(`SELECT order_key FROM parts_current WHERE ticket_id = ? AND path = 'body'`, string(ticketID)).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != orderKey {
+		t.Fatalf("stored order key = %q, want %q", stored, orderKey)
+	}
+	if err := s.RebuildProjection(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reader.QueryRow(`SELECT order_key FROM parts_current WHERE ticket_id = ? AND path = 'body'`, string(ticketID)).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != orderKey {
+		t.Fatalf("rebuilt order key = %q, want %q", stored, orderKey)
+	}
+	if err := s.CheckConsistency(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestListTicketsHistoricalFallback(t *testing.T) {
 	t.Parallel()
 	s := openDerivedStore(t)

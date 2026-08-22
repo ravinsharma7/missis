@@ -1,0 +1,39 @@
+package blackbox
+
+import "testing"
+
+func TestStructuredValuesRoundTripThroughCLI(t *testing.T) {
+	t.Parallel()
+	store := t.TempDir() + "/missis.db"
+	created := newTicket(t, store, "structured values")
+	ref := created["ref"].(string)
+
+	code := runMissis(t, store, "set", "--json", ref+"/code", "--kind", "code-ref", "--data-json", `{"Repository":"example/repo","Commit":"abc123","Path":"main.go"}`)
+	if code.code != 0 {
+		t.Fatalf("CodeRef set failed: %d %s", code.code, code.stderr)
+	}
+	git := runMissis(t, store, "set", "--json", ref+"/git", "--kind", "git-ref", "--data-json", `{"Repository":"example/repo","Branch":"main"}`)
+	if git.code != 0 {
+		t.Fatalf("GitRef set failed: %d %s", git.code, git.stderr)
+	}
+	image := runMissis(t, store, "set", "--json", ref+"/image", "--kind", "image", "--data-json", `{"kind":"image","uri":"artifact:sha256:demo","alt":"diagram"}`)
+	if image.code != 0 {
+		t.Fatalf("image set failed: %d %s", image.code, image.stderr)
+	}
+
+	shown := mustJSON(t, runMissis(t, store, "show", "--json", ref))
+	parts := shown["parts"].(map[string]any)
+	codePart := parts["code"].(map[string]any)
+	codeValue := codePart["value"].(map[string]any)
+	if codeValue["Path"] != "main.go" || codeValue["Commit"] != "abc123" {
+		t.Fatalf("CodeRef value = %#v", codeValue)
+	}
+	gitValue := parts["git"].(map[string]any)["value"].(map[string]any)
+	if gitValue["Branch"] != "main" {
+		t.Fatalf("GitRef value = %#v", gitValue)
+	}
+	imageValue := parts["image"].(map[string]any)["value"].(map[string]any)
+	if imageValue["uri"] != "artifact:sha256:demo" {
+		t.Fatalf("media value = %#v", imageValue)
+	}
+}

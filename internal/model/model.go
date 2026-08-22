@@ -89,9 +89,11 @@ const (
 	// Media kinds are prototype value kinds. They carry a URI or a
 	// MediaDescriptor in Value.Data; they do not imply that every consumer can
 	// display or play the referenced media.
-	ValueKindImage ValueKind = "image"
-	ValueKindVideo ValueKind = "video"
-	ValueKindEmbed ValueKind = "embed"
+	ValueKindImage          ValueKind = "image"
+	ValueKindVideo          ValueKind = "video"
+	ValueKindAudio          ValueKind = "audio"
+	ValueKindEmbed          ValueKind = "embed"
+	ValueKindInlineSequence ValueKind = "inline-sequence"
 )
 
 // Value is the payload stored on a part. Retracted is a projection flag, not
@@ -103,6 +105,17 @@ type Value struct {
 	List      []string
 	Ref       *Ref
 	Retracted bool
+	// OrderKey is optional containment metadata. It is omitted from legacy
+	// event JSON and does not change hashes for events that do not use ordered
+	// children.
+	OrderKey string `json:"OrderKey,omitempty"`
+}
+
+// ContainmentDescriptor documents the structured meaning of order metadata
+// when callers exchange attach/move payloads. Value.OrderKey is the compact
+// wire field used by events so typed child values can keep Value.Data.
+type ContainmentDescriptor struct {
+	OrderKey string `json:"order_key,omitempty"`
 }
 
 type Operation string
@@ -138,7 +151,11 @@ type OntologyRef struct {
 }
 
 type InvocationRef struct {
-	ID string
+	ID          string    `json:"ID"`
+	Plugin      string    `json:"Plugin,omitempty"`
+	Version     string    `json:"Version,omitempty"`
+	CodeHash    string    `json:"CodeHash,omitempty"`
+	RequestedBy *ActorRef `json:"RequestedBy,omitempty"`
 }
 
 type Effect struct {
@@ -201,7 +218,9 @@ type Part struct {
 	CurrentFrom EventID
 	RetractedBy *EventID
 
-	Sources []SourceRef
+	Sources         []SourceRef
+	OrderKey        string
+	CreatedSequence uint64
 }
 
 type PartContainment struct {
@@ -212,6 +231,7 @@ type PartContainment struct {
 	AttachedBy  EventID
 	DetachedBy  *EventID
 	EffectiveAt time.Time
+	OrderKey    string
 }
 
 type Link struct {
@@ -227,33 +247,42 @@ type Link struct {
 }
 
 type CodeRef struct {
-	Repository string
-	Commit     string
-	Path       string
+	Repository string `json:"Repository"`
+	Commit     string `json:"Commit"`
+	Path       string `json:"Path"`
 
-	StartLine *int
-	EndLine   *int
-	StartByte *int
-	EndByte   *int
+	StartLine *int `json:"StartLine,omitempty"`
+	EndLine   *int `json:"EndLine,omitempty"`
+	StartByte *int `json:"StartByte,omitempty"`
+	EndByte   *int `json:"EndByte,omitempty"`
 
-	Symbol    *string
-	Package   *string
-	ASTNode   *string
-	CFGNode   *string
-	DFGNode   *string
-	GraphNode *string
+	Symbol    *string `json:"Symbol,omitempty"`
+	Package   *string `json:"Package,omitempty"`
+	ASTNode   *string `json:"ASTNode,omitempty"`
+	CFGNode   *string `json:"CFGNode,omitempty"`
+	DFGNode   *string `json:"DFGNode,omitempty"`
+	GraphNode *string `json:"GraphNode,omitempty"`
 }
 
 type GitRef struct {
-	Repository string
+	Repository string `json:"Repository"`
 
-	Commit *string
-	Base   *string
-	Head   *string
-	Branch *string
-	Tag    *string
-	PR     *string
-	Diff   *string
+	Commit *string `json:"Commit,omitempty"`
+	Base   *string `json:"Base,omitempty"`
+	Head   *string `json:"Head,omitempty"`
+	Branch *string `json:"Branch,omitempty"`
+	Tag    *string `json:"Tag,omitempty"`
+	PR     *string `json:"PR,omitempty"`
+	Diff   *string `json:"Diff,omitempty"`
+}
+
+// ArtifactDescriptor carries only immutable artifact identity and metadata.
+// The bytes live in an artifact.Store and are never embedded in a Part or
+// event payload.
+type ArtifactDescriptor struct {
+	Ref       Ref    `json:"Ref"`
+	MediaType string `json:"MediaType,omitempty"`
+	Size      int64  `json:"Size"`
 }
 
 type Evidence struct {
