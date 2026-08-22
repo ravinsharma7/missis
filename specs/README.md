@@ -23,8 +23,9 @@ missis --ag-brief
 - `bootstrap-contract.md` — temporary Phase 1 implementation contract; it is
   not a general agent bootstrap guide.
 - `schema-declaration.subspec.md` — working ontology draft tracked by open
-  ticket `#27`; it is not normative until merged into v2 or explicitly
-  rejected. Do not use it as task direction or agent bootstrap guidance.
+  ticket `#27`; retirement and the final immutable Git reference are tracked
+  by `#100`. It is not normative until merged into v2 or explicitly rejected.
+  Do not use it as task direction or agent bootstrap guidance.
 - `change.md` — specification history and provenance notes.
 
 When a retained draft is merged or rejected, update the owning ticket and
