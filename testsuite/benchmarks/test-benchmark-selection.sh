@@ -69,7 +69,15 @@ if [ "${1:-}" = "exec" ]; then
 		fi
 	fi
 	if [ "${CODEX_FAKE_SUCCESS:-0}" = "1" ]; then
-		printf '%s\n' 'codex' 'exec' 'tokens used' '42'
+		if [ "${CODEX_FAKE_JSON:-0}" = "1" ]; then
+			printf '%s\n' \
+				'{"type":"thread.started","thread_id":"test"}' \
+				'{"type":"turn.started"}' \
+				'{"type":"item.completed","item":{"type":"command_execution"}}' \
+				'{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":6,"reasoning_output_tokens":4}}'
+		else
+			printf '%s\n' 'codex' 'exec' 'tokens used' '42'
+		fi
 		exit 0
 	fi
 	exit "${CODEX_FAKE_EXIT:-1}"
@@ -204,6 +212,26 @@ if [ "$(wc -l <"$canary_marker" | tr -d ' ')" -ne 1 ]; then
 fi
 grep -q 'canary: missing-title/brief' "$canary_output"
 grep -q 'preflight: passed' "$canary_output"
+
+json_canary_output="$tmp/json-canary.out"
+json_canary_error="$tmp/json-canary.err"
+json_canary_code=0
+(
+  cd "$repo_root"
+  CODEX_HOME="$codex_home" CODEX_BIN="$fake_codex" \
+    CODEX_FAKE_SUCCESS=1 CODEX_FAKE_JSON=1 \
+    testsuite/benchmarks/benchmark-agent-brief.sh --canary \
+      --scenario missing-title --baseline-ref HEAD
+) >"$json_canary_output" 2>"$json_canary_error" || json_canary_code=$?
+if [ "$json_canary_code" -ne 0 ]; then
+	echo "JSON canary benchmark exit=$json_canary_code" >&2
+	cat "$json_canary_error" >&2
+	exit 1
+fi
+grep -q 'input' "$json_canary_output"
+grep -q 'reasoning' "$json_canary_output"
+grep -q ' 10 ' "$json_canary_output"
+grep -q ' 16 ' "$json_canary_output"
 
 full_marker="$tmp/fake-codex-full"
 full_output="$tmp/full.out"

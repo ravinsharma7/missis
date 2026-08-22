@@ -669,12 +669,14 @@ run_config() {
 		last_iteration="$ITERATIONS"
 	fi
 	for i in $(seq "$start_iteration" "$last_iteration"); do
-		local scratch log exec_codex_home before mid after code first_code start_ns end_ns started_at wall before_tickets mid_tickets tickets execs turns tokens transcript_bytes semantic outcome
+		local scratch log stderr_log exec_codex_home before mid after code first_code start_ns end_ns started_at wall before_tickets mid_tickets tickets execs turns tokens input_tokens cached_input_tokens cache_write_input_tokens output_tokens reasoning_tokens total_tokens transcript_bytes semantic outcome
 		local -a session_config_args
 		scratch="$RUN_DIR/projects/${scenario}-${name}-${i}"
 		rm -rf "$scratch"
 		mkdir -p "$scratch"
 		log="$LOG_DIR/${scenario}-${name}-${i}.log"
+		stderr_log="$LOG_DIR/${scenario}-${name}-${i}.stderr.log"
+		: >"$stderr_log"
 		setup_project "$scratch" "$use_pointer" "$missis_bin" "$scenario"
 		exec_codex_home="$RUN_DIR/codex-home/${scenario}-${name}-${i}"
 		prepare_codex_home "$exec_codex_home" "$enable_skill"
@@ -690,8 +692,8 @@ run_config() {
 			mid="$LOG_DIR/${scenario}-${name}-${i}.mid.json"
 			first_code=0
 			CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec \
-				"${CODEX_RUN_ARGS_ARRAY[@]}" "${session_config_args[@]}" --skip-git-repo-check -C "$scratch" \
-				"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>&1 || first_code=$?
+				"${CODEX_RUN_ARGS_ARRAY[@]}" "${session_config_args[@]}" --skip-git-repo-check -C "$scratch" --json \
+				"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>"$stderr_log" || first_code=$?
 			write_full_projection "$missis_bin" "$scratch/.missis-store/missis.db" "$mid" 2>/dev/null || true
 			mid_tickets="$(jq '.tickets | length' "$mid" 2>/dev/null || echo 0)"
 			if [ "$first_code" -ne 0 ]; then
@@ -701,23 +703,43 @@ run_config() {
 					cd "$scratch"
 					CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec resume --last --all \
 						-c 'sandbox_mode="workspace-write"' -c 'approval_policy="never"' "${session_config_args[@]}" --skip-git-repo-check \
-						"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$(followup_prompt)"
-				) >>"$log" 2>&1 || code=$?
+						--json "${CODEX_EXTRA_ARGS_ARRAY[@]}" "$(followup_prompt)"
+				) >>"$log" 2>>"$stderr_log" || code=$?
 			fi
 		else
 			CODEX_HOME="$exec_codex_home" PATH="$bin_dir:$CODEX_HOST_PATH" timeout 900 "$CODEX_BIN" exec \
-				"${CODEX_RUN_ARGS_ARRAY[@]}" "${session_config_args[@]}" --skip-git-repo-check --ephemeral -C "$scratch" \
-				"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>&1 || code=$?
+				"${CODEX_RUN_ARGS_ARRAY[@]}" "${session_config_args[@]}" --skip-git-repo-check --ephemeral -C "$scratch" --json \
+				"${CODEX_EXTRA_ARGS_ARRAY[@]}" "$prompt" >"$log" 2>"$stderr_log" || code=$?
 		fi
 		end_ns="$(date +%s%N)"
 		wall="$(awk "BEGIN { printf \"%.1f\", ($end_ns - $start_ns) / 1000000000 }")"
 		after="$LOG_DIR/${scenario}-${name}-${i}.after.json"
 		write_full_projection "$missis_bin" "$scratch/.missis-store/missis.db" "$after" 2>/dev/null || true
 		tickets="$(jq '.tickets | length' "$after" 2>/dev/null || echo 0)"
-		execs="$(grep -c '^exec$' "$log" || true)"
-		turns="$(grep -c '^codex$' "$log" || true)"
-		tokens="$(awk '/^tokens used$/{getline; gsub(/,/, "", $0); if ($0 ~ /^[0-9]+$/) { total += $0; found=1 }} END { if (found) print total }' "$log")"
-		tokens="${tokens:-unknown}"
+		execs="$(jq -Rr 'fromjson? | select(type == "object" and .type == "item.completed" and .item.type == "command_execution") | 1' "$log" 2>/dev/null | wc -l | tr -d ' ')"
+		turns="$(jq -Rr 'fromjson? | select(type == "object" and .type == "turn.completed") | 1' "$log" 2>/dev/null | wc -l | tr -d ' ')"
+		if [ "$execs" -eq 0 ]; then execs="$(grep -c '^exec$' "$log" || true)"; fi
+		if [ "$turns" -eq 0 ]; then turns="$(grep -c '^codex$' "$log" || true)"; fi
+		input_tokens="$(jq -Rr 'fromjson? | select(type == "object" and .type == "turn.completed") | .usage.input_tokens // empty' "$log" 2>/dev/null | awk '{total += $0; found=1} END {if (found) print total}')"
+		cached_input_tokens="$(jq -Rr 'fromjson? | select(type == "object" and .type == "turn.completed") | .usage.cached_input_tokens // empty' "$log" 2>/dev/null | awk '{total += $0; found=1} END {if (found) print total}')"
+		cache_write_input_tokens="$(jq -Rr 'fromjson? | select(type == "object" and .type == "turn.completed") | .usage.cache_write_input_tokens // empty' "$log" 2>/dev/null | awk '{total += $0; found=1} END {if (found) print total}')"
+		output_tokens="$(jq -Rr 'fromjson? | select(type == "object" and .type == "turn.completed") | .usage.output_tokens // empty' "$log" 2>/dev/null | awk '{total += $0; found=1} END {if (found) print total}')"
+		reasoning_tokens="$(jq -Rr 'fromjson? | select(type == "object" and .type == "turn.completed") | (.usage.reasoning_output_tokens // .usage.output_tokens_details.reasoning_tokens // empty)' "$log" 2>/dev/null | awk '{total += $0; found=1} END {if (found) print total}')"
+		if [ -n "$input_tokens" ] && [ -n "$output_tokens" ]; then
+			cached_input_tokens="${cached_input_tokens:-0}"
+			cache_write_input_tokens="${cache_write_input_tokens:-0}"
+			reasoning_tokens="${reasoning_tokens:-0}"
+			total_tokens=$((input_tokens + output_tokens))
+			tokens="$total_tokens"
+		else
+			input_tokens="unknown"
+			cached_input_tokens="unknown"
+			cache_write_input_tokens="unknown"
+			output_tokens="unknown"
+			reasoning_tokens="unknown"
+			tokens="$(awk '/^tokens used$/{getline; gsub(/,/, "", $0); if ($0 ~ /^[0-9]+$/) { total += $0; found=1 }} END { if (found) print total }' "$log")"
+			tokens="${tokens:-unknown}"
+		fi
 		transcript_bytes="$(wc -c <"$log" | tr -d ' ')"
 		semantic="fail"
 		if [ "$code" -ne 0 ] || [ "$turns" -eq 0 ]; then
@@ -761,9 +783,9 @@ run_config() {
 			if [ "$semantic" = "pass" ]; then outcome="pass"; else outcome="fail"; fi
 		fi
 		printf '%s %s %s %s\n' "$PROVIDER_LABEL" "$MODEL_LABEL" "$FAMILY" "$EFFORT_LABEL" >"$LOG_DIR/${scenario}-${name}-${i}.provider"
-		printf '%-30s %8s %6s %6s %9s %8s %8s %6s  %s\n' \
-			"${scenario}/${name}#${i}" "${wall}s" "$execs" "$turns" "$tokens" "$transcript_bytes" "$tickets" "$code" "$outcome"
-		RESULT_ROWS+="| ${scenario}/${name}#${i} | $MODEL_LABEL | $started_at | ${wall}s | $execs | $turns | $tokens | $transcript_bytes | $before_tickets | $tickets | $code | $outcome | [log](logs/${scenario}-${name}-${i}.log) |"$'\n'
+		printf '%-30s %8s %6s %6s %9s %9s %9s %9s %9s %8s %6s  %s\n' \
+			"${scenario}/${name}#${i}" "${wall}s" "$execs" "$turns" "$input_tokens" "$output_tokens" "$reasoning_tokens" "$tokens" "$transcript_bytes" "$tickets" "$code" "$outcome"
+		RESULT_ROWS+="| ${scenario}/${name}#${i} | $MODEL_LABEL | $started_at | ${wall}s | $execs | $turns | $input_tokens | $cached_input_tokens | $cache_write_input_tokens | $output_tokens | $reasoning_tokens | $tokens | $transcript_bytes | $before_tickets | $tickets | $code | $outcome | [log](logs/${scenario}-${name}-${i}.log) |"$'\n'
 		if [ "$outcome" = "blocked" ]; then
 			RUN_BLOCKED=1
 			BLOCK_REASON="Codex exited with code $code and $turns turns; see logs/${scenario}-${name}-${i}.log"
@@ -779,7 +801,7 @@ if [ -n "$CATALOG_PATCHED" ]; then
 fi
 echo "temp root: $TEMP_ROOT"
 echo "logs: $LOG_DIR"
-printf '%-30s %8s %6s %6s %9s %8s %8s %6s  %s\n' "scenario/config" "wall" "execs" "turns" "tokens" "bytes" "tickets" "exit" "outcome"
+printf '%-30s %8s %6s %6s %9s %9s %9s %9s %8s %6s  %s\n' "scenario/config" "wall" "execs" "turns" "input" "output" "reasoning" "total" "tickets" "exit" "outcome"
 canary_row="$(scenario_row_for "$CANARY_SCENARIO")"
 IFS='|' read -r canary_scenario canary_prompt canary_expected canary_expected_value <<<"$canary_row"
 echo "canary: $canary_scenario/brief"
@@ -847,8 +869,8 @@ fi
 	printf '| skill | no | enabled | Full missis skill only |\n'
 	printf '| brief | yes | enabled | Pointer plus full missis skill |\n'
 	printf '\n## Detailed runs\n\n'
-	printf '| scenario/config | model | started_at | wall | exec calls | turns | tokens | transcript bytes | before tickets | after tickets | exit | outcome | log |\n'
-	printf '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|\n'
+	printf '| scenario/config | model | started_at | wall | exec calls | turns | input tokens | cached input | cache write | output tokens | reasoning tokens | total tokens | transcript bytes | before tickets | after tickets | exit | outcome | log |\n'
+	printf '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|\n'
 	printf '%s' "$RESULT_ROWS"
 	printf '\nLogs: logs/ (relative to this directory)\n'
 } > "$RUN_DIR/results.md"
@@ -874,8 +896,11 @@ Notes:
   recorded above.
 - semantic pass/fail is evaluated from the before/after store projection for
   each completed session; failed or zero-turn sessions are blocked and cannot
-  count as semantic passes. Token counts are best-effort transcript values and
-  transcript bytes are a provider-neutral output-size proxy.
+  count as semantic passes. Token usage is summed from `turn.completed` JSON
+  events: input, cached input, cache-write input, output, and reasoning output.
+  Total tokens is input plus output. If a provider or test double emits only
+  the legacy `tokens used` marker, the breakdown is `unknown` and total falls
+  back to that marker.
 - every full run performs a no-token compatibility preflight and uses the
   target brief configuration's first row as its one-session canary; --canary
   runs only that gate.
