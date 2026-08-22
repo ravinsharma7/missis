@@ -100,15 +100,25 @@ use Missis backup/remote synchronization instead of sharing the live database.
 
 ## Getting started
 
-The fastest path is the CLI's own guide:
+For an agent working in an existing Missis project, the canonical bootstrap
+path is the CLI brief:
 
 ```bash
-missis --get-started
+missis --ag-brief
 ```
 
-For a new project, use the [local-first agent setup guide](docs/agent-setup.md)
-from the checkout when available. It does not require a web search; use an
+It prints the current command syntax and safety rules. It is the source of
+truth for agent discovery; agents must not reconstruct the workflow from
+legacy context files, exports, or copied ticket Markdown.
+
+For installation and initialization of a new project, use the human-oriented
+`missis --get-started` wrapper or the [local-first agent setup guide](docs/agent-setup.md).
+Those are setup aids, not alternate task-selection contracts. Use an
 immutable GitHub tag or commit only when choosing the published install ref.
+
+For an existing project that contains old `.missis.d` files, use the
+[legacy migration prompt](docs/missis-migration-prompt.md). It preserves old
+metadata while removing its ability to misdirect agents.
 
 Or, step by step:
 
@@ -126,8 +136,8 @@ missis show --health
 missis show --context
 missis --ag-brief
 
-# Make Missis discoverable to future agents. Review before adding to an
-# existing instruction file; do not overwrite unrelated project guidance.
+# Optional durable handoff: review this generated block before adding it to
+# an existing instruction file; do not overwrite unrelated project guidance.
 if [ -f AGENTS.md ]; then
   missis --ag-pointer
 else
@@ -155,8 +165,8 @@ missis-tools repair .missis-store/missis.db
 The examples above use the installed `missis-tools` binary. When working from
 the Missis checkout itself, use `go run ./tools/missis-tools ...` instead.
 
-For the complete fresh-project, existing-project, PowerShell, and recommended
-project-local agent handoff flow, use the [local-first agent setup guide](docs/agent-setup.md).
+For the complete fresh-project, existing-project, PowerShell, and optional
+project-local handoff flow, use the [local-first agent setup guide](docs/agent-setup.md).
 
 For how tickets, parts, tags, links, projects, and groups relate, see
 spec section 14 ([Projects, groups, and scopes](specs/missues-issue-specification.v2.md#14-projects-groups-and-scopes)).

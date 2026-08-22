@@ -401,7 +401,11 @@ func runGetStarted() int {
 
 const getStartedText = `missis getting started
 
-Local-first setup for a new project:
+For an existing initialized project, the canonical agent bootstrap is:
+     missis --ag-brief
+
+This command is only the human-oriented local-first setup wrapper for a new
+project. It does not define a second agent workflow:
      Read docs/agent-setup.md from the current Missis checkout when available.
      No web search is required for setup or ticket work.
      If no checkout is available, use an operator-supplied published ref.
@@ -426,13 +430,14 @@ Local-first setup for a new project:
      missis show --context
      missis --ag-brief
 
-3. Make Missis discoverable to future agents (review before modifying files):
+3. Optionally make Missis discoverable to future agents (review before modifying files):
      if [ -f AGENTS.md ]; then
        missis --ag-pointer
        # Add the reviewed block under a Missis section; do not overwrite AGENTS.md.
      else
        missis --ag-pointer > AGENTS.md
      fi
+     # This is a durable handoff only; it does not select a ticket or focus.
      # Use the provider's equivalent instruction file when it does not read AGENTS.md.
 
 4. First project, group, ticket, and everyday workflow (when requested):

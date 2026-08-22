@@ -82,7 +82,7 @@ func TestGetStarted(t *testing.T) {
 	}
 	for _, want := range []string{
 		"docs/agent-setup.md",
-		"Local-first setup",
+		"local-first setup wrapper",
 		"No web search is required",
 		"standalone; no Missis README",
 		"missis --init",

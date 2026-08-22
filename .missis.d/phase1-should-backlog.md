@@ -1,5 +1,9 @@
 # Phase 1 SHOULD backlog
 
+> Historical planning metadata only. This file is not an active contract,
+> bootstrap source, or task-direction pointer. The v2 specification, Phase 1
+> requirements, and the live Missis store are authoritative.
+
 This file makes the Phase 1 `SHOULD` items actionable. Every row must have a
 decision before the Phase 1 traceability check is run.
 

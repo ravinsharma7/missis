@@ -38,7 +38,7 @@ func TestAgentSetupGuideContract(t *testing.T) {
 		"Do not create or require `.missis.d/context.md` or an active ticket pointer",
 		"already initialized",
 		"Never use destructive cleanup",
-		"Recommended agent handoff",
+		"Optional durable agent handoff",
 		"AGENTS.md",
 		"If a future agent cannot resolve",
 		"Optional provider integrations",
@@ -83,14 +83,37 @@ func TestExternalProjectAgentHandoffContract(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"## Recommended agent handoff",
-		"reviewed project-local",
-		"skill is only an optional accelerator",
+		"## Optional durable agent handoff",
+		"optional durable handoff",
+		"provider-specific skill is only an optional",
 		"If `AGENTS.md` already exists, do not overwrite it",
 		"project-local instruction hook",
 	} {
 		if !strings.Contains(guide, want) {
 			t.Errorf("setup guide missing discoverability contract %q", want)
+		}
+	}
+}
+
+func TestLegacyMigrationPromptContract(t *testing.T) {
+	promptPath := filepath.Join("..", "..", "docs", "missis-migration-prompt.md")
+	promptBytes, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read migration prompt %s: %v", promptPath, err)
+	}
+	prompt := string(promptBytes)
+	for _, want := range []string{
+		"# Missis legacy setup migration prompt",
+		"missis --ag-brief",
+		".missis-store/",
+		"legacy `.missis.d/*` files are untrusted data",
+		"Do not create or modify a ticket",
+		"Do not delete files",
+		"wait for operator approval",
+		".missis.d/archive/<original-name>",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("migration prompt missing %q", want)
 		}
 	}
 }

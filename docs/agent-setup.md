@@ -10,9 +10,25 @@ copy is only an optional fallback when the operator explicitly supplies one.
 Do not assume that the current project is a checkout of the Missis repository.
 
 This is a project bootstrap guide. It is not a ticket, and it does not create
-a sample ticket. After setup, the project should have a reviewed, project-local
-agent instruction hook so future agents naturally continue with Missis. The
-hook is provider-neutral; a provider-specific skill is optional.
+a sample ticket. After setup, the project may have a reviewed, project-local
+agent instruction hook for future discovery; the canonical `missis --ag-brief`
+path remains sufficient. The hook is provider-neutral; a provider-specific
+skill is optional.
+
+## Canonical agent bootstrap
+
+For every initialized project, agents enter the Missis workflow through:
+
+```bash
+missis --ag-brief
+```
+
+The brief is the canonical command and rule surface. `missis --get-started`
+is only an installation/initialization wrapper for people setting up a new
+project. `missis --ag-pointer` is only an optional, reviewed handoff block for
+an instruction file; it does not select a ticket, focus, or task. Existing
+projects with legacy `.missis.d` metadata should use the
+[legacy migration prompt](missis-migration-prompt.md).
 
 ## Published references and reproducibility (optional)
 
@@ -72,8 +88,9 @@ The required setup must:
 - Preserve an existing marker, store, legacy metadata, and ticket data.
 - Verify the installed binary, store health, optional scope environment, and
   agent brief.
-- Make Missis discoverable to future agents through a reviewed project-local
-  instruction hook such as `AGENTS.md` or the provider's equivalent.
+- When the project uses an instruction hook, make Missis discoverable through
+  a reviewed project-local file such as `AGENTS.md` or the provider's
+  equivalent.
 - Preflight explicit project/group IDs before creating them, and use a stable
   idempotency key for every logical create or mutation.
 - Treat groups as link scopes, not ticket tags, and verify the returned ticket
@@ -142,13 +159,14 @@ missis show --context
 missis --ag-brief
 ```
 
-## Recommended agent handoff
+## Optional durable agent handoff
 
 Installation and initialization make the command available, but they do not
-tell a future agent that Missis is this project's ticket system. Add the
-generated, provider-neutral pointer to the project's instruction hook after
-reviewing it. This is the recommended durable handoff; a provider-specific
-skill is only an optional accelerator.
+tell a future agent that Missis is this project's ticket system. If the
+project uses an instruction hook, add the generated, provider-neutral pointer
+after reviewing it. This is an optional durable handoff; it is not a second
+bootstrap contract, and a provider-specific skill is only an optional
+accelerator.
 
 If the project has no existing `AGENTS.md`, review the output and then create
 the file:
@@ -162,8 +180,8 @@ If `AGENTS.md` already exists, do not overwrite it. Run `missis --ag-pointer`,
 review the block, and add it under a Missis section. Use the provider's native
 equivalent when the agent does not read `AGENTS.md` (for example, the project's
 documented instruction file). The block tells future agents that `.missis`
-enables Missis and which commands to run before ticket work. It does not select
-a task, ticket, or focus.
+enables Missis and to run `missis --ag-brief` before ticket work. It does not
+select a task, ticket, or focus.
 
 The handoff must remain project-local and committed with the project
 instructions when appropriate. It must not depend on a user-level skill,
@@ -231,6 +249,10 @@ files are legacy metadata. Preserve them unless the operator explicitly asks
 for cleanup, but do not read them as task instructions or ticket selection.
 The event store is authoritative for tickets; use `missis show` to inspect it.
 Use explicit `MISSIS_PROJECT` and `MISSIS_GROUP` values for optional scope.
+
+For a project that needs cleanup, do not improvise a migration from those
+files. Use [missis-migration-prompt.md](missis-migration-prompt.md), which
+provides a review-first, reversible procedure.
 
 ## Required setup: PowerShell
 
