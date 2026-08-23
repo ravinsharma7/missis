@@ -136,6 +136,19 @@ func TestParseMarkdownRecognizesSetextHeading(t *testing.T) {
 	}
 }
 
+func TestParseMarkdownHeadingTextUsesSupportedASTValues(t *testing.T) {
+	parts, err := ParseMarkdownParts("## **Styled** `code` [link](https://example.test) <https://auto.test>\nbody\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("parts = %+v", parts)
+	}
+	if got, want := parts[0].Path[0], "styled-code-link-https-auto.test"; got != want {
+		t.Fatalf("heading text = %q, want %q", got, want)
+	}
+}
+
 func TestParseMarkdownPreservesExplicitPartIdentity(t *testing.T) {
 	content := "# Ticket\n\n<!-- missis-part {\"id\":\"part:evidence\"} -->\n## Evidence\n\nBody.\n"
 	parts, err := ParseMarkdownParts(content)

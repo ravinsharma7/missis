@@ -11,56 +11,6 @@ import (
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
-// buildImportEvents converts parsed Markdown parts into create-part events,
-// matching the CLI's historical import behavior exactly.
-func buildImportEvents(stream model.Ref, parts []model.MarkdownPart, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, artifact string) []model.Event {
-	events := make([]model.Event, 0, len(parts))
-	partIDs := make(map[string]model.PartID)
-	sortParts(parts)
-	orderByParent := make(map[string]int)
-	for _, part := range parts {
-		partIDs[strings.Join(part.Path, "/")] = model.PartID(missis.NewID("part"))
-	}
-	for _, part := range parts {
-		start, end := part.StartLine, part.EndLine
-		source := model.SourceRef{
-			Ref:       model.Ref{Kind: model.KindArtifact, Entity: artifact},
-			MediaType: "text/markdown",
-			Span:      &model.Span{StartLine: &start, EndLine: &end},
-		}
-		value := model.Value{}
-		var parentRef *model.Ref
-		if len(part.Path) > 1 {
-			parentKey := strings.Join(part.Path[:len(part.Path)-1], "/")
-			if parentID, ok := partIDs[parentKey]; ok {
-				parentRef = &model.Ref{Kind: model.KindPart, Entity: string(parentID)}
-			}
-		}
-		if part.Body != "" {
-			value = model.Value{Kind: model.ValueKindMarkdown, Text: part.Body}
-		}
-		value.Ref = parentRef
-		partID := partIDs[strings.Join(part.Path, "/")]
-		event := model.Event{
-			ID:          model.EventID(missis.NewID("event")),
-			Stream:      stream,
-			Operation:   model.OpCreatePart,
-			Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: part.Path},
-			Value:       value,
-			RecordedAt:  recordedAt,
-			EffectiveAt: effectiveAt,
-			Actor:       actor,
-			BatchID:     &batchID,
-			Sources:     []model.SourceRef{source},
-		}
-		parentKey := strings.Join(part.Path[:maxInt(len(part.Path)-1, 0)], "/")
-		event.Value.OrderKey = model.OrderKeyForIndex(orderByParent[parentKey])
-		orderByParent[parentKey]++
-		events = append(events, event)
-	}
-	return events
-}
-
 // buildReimportEvents computes the minimal event set to bring a ticket's
 // imported parts in line with new Markdown content. It returns an error when
 // an existing imported part would disappear from the source.
@@ -244,13 +194,6 @@ func parentPathKey(path []string) string {
 		return ""
 	}
 	return strings.Join(path[:len(path)-1], "/")
-}
-
-func maxInt(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
 }
 
 func sourceMatchesArtifact(part *model.Part, artifact string, startLine, endLine int) bool {

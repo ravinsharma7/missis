@@ -714,7 +714,7 @@ func RecoverCurrentInstallation() error {
 
 func stageWindowsCompletion(binDir, staged string, installation Installation) error {
 	if runtime.GOOS != "windows" {
-		return fmt.Errorf("Windows update completion requested on %s", runtime.GOOS)
+		return fmt.Errorf("windows update completion requested on %s", runtime.GOOS)
 	}
 	if err := writeJSONAtomic(filepath.Join(binDir, updateJournal), replacementJournal{Staged: staged, Installation: installation}, 0o600); err != nil {
 		return err
@@ -770,7 +770,7 @@ func stageWindowsHelper(binDir, action string) error {
 
 func CompleteWindowsUpdate(binDir string, parentPID int) error {
 	if runtime.GOOS != "windows" {
-		return fmt.Errorf("Windows update helper cannot run on %s", runtime.GOOS)
+		return fmt.Errorf("windows update helper cannot run on %s", runtime.GOOS)
 	}
 	if err := waitForProcessExit(parentPID); err != nil {
 		return err
@@ -788,7 +788,7 @@ func CompleteWindowsUpdate(binDir string, parentPID int) error {
 
 func CompleteWindowsRecovery(binDir string, parentPID int) error {
 	if runtime.GOOS != "windows" {
-		return fmt.Errorf("Windows update recovery helper cannot run on %s", runtime.GOOS)
+		return fmt.Errorf("windows update recovery helper cannot run on %s", runtime.GOOS)
 	}
 	if err := waitForProcessExit(parentPID); err != nil {
 		return err

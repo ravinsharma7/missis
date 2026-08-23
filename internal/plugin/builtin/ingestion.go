@@ -62,7 +62,7 @@ func (p *MarkdownImporter) Propose(ctx context.Context, input plugin.IngestInput
 	}
 	parts := parsed.Parts
 	if len(parts) == 0 {
-		return plugin.IngestProposal{}, fmt.Errorf("Markdown artifact contains no Parts")
+		return plugin.IngestProposal{}, fmt.Errorf("markdown artifact contains no parts")
 	}
 	if input.Request.ExcludeTopLevelTitle {
 		parts = model.ExcludeMarkdownDocumentTitle(parts)

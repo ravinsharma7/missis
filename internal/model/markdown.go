@@ -318,7 +318,7 @@ func parsePartIdentityMarkers(source []byte, lines []string) (map[int]markdownId
 		}
 		marker.ID = strings.TrimSpace(marker.ID)
 		if marker.ID == "" {
-			return nil, fmt.Errorf("Markdown Part identity on line %d is empty", i+1)
+			return nil, fmt.Errorf("markdown Part identity on line %d is empty", i+1)
 		}
 		markers[i+1] = markdownIdentityMarker{id: marker.ID, line: i + 1, raw: line}
 	}
@@ -371,7 +371,10 @@ func parseMarkdownHeadings(source []byte) ([]markdownHeading, error) {
 		if startLine < len(lines) && !isATXHeadingLine(lines[startLine-1]) && isSetextUnderline(lines[startLine]) {
 			endLine = startLine + 1
 		}
-		title := strings.TrimSpace(string(heading.Text(source)))
+		title, err := markdownHeadingText(heading, source)
+		if err != nil {
+			return ast.WalkStop, err
+		}
 		headings = append(headings, markdownHeading{
 			level:     heading.Level,
 			title:     title,
@@ -384,6 +387,30 @@ func parseMarkdownHeadings(source []byte) ([]markdownHeading, error) {
 		return nil, fmt.Errorf("parse Markdown: %w", err)
 	}
 	return headings, nil
+}
+
+func markdownHeadingText(heading *ast.Heading, source []byte) (string, error) {
+	var result strings.Builder
+	err := ast.Walk(heading, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch value := node.(type) {
+		case *ast.Text:
+			result.Write(value.Value(source))
+			if value.SoftLineBreak() {
+				result.WriteByte('\n')
+			}
+		case *ast.String:
+			result.Write(value.Value)
+		case *ast.AutoLink:
+			result.Write(value.Label(source))
+		case *ast.RawHTML:
+			result.Write(value.Segments.Value(source))
+		}
+		return ast.WalkContinue, nil
+	})
+	return strings.TrimSpace(result.String()), err
 }
 
 func sourceLine(source []byte, offset int) int {
