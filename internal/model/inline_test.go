@@ -45,8 +45,13 @@ func TestInlineSequenceGoldenMarkdownRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(encoded) + "\n"; got != string(golden) {
-		t.Fatalf("inline snapshot mismatch:\n%s", got)
+	var expected InlineSequence
+	if err := json.Unmarshal(golden, &expected); err != nil {
+		t.Fatalf("decode inline golden snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(coerced, expected) {
+		expectedJSON, _ := json.MarshalIndent(expected, "", "  ")
+		t.Fatalf("inline snapshot mismatch:\nwant:\n%s\ngot:\n%s", expectedJSON, encoded)
 	}
 
 	markdown, err := InlineSequenceMarkdown(coerced)

@@ -1,0 +1,8 @@
+# Durable compatibility fixtures are byte-for-byte test inputs. In particular,
+# synthetic CAS objects must never receive checkout-time line-ending changes.
+internal/store/testdata/compatibility/**/fixture.db -text
+internal/store/testdata/compatibility/**/artifacts/** -text
+
+# Human-readable fixture metadata remains stable on every checkout platform.
+internal/store/testdata/compatibility/**/manifest.json text eol=lf
+internal/model/testdata/*.golden.json text eol=lf

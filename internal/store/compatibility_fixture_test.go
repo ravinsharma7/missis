@@ -120,6 +120,11 @@ func TestCompatibilityFixtureOpenBackupAndArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		if s != nil {
+			_ = s.Close()
+		}
+	}()
 	got, err := compatfixture.Inspect(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +152,7 @@ func TestCompatibilityFixtureOpenBackupAndArtifacts(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
+	s = nil
 	t.Setenv("MISSIS_ARTIFACT_STORE", filepath.Join(root, "artifacts"))
 	service, err := application.OpenPath(dbPath)
 	if err != nil {
