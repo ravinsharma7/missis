@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ravinsharma7/missis/internal/artifact"
+	"github.com/ravinsharma7/missis/internal/fsutil"
 	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
@@ -881,10 +882,5 @@ func copyContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, erro
 }
 
 func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return fsutil.SyncDir(path)
 }

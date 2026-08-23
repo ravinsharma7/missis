@@ -15,6 +15,7 @@ import (
 
 	"github.com/ravinsharma7/missis/internal/application"
 	"github.com/ravinsharma7/missis/internal/artifact"
+	"github.com/ravinsharma7/missis/internal/fsutil"
 	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
@@ -448,10 +449,5 @@ func printMaintenanceError(stderr io.Writer, jsonOutput bool, err error) int {
 }
 
 func syncMaintenanceDir(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return fsutil.SyncDir(path)
 }

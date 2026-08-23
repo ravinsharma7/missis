@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ravinsharma7/missis/internal/fsutil"
 )
 
 const (
@@ -507,18 +509,10 @@ func wrapPathError(path string, err error) error {
 	if err == nil {
 		return nil
 	}
-	if isPathTooLong(err) {
+	if fsutil.IsPathTooLong(path, err) {
 		return fmt.Errorf("%w: %s: %v", ErrPathTooLong, path, err)
 	}
 	return err
-}
-
-func isPathTooLong(err error) bool {
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "file name too long") ||
-		strings.Contains(text, "filename too long") ||
-		strings.Contains(text, "path too long") ||
-		strings.Contains(text, "name too long")
 }
 
 func copyContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
@@ -549,10 +543,5 @@ func copyContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, erro
 }
 
 func syncDir(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return fsutil.SyncDir(path)
 }

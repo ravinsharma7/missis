@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -69,7 +70,7 @@ func TestLocalStorePutStatOpenIsContentAddressed(t *testing.T) {
 		if statErr != nil {
 			t.Fatal(statErr)
 		}
-		if info.Mode().Perm() != 0o600 {
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s mode = %o, want 600", path, info.Mode().Perm())
 		}
 	}

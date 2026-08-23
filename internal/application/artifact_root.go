@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ravinsharma7/missis/internal/artifact"
+	"github.com/ravinsharma7/missis/internal/fsutil"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -138,8 +139,7 @@ func pathLengthError(path string, err error) error {
 	if err == nil {
 		return nil
 	}
-	text := strings.ToLower(err.Error())
-	if strings.Contains(text, "file name too long") || strings.Contains(text, "filename too long") || strings.Contains(text, "path too long") || strings.Contains(text, "name too long") {
+	if fsutil.IsPathTooLong(path, err) {
 		return fmt.Errorf("%w: %s: %v", artifact.ErrPathTooLong, path, err)
 	}
 	return nil

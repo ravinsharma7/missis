@@ -3,11 +3,13 @@ package store
 import (
 	"errors"
 	"fmt"
-	"github.com/ravinsharma7/missis/internal/artifact"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/ravinsharma7/missis/internal/artifact"
+	"github.com/ravinsharma7/missis/internal/fsutil"
 )
 
 // ErrMaintenanceBusy means another application client or maintenance command
@@ -88,8 +90,7 @@ func wrapLeasePathError(path string, err error) error {
 	if err == nil {
 		return nil
 	}
-	text := strings.ToLower(err.Error())
-	if strings.Contains(text, "file name too long") || strings.Contains(text, "filename too long") || strings.Contains(text, "path too long") || strings.Contains(text, "name too long") {
+	if fsutil.IsPathTooLong(path, err) {
 		return fmt.Errorf("%w: %s: %v", artifact.ErrPathTooLong, path, err)
 	}
 	return err

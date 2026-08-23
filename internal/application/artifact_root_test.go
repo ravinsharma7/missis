@@ -70,7 +70,7 @@ func TestLegacyAndNamespacedArtifactRootsRequireExplicitMigration(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected ambiguous legacy and namespaced artifact roots to fail")
 	}
-	if !strings.Contains(err.Error(), namespaced) || !strings.Contains(err.Error(), "MISSIS_ARTIFACT_STORE") {
+	if !strings.Contains(err.Error(), filepath.Base(namespaced)) || !strings.Contains(err.Error(), "MISSIS_ARTIFACT_STORE") {
 		t.Fatalf("migration error = %v", err)
 	}
 }

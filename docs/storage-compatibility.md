@@ -125,6 +125,11 @@ corruption in such a store.
 - `missis-tools backup` writes a consistent copy while clients are active.
   Artifact migration and GC require an exclusive store maintenance lease and
   reject active clients.
+- Published files are flushed before atomic rename. POSIX builds also sync the
+  containing directory. Go does not support syncing directory handles on
+  Windows, so Windows validates and closes the directory after flushing each
+  file and relies on the platform's atomic replacement behavior; an
+  unsupported directory `Sync` must not reject a verified publication.
 - `missis-tools backup` accepts the existing database-only and version-1
   backup formats. Restoring a logical bundle verifies every referenced blob
   before publishing the new database and artifact root. Restore requires a
