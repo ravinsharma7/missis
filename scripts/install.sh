@@ -109,9 +109,7 @@ fi
 verify_binary missis-tools
 
 if [[ "$tools_only" -eq 0 && "$legacy_go" == "go" ]]; then
-	if ! "$bin_dir/missis$goexe" --register-install --bin-dir "$bin_dir" >/dev/null 2>&1; then
-		echo "source/module installation is not eligible for verified self-update; use the release installer for v0.2.2 or newer" >&2
-	fi
+	echo "source/module installation is not eligible for verified self-update; use the release installer for v0.2.2 or newer" >&2
 fi
 
 echo "installed native $goos Missis binaries in $bin_dir"

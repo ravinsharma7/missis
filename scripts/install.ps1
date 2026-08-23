@@ -87,11 +87,12 @@ if (-not $ToolsOnly) { Assert-NativeWindowsBinary "missis" }
 Assert-NativeWindowsBinary "missis-tools"
 
 if (-not $ToolsOnly -and $installSource -eq "go") {
-    & (Join-Path $BinDir "missis.exe") --register-install --bin-dir $BinDir 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "source/module installation is not eligible for verified self-update; use the release installer for v0.2.2 or newer"
-    }
+    Write-Warning "source/module installation is not eligible for verified self-update; use the release installer for v0.2.2 or newer"
 }
+
+# All native commands have been checked at this point. Publish an explicit
+# success status to callers instead of leaking a prior native command status.
+$global:LASTEXITCODE = 0
 
 Write-Host "installed native Windows Missis binaries in $BinDir"
 if (-not $ToolsOnly) { Write-Host "missis: $((Get-Command missis -CommandType Application | Select-Object -First 1).Source)" }
