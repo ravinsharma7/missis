@@ -3,6 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+# shellcheck disable=SC1091 # Runtime-computed repository root.
 . "$root/scripts/lib/backup-path.sh"
 
 if [ "$#" -gt 1 ]; then

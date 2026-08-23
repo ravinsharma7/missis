@@ -873,6 +873,7 @@ fi
 	printf '| Configuration | AGENTS.md pointer | missis skill | Purpose |\n'
 	printf '|---|---|---|---|\n'
 	printf '| baseline | no | disabled | Pre-cleanup control |\n'
+	# shellcheck disable=SC2016 # Backticks are literal Markdown, not shell expansion.
 	printf '| pointer | yes | disabled | Compact `missis --ag-brief` pointer only |\n'
 	printf '| skill | no | enabled | Full missis skill only |\n'
 	printf '| brief | yes | enabled | Pointer plus full missis skill |\n'

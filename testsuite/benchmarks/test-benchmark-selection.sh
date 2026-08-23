@@ -288,6 +288,7 @@ printf '%s\n' '{"tickets":[
   {"title":"scalar","status":"doing","parts":{"notes":{"value":"expected notes"},"done-when":{"value":"expected done"}}},
   {"title":"list","status":"doing","parts":{"notes":{"value":["expected notes"]},"done-when":{"value":["expected done"]}}}
 ]}' >"$parts_fixture"
+# shellcheck disable=SC2016 # jq variables must remain literal shell input.
 part_state_filter='def has_expected($value; $expected): if $value == $expected then true elif ($value | type) == "array" then any($value[]; . == $expected) else false end; [.tickets[] | select(.status == "doing" and has_expected(.parts.notes.value; "expected notes") and has_expected(.parts["done-when"].value; "expected done"))] | length'
 if [ "$(jq -r "$part_state_filter" "$parts_fixture")" -ne 2 ]; then
 	echo "created-parts evaluator must accept scalar and list-valued parts" >&2
