@@ -82,6 +82,13 @@ func display(info Info) string {
 	return value
 }
 
+// ReleaseDisplay returns the human-facing identity for a release manifest.
+// Version remains the sortable SemVer value; the commit is appended only as
+// SemVer build metadata so it does not affect update precedence.
+func ReleaseDisplay(version, commit string) string {
+	return display(Info{Version: version, Commit: commit})
+}
+
 func IsStable(info Info) bool {
 	return semver.IsValid(info.Version) && semver.Prerelease(info.Version) == "" && !info.Dirty
 }

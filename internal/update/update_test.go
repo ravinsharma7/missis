@@ -46,7 +46,7 @@ func TestCheckVersionOrderingAndDevelopmentGuard(t *testing.T) {
 	defer server.Close()
 	client := &Client{ManifestURL: server.URL, HTTP: server.Client(), GOOS: "linux", GOARCH: "amd64"}
 	for _, tc := range []struct{ version, status string }{
-		{"v0.2.1", "update_available"}, {"v0.2.2", "current"}, {"v0.2.3", "newer_than_published"},
+		{"v0.2.1", "update_available"}, {"v0.2.2", "current"}, {"v0.2.2+g0123456789ab", "current"}, {"v0.2.3", "newer_than_published"},
 	} {
 		result, err := client.Check(context.Background(), buildinfo.Info{Version: tc.version, Commit: "abc", DisplayVersion: tc.version, StoreFormatRevision: 2})
 		if err != nil {

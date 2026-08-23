@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/mod/semver"
 
+	"github.com/ravinsharma7/missis/internal/buildinfo"
 	"github.com/ravinsharma7/missis/internal/update"
 )
 
@@ -42,5 +43,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, "paired-install: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("installed %s commit=%s store_format=%d in %s\n", manifest.Version, manifest.Commit, manifest.StoreFormatRevision, *binDir)
+	fmt.Printf("installed %s commit=%s store_format=%d in %s\n", buildinfo.ReleaseDisplay(manifest.Version, manifest.Commit), manifest.Commit, manifest.StoreFormatRevision, *binDir)
 }

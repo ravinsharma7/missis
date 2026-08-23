@@ -308,6 +308,11 @@ above. Tagged builds of both binaries report the same full commit and a display
 version such as `v0.2.2+g0123456789ab`; local builds report `dev` plus available
 Git identity and dirty state.
 
+The `version` JSON field and Git tag remain `v0.2.2`; `display_version` carries
+the `+g<short-sha>` suffix. The suffix is SemVer build metadata and therefore
+does not alter update precedence. Installer and self-update messages use the
+display identity so operators can confirm the exact source commit.
+
 Stable releases package `missis` and `missis-tools` together. The release
 manifest binds both binary hashes and the archive hash/size to one release,
 commit, platform, architecture, and store revision. The release installer is

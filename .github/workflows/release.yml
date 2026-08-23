@@ -73,7 +73,9 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          jq -e '.store_format_revision == 2 and (.assets | length) == 9' dist/release-manifest.json >/dev/null
+          short_sha="${GITHUB_SHA:0:12}"
+          display_version="${VERSION}+g${short_sha}"
+          jq -e --arg version "$VERSION" --arg commit "$GITHUB_SHA" '.version == $version and .commit == $commit and .store_format_revision == 2 and (.assets | length) == 9' dist/release-manifest.json >/dev/null
           while IFS= read -r asset; do
             archive="dist/$(basename "$(jq -r '.url' <<<"$asset")")"
             test "$(stat -c %s "$archive")" = "$(jq -r '.size' <<<"$asset")"
@@ -92,10 +94,12 @@ jobs:
           done < <(jq -c '.assets[]' dist/release-manifest.json)
           mkdir -p smoke
           tar -xzf "dist/missis_${VERSION}_linux_amd64.tar.gz" -C smoke
-          PATH="$PWD/smoke:$PATH" smoke/missis --version --json | jq -e --arg version "$VERSION" '.version == $version and .store_format_revision == 2' >/dev/null
-          PATH="$PWD/smoke:$PATH" smoke/missis-tools --version --json | jq -e --arg version "$VERSION" '.version == $version and .store_format_revision == 2' >/dev/null
+          PATH="$PWD/smoke:$PATH" smoke/missis --version --json | jq -e --arg version "$VERSION" --arg display "$display_version" --arg commit "$GITHUB_SHA" '.version == $version and .display_version == $display and .commit == $commit and .dirty == false and .store_format_revision == 2' >/dev/null
+          PATH="$PWD/smoke:$PATH" smoke/missis-tools --version --json | jq -e --arg version "$VERSION" --arg display "$display_version" --arg commit "$GITHUB_SHA" '.version == $version and .display_version == $display and .commit == $commit and .dirty == false and .store_format_revision == 2' >/dev/null
+          test "$(smoke/missis --version)" = "missis version=$display_version commit=$GITHUB_SHA store_format=2"
+          test "$(smoke/missis-tools --version)" = "missis-tools version=$display_version commit=$GITHUB_SHA store_format=2"
           smoke/missis --register-install --bin-dir "$PWD/smoke" >/dev/null
-          jq -e --arg version "$VERSION" '.version == $version and (.binaries | length) == 2' smoke/.missis-install.json >/dev/null
+          jq -e --arg version "$VERSION" --arg commit "$GITHUB_SHA" '.version == $version and .commit == $commit and .store_format_revision == 2 and (.binaries | length) == 2' smoke/.missis-install.json >/dev/null
           project="$(mktemp -d)"
           export PATH="$PWD/smoke:$PATH"
           export MISSIS_ARTIFACT_STORE="$project/artifacts"

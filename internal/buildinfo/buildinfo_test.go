@@ -21,6 +21,15 @@ func TestDisplayIncludesCommitAndStoreFormat(t *testing.T) {
 	}
 }
 
+func TestReleaseDisplayKeepsBaseVersionSortable(t *testing.T) {
+	if got := ReleaseDisplay("v0.2.2", "1234567890abcdef"); got != "v0.2.2+g1234567890ab" {
+		t.Fatalf("release display = %q", got)
+	}
+	if !IsStable(Info{Version: "v0.2.2", DisplayVersion: "v0.2.2+g1234567890ab", Commit: "1234567890abcdef"}) {
+		t.Fatal("display build metadata changed stable base-version classification")
+	}
+}
+
 func TestStableBuildClassification(t *testing.T) {
 	if !IsStable(Info{Version: "v0.2.2"}) {
 		t.Fatal("tagged build should be stable")

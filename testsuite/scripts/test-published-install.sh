@@ -4,7 +4,7 @@ set -euo pipefail
 # Run this after the selected ref has been published. It deliberately installs
 # into a temporary GOBIN so it cannot alter the operator's existing Go tools.
 module="github.com/ravinsharma7/missis"
-ref="${MISSIS_REF:-v0.2.1}"
+ref="${MISSIS_REF:-v0.2.2}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -12,14 +12,14 @@ export GOBIN="$tmp/bin"
 mkdir -p "$GOBIN" "$tmp/project"
 unset MISSIS_STORE || true
 
-go install "$module/cmd/missis@$ref"
-go install "$module/tools/missis-tools@$ref"
 export PATH="$GOBIN:$PATH"
+go run "$module/tools/paired-install@$ref" --ref "$ref" --bin-dir "$GOBIN"
 
 cd "$tmp/project"
 test -x "$GOBIN/missis"
 test -x "$GOBIN/missis-tools"
-missis --version | grep -q "missis version="
+missis --version | grep -Eq "missis version=${ref}\\+g[0-9a-f]{12} commit=[0-9a-f]{40} store_format=2"
+missis-tools --version | grep -Eq "missis-tools version=${ref}\\+g[0-9a-f]{12} commit=[0-9a-f]{40} store_format=2"
 missis-tools --help | grep -q "backup verify"
 missis --init --json >/dev/null
 missis show --health >/dev/null

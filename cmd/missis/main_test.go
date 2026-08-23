@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ravinsharma7/missis/internal/update"
 )
 
 func TestStorePermissionWarningsPOSIXScoped(t *testing.T) {
@@ -61,5 +64,31 @@ func TestVersionJSONNotesUnknownCommit(t *testing.T) {
 	body := versionJSON("v0.1.0", unknownCommit, note)
 	if body["commit_note"] != note {
 		t.Fatalf("unknown commit note = %q, want explanation", body["commit_note"])
+	}
+}
+
+func TestSelfUpdateResultCarriesBaseAndDisplayVersions(t *testing.T) {
+	release := update.ReleaseManifest{
+		Version:             "v0.2.2",
+		Commit:              "1234567890abcdef1234567890abcdef12345678",
+		StoreFormatRevision: 2,
+	}
+	result := selfUpdateResult("updated", release)
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Status              string `json:"status"`
+		LatestVersion       string `json:"latest_version"`
+		DisplayVersion      string `json:"display_version"`
+		Commit              string `json:"commit"`
+		StoreFormatRevision int    `json:"store_format_revision"`
+	}
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "updated" || got.LatestVersion != "v0.2.2" || got.DisplayVersion != "v0.2.2+g1234567890ab" || got.Commit != release.Commit || got.StoreFormatRevision != 2 {
+		t.Fatalf("self-update result = %#v", got)
 	}
 }

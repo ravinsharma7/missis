@@ -82,9 +82,15 @@ Verify which version is installed:
 command -v missis
 command -v missis-tools
 missis --version
+missis-tools --version
 missis show --health
 missis-tools --help
 ```
+
+The stable tag and update-comparison version remain plain SemVer, for example
+`v0.2.2`. Both installed binaries include their source identity in the human
+display, for example `v0.2.2+g0123456789ab`, and expose the base version,
+display version, and full commit as separate JSON fields.
 
 Inside WSL, use the Linux command without `.exe`:
 
@@ -216,8 +222,10 @@ Update the installed pair:
 missis --self-update
 ```
 
-`missis --self-update` accepts only a verified stable paired installation. It
-will not downgrade, update a development/dirty build, or replace either binary
+`missis --self-update` accepts only a verified stable paired installation. Its
+success output uses the hash-qualified display version while JSON retains the
+base SemVer separately. It will not downgrade, update a development/dirty
+build, or replace either binary
 until the archive, both binaries, and their shared release identity pass
 verification. An interrupted replacement is completed or rolled back on the
 next invocation.

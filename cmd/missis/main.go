@@ -251,25 +251,39 @@ func runSelfUpdateCheck(jsonMode bool) int {
 		})
 		return exitSuccess
 	}
-	fmt.Printf("status=%s current=%s latest=%s commit=%s format=%d\n", result.Status, result.Current.DisplayVersion, result.Latest.Version, result.Latest.Commit, result.Latest.StoreFormatRevision)
+	fmt.Printf("status=%s current=%s latest=%s commit=%s format=%d\n", result.Status, result.Current.DisplayVersion, releaseDisplay(result.Latest), result.Latest.Commit, result.Latest.StoreFormatRevision)
 	return exitSuccess
+}
+
+func releaseDisplay(release update.ReleaseManifest) string {
+	return buildinfo.ReleaseDisplay(release.Version, release.Commit)
+}
+
+func selfUpdateResult(status string, release update.ReleaseManifest) map[string]any {
+	return map[string]any{
+		"status":                status,
+		"latest_version":        release.Version,
+		"display_version":       releaseDisplay(release),
+		"commit":                release.Commit,
+		"store_format_revision": release.StoreFormatRevision,
+	}
 }
 
 func runSelfUpdate(jsonMode bool) int {
 	latest, err := update.DefaultClient().Apply(stdctx.Background(), buildinfo.Read())
 	if errors.Is(err, update.ErrNoUpdate) {
 		if jsonMode {
-			writeJSON(map[string]any{"status": "current", "latest_version": latest.Version})
+			writeJSON(selfUpdateResult("current", latest))
 		} else {
-			fmt.Printf("already current at %s\n", latest.Version)
+			fmt.Printf("already current at %s\n", releaseDisplay(latest))
 		}
 		return exitSuccess
 	}
 	if errors.Is(err, update.ErrUpdateStaged) {
 		if jsonMode {
-			writeJSON(map[string]any{"status": "staged", "latest_version": latest.Version})
+			writeJSON(selfUpdateResult("staged", latest))
 		} else {
-			fmt.Printf("staged update to %s; Windows will complete it after this process exits\n", latest.Version)
+			fmt.Printf("staged update to %s; Windows will complete it after this process exits\n", releaseDisplay(latest))
 		}
 		return exitSuccess
 	}
@@ -278,10 +292,10 @@ func runSelfUpdate(jsonMode bool) int {
 		return exitStorage
 	}
 	if jsonMode {
-		writeJSON(map[string]any{"status": "updated", "latest_version": latest.Version, "commit": latest.Commit, "store_format_revision": latest.StoreFormatRevision})
+		writeJSON(selfUpdateResult("updated", latest))
 		return exitSuccess
 	}
-	fmt.Printf("updated to %s\n", latest.Version)
+	fmt.Printf("updated to %s\n", releaseDisplay(latest))
 	return exitSuccess
 }
 
