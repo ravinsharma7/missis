@@ -1660,11 +1660,24 @@ func rebuildProjectionTxContext(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
+// projectionRepairHooks is an unexported test seam for forcing append/repair
+// interleavings at SQLite transaction boundaries. Production callers pass no
+// hooks, and the callbacks cannot alter the repair result except by returning
+// a test-controlled error.
+type projectionRepairHooks struct {
+	afterOrderedDrift   func() error
+	beforeRebuildCommit func() error
+}
+
 // ensureDerivedFresh guarantees the derived tables match the authoritative
 // event ledger on open. It rebuilds them when rows are missing or stale, which
 // can happen when a binary predating migration 0004 appended events (ticket
 // #51). Events remain the source of truth, so rebuilding derived data is safe.
 func ensureDerivedFresh(db *sql.DB) error {
+	return ensureDerivedFreshWithHooks(db, nil)
+}
+
+func ensureDerivedFreshWithHooks(db *sql.DB, hooks *projectionRepairHooks) error {
 	var ticketCount, eventCount, streamCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM tickets`).Scan(&ticketCount); err != nil {
 		return err
@@ -1679,7 +1692,7 @@ func ensureDerivedFresh(db *sql.DB) error {
 		return err
 	}
 	if ticketCount == 0 || ticketCount != streamCount {
-		return rebuildDerived(db)
+		return rebuildDerivedWithHooks(db, hooks)
 	}
 
 	// Compare each ticket's derived head_event to the last event in its
@@ -1719,7 +1732,7 @@ func ensureDerivedFresh(db *sql.DB) error {
 		return err
 	}
 	if len(heads) != ticketCount {
-		return rebuildDerived(db)
+		return rebuildDerivedWithHooks(db, hooks)
 	}
 	for entity, head := range heads {
 		var dbHead sql.NullString
@@ -1727,7 +1740,7 @@ func ensureDerivedFresh(db *sql.DB) error {
 			return err
 		}
 		if !dbHead.Valid || dbHead.String != head {
-			return rebuildDerived(db)
+			return rebuildDerivedWithHooks(db, hooks)
 		}
 	}
 	orderedDrift, err := orderedProjectionDrift(db)
@@ -1735,7 +1748,12 @@ func ensureDerivedFresh(db *sql.DB) error {
 		return err
 	}
 	if orderedDrift {
-		return rebuildDerived(db)
+		if hooks != nil && hooks.afterOrderedDrift != nil {
+			if err := hooks.afterOrderedDrift(); err != nil {
+				return err
+			}
+		}
+		return rebuildDerivedWithHooks(db, hooks)
 	}
 	return nil
 }
@@ -1824,6 +1842,10 @@ func orderedProjectionDrift(db *sql.DB) (bool, error) {
 }
 
 func rebuildDerived(db *sql.DB) error {
+	return rebuildDerivedWithHooks(db, nil)
+}
+
+func rebuildDerivedWithHooks(db *sql.DB, hooks *projectionRepairHooks) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -1831,6 +1853,11 @@ func rebuildDerived(db *sql.DB) error {
 	defer tx.Rollback()
 	if err := rebuildProjectionTx(tx); err != nil {
 		return err
+	}
+	if hooks != nil && hooks.beforeRebuildCommit != nil {
+		if err := hooks.beforeRebuildCommit(); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

@@ -60,6 +60,76 @@ func openDerivedStore(t *testing.T) *Store {
 	return s
 }
 
+func staleOrderedRepairFixture(t *testing.T) (s *Store, path string, ticketID model.TicketID, head string) {
+	t.Helper()
+	path = filepath.Join(t.TempDir(), "missis.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketID = model.TicketID("ticket:repair-boundary")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	at := time.Now().UTC()
+	events := []model.Event{
+		{ID: "event:repair-boundary:1", Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: stream, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: "event:repair-boundary:2", Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:repair-boundary:body", Path: []string{"body"}}, Value: model.Value{Kind: model.ValueKindMarkdown, Text: "body", OrderKey: model.OrderKeyForIndex(0)}, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, _, err := s.AppendTicketBatch(events, "", nil); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if err := s.reader.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&head); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if _, err := s.writer.Exec(`UPDATE parts_current SET order_key = '' WHERE ticket_id = ? AND path = 'body'`, string(ticketID)); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	return s, path, ticketID, head
+}
+
+func appendRepairBoundaryPart(s *Store, ticketID model.TicketID, suffix string) (model.EventID, error) {
+	at := time.Now().UTC()
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	eventID := model.EventID("event:repair-boundary:" + suffix)
+	partID := model.PartID("part:repair-boundary:" + suffix)
+	path := "repair-" + suffix
+	_, err := s.AppendBatch([]model.Event{{
+		ID:          eventID,
+		Stream:      stream,
+		Operation:   model.OpCreatePart,
+		Target:      model.Ref{Kind: model.KindPart, Entity: string(partID), Path: []string{path}},
+		Value:       model.Value{Kind: model.ValueKindMarkdown, Text: path, OrderKey: model.OrderKeyForIndex(1)},
+		RecordedAt:  at,
+		EffectiveAt: at,
+		Actor:       model.ActorRef{Kind: "test", ID: "test"},
+	}}, "", nil, nil)
+	return eventID, err
+}
+
+func repairBoundaryHead(s *Store) (string, error) {
+	var head string
+	err := s.reader.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&head)
+	return head, err
+}
+
+type repairAppendResult struct {
+	id  model.EventID
+	err error
+}
+
+func waitRepairBoundary(ch <-chan repairAppendResult) (repairAppendResult, error) {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-ch:
+		return result, result.err
+	case <-timer.C:
+		return repairAppendResult{}, fmt.Errorf("timed out waiting for repair boundary append")
+	}
+}
+
 func TestDerivedTicketsMaintainedOnAppend(t *testing.T) {
 	t.Parallel()
 	s := openDerivedStore(t)
@@ -131,6 +201,221 @@ func TestPartsCurrentPersistsOrderKeyAcrossRebuild(t *testing.T) {
 		t.Fatalf("rebuilt order key = %q, want %q", stored, orderKey)
 	}
 	if err := s.CheckConsistency(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectionRepairAppendBeforeInspection(t *testing.T) {
+	s, path, ticketID, _ := staleOrderedRepairFixture(t)
+	appendID, err := appendRepairBoundaryPart(s, ticketID, "before")
+	if err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	headBeforeRepair, err := repairBoundaryHead(s)
+	if err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if _, err := s.writer.Exec(`UPDATE parts_current SET order_key = '' WHERE ticket_id = ? AND path = 'body'`, string(ticketID)); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if err := ensureDerivedFresh(s.writer); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	headAfterRepair, err := repairBoundaryHead(s)
+	if err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if headAfterRepair != headBeforeRepair {
+		s.Close()
+		t.Fatalf("repair changed head hash: before=%s after=%s", headBeforeRepair, headAfterRepair)
+	}
+	if err := s.CheckConsistency(); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	var repairedKey string
+	if err := s.reader.QueryRow(`SELECT order_key FROM parts_current WHERE ticket_id = ? AND path = 'body'`, string(ticketID)).Scan(&repairedKey); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if repairedKey != model.OrderKeyForIndex(0) {
+		s.Close()
+		t.Fatalf("repaired base order key = %q", repairedKey)
+	}
+	if err := s.reader.QueryRow(`SELECT 1 FROM events WHERE id = ?`, string(appendID)).Scan(new(int)); err != nil {
+		s.Close()
+		t.Fatalf("appended event missing: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.CheckConsistency(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectionRepairAppendBetweenSnapshotAndRebuild(t *testing.T) {
+	s, path, ticketID, headBeforeRepair := staleOrderedRepairFixture(t)
+	defer func() { _ = s.Close() }()
+	hookCalled := make(chan struct{})
+	abortAppend := make(chan struct{})
+	appendDone := make(chan repairAppendResult, 1)
+	var appendedID model.EventID
+	var headAfterAppend string
+
+	go func() {
+		select {
+		case <-hookCalled:
+			id, err := appendRepairBoundaryPart(s, ticketID, "between")
+			appendDone <- repairAppendResult{id: id, err: err}
+		case <-abortAppend:
+			appendDone <- repairAppendResult{}
+		}
+	}()
+	hooks := &projectionRepairHooks{
+		afterOrderedDrift: func() error {
+			close(hookCalled)
+			result, err := waitRepairBoundary(appendDone)
+			if err != nil {
+				return err
+			}
+			appendedID = result.id
+			headAfterAppend, err = repairBoundaryHead(s)
+			if err != nil {
+				return err
+			}
+			var previousHash string
+			if err := s.reader.QueryRow(`SELECT previous_hash FROM event_hashes WHERE event_id = ?`, string(appendedID)).Scan(&previousHash); err != nil {
+				return err
+			}
+			if previousHash != headBeforeRepair {
+				return fmt.Errorf("append previous hash = %s, want pre-repair head %s", previousHash, headBeforeRepair)
+			}
+			return nil
+		},
+	}
+
+	repairErr := ensureDerivedFreshWithHooks(s.writer, hooks)
+	select {
+	case <-hookCalled:
+	default:
+		close(abortAppend)
+	}
+	if repairErr != nil {
+		t.Fatal(repairErr)
+	}
+	headAfterRepair, err := repairBoundaryHead(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headAfterRepair != headAfterAppend {
+		t.Fatalf("repair changed append head hash: append=%s repair=%s", headAfterAppend, headAfterRepair)
+	}
+	if err := s.CheckConsistency(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reader.QueryRow(`SELECT 1 FROM parts_current WHERE ticket_id = ? AND path = 'repair-between'`, string(ticketID)).Scan(new(int)); err != nil {
+		t.Fatalf("appended projection row missing: %v", err)
+	}
+	if err := s.reader.QueryRow(`SELECT 1 FROM events WHERE id = ?`, string(appendedID)).Scan(new(int)); err != nil {
+		t.Fatalf("appended event missing: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.CheckConsistency(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectionRepairAppendDuringRebuildCommit(t *testing.T) {
+	s, path, ticketID, headBeforeRepair := staleOrderedRepairFixture(t)
+	defer func() { _ = s.Close() }()
+	hookCalled := make(chan struct{})
+	appendStarted := make(chan struct{})
+	appendDone := make(chan repairAppendResult, 1)
+	var appendedID model.EventID
+
+	go func() {
+		<-hookCalled
+		close(appendStarted)
+		id, err := appendRepairBoundaryPart(s, ticketID, "during")
+		appendDone <- repairAppendResult{id: id, err: err}
+	}()
+	hooks := &projectionRepairHooks{
+		beforeRebuildCommit: func() error {
+			close(hookCalled)
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-appendStarted:
+			case <-timer.C:
+				return fmt.Errorf("timed out starting append during rebuild transaction")
+			}
+			select {
+			case result := <-appendDone:
+				return fmt.Errorf("append completed before repair commit: %v", result.err)
+			default:
+			}
+			headAtCommit, err := repairBoundaryHead(s)
+			if err != nil {
+				return err
+			}
+			if headAtCommit != headBeforeRepair {
+				return fmt.Errorf("repair changed head before append: got %s, want %s", headAtCommit, headBeforeRepair)
+			}
+			return nil
+		},
+	}
+
+	if err := ensureDerivedFreshWithHooks(s.writer, hooks); err != nil {
+		t.Fatal(err)
+	}
+	result, err := waitRepairBoundary(appendDone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendedID = result.id
+	var previousHash string
+	if err := s.reader.QueryRow(`SELECT previous_hash FROM event_hashes WHERE event_id = ?`, string(appendedID)).Scan(&previousHash); err != nil {
+		t.Fatal(err)
+	}
+	if previousHash != headBeforeRepair {
+		t.Fatalf("append previous hash = %s, want pre-repair head %s", previousHash, headBeforeRepair)
+	}
+	if err := s.CheckConsistency(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reader.QueryRow(`SELECT 1 FROM parts_current WHERE ticket_id = ? AND path = 'repair-during'`, string(ticketID)).Scan(new(int)); err != nil {
+		t.Fatalf("appended projection row missing: %v", err)
+	}
+	if err := s.reader.QueryRow(`SELECT 1 FROM events WHERE id = ?`, string(appendedID)).Scan(new(int)); err != nil {
+		t.Fatalf("appended event missing: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.CheckConsistency(); err != nil {
 		t.Fatal(err)
 	}
 }
