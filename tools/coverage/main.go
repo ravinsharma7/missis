@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,29 +54,35 @@ func run(args []string) error {
 
 func scanAll(root string) ([]string, error) {
 	var lines []string
-	patterns := []string{
-		"testsuite/blackbox/*_test.go",
-		"internal/model/*_test.go",
-		"internal/store/*_test.go",
-	}
-	for _, pattern := range patterns {
-		files, err := filepath.Glob(filepath.Join(root, pattern))
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", ".missis-store", "vendor", "node_modules":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		displayPath, err := filepath.Rel(root, path)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		for _, file := range files {
-			displayPath, err := filepath.Rel(root, file)
-			if err != nil {
-				return nil, err
-			}
-			displayPath = filepath.ToSlash(displayPath)
-			fileLines, err := scanFile(file, displayPath)
-			if err != nil {
-				return nil, err
-			}
-			lines = append(lines, fileLines...)
+		fileLines, err := scanFile(path, filepath.ToSlash(displayPath))
+		if err != nil {
+			return err
 		}
+		lines = append(lines, fileLines...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	sort.Strings(lines)
 	return lines, nil
 }
 

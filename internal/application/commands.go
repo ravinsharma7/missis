@@ -163,6 +163,9 @@ func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext,
 		Project:    stringPtrOrNil(opts.Project),
 		RecordedAt: plan.now.Format(time.RFC3339),
 	}
+	for _, diagnostic := range prepared.proposal.Diagnostics {
+		plan.result.Diagnostics = append(plan.result.Diagnostics, diagnostic.Message)
+	}
 	events := append(append([]model.Event(nil), plan.events...), prepared.proposal.Events...)
 	resultFactory := func(alias uint64) any {
 		result := *plan.result
@@ -185,16 +188,11 @@ func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext,
 
 func (s *Service) ReimportMarkdown(ctx context.Context, req missis.RequestContext, opts missis.ImportOptions) (missis.ImportResult, error) {
 	req, now := s.normalize(req)
-	parts, err := model.ParseMarkdownParts(opts.Content)
+	parsed, err := model.ParseMarkdownPartsWithDiagnostics(opts.Content)
 	if err != nil {
 		return missis.ImportResult{}, validation("%v", err)
 	}
-	for i, part := range parts {
-		if len(part.Path) == 1 && part.Path[0] != "preamble" {
-			parts = append(parts[:i], parts[i+1:]...)
-			break
-		}
-	}
+	parts := model.ExcludeMarkdownDocumentTitle(parsed.Parts)
 	ticketID, partPath, err := s.resolveTicketRef(ctx, opts.Ref, req.EffectiveAt)
 	if err != nil {
 		return missis.ImportResult{}, err
@@ -208,18 +206,18 @@ func (s *Service) ReimportMarkdown(ctx context.Context, req missis.RequestContex
 	if err != nil {
 		return missis.ImportResult{}, keepStorage(err)
 	}
-	events, err := buildReimportEvents(proj, ticketID, parts, actor, now, req.EffectiveAt, batchID, opts.Artifact)
+	events, diagnostics, err := buildReimportEvents(proj, ticketID, parts, actor, now, req.EffectiveAt, batchID, opts.Artifact)
 	if err != nil {
 		return missis.ImportResult{}, validation("%v", err)
 	}
 	if len(events) == 0 {
-		return missis.ImportResult{Ref: opts.Ref, Operation: "import", Value: 0}, nil
+		return missis.ImportResult{Ref: opts.Ref, Operation: "import", Value: 0, Diagnostics: markdownDiagnosticMessages(parsed.Diagnostics, diagnostics)}, nil
 	}
 	// All-or-nothing: validate every proposed part before appending anything.
 	if err := s.validateImportEvents(ctx, model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}, events, req.EffectiveAt, now); err != nil {
 		return missis.ImportResult{}, err
 	}
-	result := missis.ImportResult{Ref: opts.Ref, Operation: "import", Value: len(events)}
+	result := missis.ImportResult{Ref: opts.Ref, Operation: "import", Value: len(events), Diagnostics: markdownDiagnosticMessages(parsed.Diagnostics, diagnostics)}
 	outcome, err := s.AppendBatch(ctx, events, req.IdempotencyKey, nil, &result)
 	if err != nil {
 		return missis.ImportResult{}, keepStorage(err)

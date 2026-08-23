@@ -31,7 +31,7 @@ func TestValidRelations(t *testing.T) {
 
 func TestProjectionRenameMoveRetract(t *testing.T) {
 	t.Parallel()
-	// covers PH1-PART-001 PH1-PART-003 PH1-PART-004 PH1-PART-005 PH1-PART-006 PH1-PRJ-005 PH1-DM-001
+	// covers PH1-PART-001 PH1-PART-003 PH1-PART-004 PH1-PART-005 PH1-PART-006 PH1-PRJ-005 PH1-DM-001 N007 N008 N010 N013 N023
 	ticket := TicketID("ticket:t")
 	stream := Ref{Kind: KindTicket, Entity: string(ticket)}
 	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}
@@ -81,7 +81,7 @@ func TestProjectionRenameMoveRetract(t *testing.T) {
 
 func TestValidateAppendRejectsCycleAndCollision(t *testing.T) {
 	t.Parallel()
-	// covers PH1-PART-006 PH1-PART-007 PH1-EVT-008
+	// covers PH1-PART-006 PH1-PART-007 PH1-EVT-008 N020 N021
 	ticket := TicketID("ticket:t")
 	stream := Ref{Kind: KindTicket, Entity: string(ticket)}
 	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}
@@ -109,7 +109,7 @@ func TestValidateAppendRejectsCycleAndCollision(t *testing.T) {
 
 func TestResolvePartPath(t *testing.T) {
 	t.Parallel()
-	// covers PH1-PART-011 PH1-REF-004
+	// covers PH1-PART-011 PH1-REF-004 N026
 	ticket := TicketID("ticket:t")
 	stream := Ref{Kind: KindTicket, Entity: string(ticket)}
 	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}

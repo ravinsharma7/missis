@@ -37,6 +37,7 @@ func fixedNow() time.Time {
 }
 
 func TestDeterministicBitemporalAndDefaults(t *testing.T) {
+	// covers N003 N040 N041 N043 N045 N048
 	now := fixedNow()
 	svc := openFixed(t, fixedClock{now})
 	ctx := context.Background()

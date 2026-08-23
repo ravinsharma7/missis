@@ -9,6 +9,7 @@ import (
 
 func TestThreeCommandSurfaceAndArtifactAttachment(t *testing.T) {
 	t.Parallel()
+	// covers N001
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Attachment")
 	ref := created["ref"].(string)

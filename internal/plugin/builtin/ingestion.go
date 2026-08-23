@@ -51,30 +51,41 @@ func (p *MarkdownImporter) Propose(ctx context.Context, input plugin.IngestInput
 	if err != nil {
 		return plugin.IngestProposal{}, err
 	}
-	parts, err := model.ParseMarkdownParts(string(content))
+	parsed, err := model.ParseMarkdownPartsWithDiagnostics(string(content))
 	if err != nil {
 		return plugin.IngestProposal{}, err
 	}
+	parts := parsed.Parts
 	if len(parts) == 0 {
 		return plugin.IngestProposal{}, fmt.Errorf("Markdown artifact contains no Parts")
 	}
 	if input.Request.ExcludeTopLevelTitle {
-		for i, part := range parts {
-			if len(part.Path) == 1 && part.Path[0] != "preamble" {
-				parts = append(parts[:i], parts[i+1:]...)
-				break
-			}
-		}
+		parts = model.ExcludeMarkdownDocumentTitle(parts)
 	}
 	for i := range parts {
 		parts[i].Path = append(append([]string(nil), input.Request.Path...), parts[i].Path...)
-		if sequence, parseErr := model.ParseInlineSequenceMarkdown(parts[i].Body); parseErr != nil {
-			return plugin.IngestProposal{}, fmt.Errorf("parse explicit inline content: %w", parseErr)
-		} else if len(sequence.Items) > 0 {
-			parts[i].Inline = &sequence
-		}
 	}
-	return plugin.IngestProposal{Events: buildPartEvents(input, parts, model.ValueKindMarkdown)}, nil
+	events, err := buildPartEvents(input, parts, model.ValueKindMarkdown)
+	if err != nil {
+		return plugin.IngestProposal{}, err
+	}
+	diagnostics := make([]plugin.Diagnostic, 0, len(parsed.Diagnostics))
+	for _, diagnostic := range parsed.Diagnostics {
+		diagnostics = append(diagnostics, plugin.Diagnostic{
+			Severity: "warning",
+			Message:  fmt.Sprintf("%s at line %d: %s", diagnostic.Code, diagnostic.Line, diagnostic.Message),
+		})
+	}
+	for _, part := range parts {
+		if part.ID == "" {
+			continue
+		}
+		diagnostics = append(diagnostics, plugin.Diagnostic{
+			Severity: "warning",
+			Message:  fmt.Sprintf("identity_unresolved at line %d: source Part identity %q was not resolved in the new ticket", part.StartLine, part.ID),
+		})
+	}
+	return plugin.IngestProposal{Events: events, Diagnostics: diagnostics}, nil
 }
 
 // ArtifactAttacher creates one explicit typed child Part. URI/media behavior
@@ -97,15 +108,29 @@ func (p *ArtifactAttacher) Propose(ctx context.Context, input plugin.IngestInput
 	}
 	kind := mediaKind(input.Artifact.MediaType)
 	path := append(append([]string(nil), input.Request.Path...), name)
-	return plugin.IngestProposal{Events: buildPartEvents(input, []model.MarkdownPart{{Path: path, StartLine: 1, EndLine: 1}}, kind)}, nil
+	events, err := buildPartEvents(input, []model.MarkdownPart{{Path: path, StartLine: 1, EndLine: 1}}, kind)
+	if err != nil {
+		return plugin.IngestProposal{}, err
+	}
+	return plugin.IngestProposal{Events: events}, nil
 }
 
-func buildPartEvents(input plugin.IngestInput, parts []model.MarkdownPart, kind model.ValueKind) []model.Event {
+func buildPartEvents(input plugin.IngestInput, parts []model.MarkdownPart, kind model.ValueKind) ([]model.Event, error) {
 	artifactRef := model.Ref{Kind: model.KindArtifact, Entity: input.Artifact.Ref.String()}
 	actor := model.ActorRef{Kind: "plugin", ID: input.Invocation.Plugin}
 	partIDs := make(map[string]model.PartID, len(parts))
+	seenIDs := make(map[model.PartID]string, len(parts))
 	for _, part := range parts {
-		partIDs[strings.Join(part.Path, "/")] = model.PartID(missis.NewID("part"))
+		// A new ticket cannot resolve source identities against an existing
+		// Part projection. The core therefore assigns fresh IDs; the Markdown
+		// importer reports explicit source IDs as unresolved diagnostics.
+		partID := model.PartID(missis.NewID("part"))
+		path := strings.Join(part.Path, "/")
+		if previousPath, exists := seenIDs[partID]; exists {
+			return nil, fmt.Errorf("duplicate Markdown Part identity %q on %s and %s", partID, previousPath, path)
+		}
+		seenIDs[partID] = path
+		partIDs[path] = partID
 	}
 	events := make([]model.Event, 0, len(parts))
 	orderByParent := make(map[string]int)
@@ -158,7 +183,7 @@ func buildPartEvents(input plugin.IngestInput, parts []model.MarkdownPart, kind 
 		orderByParent[parentKey]++
 		events = append(events, event)
 	}
-	return events
+	return events, nil
 }
 
 func descriptorFor(kind model.ValueKind, metadata artifact.Metadata) any {

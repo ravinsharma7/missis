@@ -66,12 +66,34 @@ func TestOrderedInlineContentRoundTripsThroughAPIAndMarkdownExport(t *testing.T)
 	if !strings.Contains(exported, "missis-inline") || !strings.Contains(exported, "no-fetch") {
 		t.Fatalf("export did not retain explicit inert inline data: %s", exported)
 	}
+	if !strings.Contains(exported, "missis-part") {
+		t.Fatalf("export did not retain the content Part identity: %s", exported)
+	}
 	parsed, err := model.ParseInlineSequenceMarkdown(exported)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(parsed, coerced) {
 		t.Fatalf("export/re-import changed inline sequence = %#v, want %#v", parsed, coerced)
+	}
+	beforeID := projection.Parts["content"].ID
+	reimported, err := client.ReimportMarkdown(ctx, missis.RequestContext{Actor: "test"}, missis.ImportOptions{
+		Ref:      created.Ref,
+		Content:  exported,
+		Artifact: "inline.md",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reimported.Value != 0 {
+		t.Fatalf("identity-preserving reimport wrote unexpected events: %+v", reimported)
+	}
+	afterReimport, err := client.ShowTicket(ctx, created.Ref, missis.ShowOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := afterReimport.Parts["content"].ID; got != beforeID {
+		t.Fatalf("content Part identity changed on reimport: got %q, want %q", got, beforeID)
 	}
 
 	if err := client.Close(); err != nil {

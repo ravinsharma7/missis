@@ -2,6 +2,7 @@ package application
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -63,7 +64,7 @@ func buildImportEvents(stream model.Ref, parts []model.MarkdownPart, actor model
 // buildReimportEvents computes the minimal event set to bring a ticket's
 // imported parts in line with new Markdown content. It returns an error when
 // an existing imported part would disappear from the source.
-func buildReimportEvents(proj *model.Projection, ticketID model.TicketID, parts []model.MarkdownPart, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, artifact string) ([]model.Event, error) {
+func buildReimportEvents(proj *model.Projection, ticketID model.TicketID, parts []model.MarkdownPart, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, artifact string) ([]model.Event, []string, error) {
 	sortParts(parts)
 	pathToID := make(map[string]model.PartID, len(proj.Paths))
 	for path, id := range proj.Paths {
@@ -71,15 +72,43 @@ func buildReimportEvents(proj *model.Projection, ticketID model.TicketID, parts 
 	}
 	matched := make(map[model.PartID]bool)
 	events := make([]model.Event, 0, len(parts))
+	diagnostics := make([]string, 0)
 	orderByParent := make(map[string]int)
 
 	for _, part := range parts {
 		pathKey := strings.Join(part.Path, "/")
-		partID, ok := pathToID[pathKey]
-		if !ok {
+		var (
+			partID model.PartID
+			ok     bool
+		)
+		if strings.TrimSpace(part.ID) != "" {
+			candidate := model.PartID(part.ID)
+			if existingPart := proj.Parts[candidate]; existingPart != nil {
+				partID = candidate
+				ok = true
+			} else {
+				if pathID, pathExists := pathToID[pathKey]; pathExists {
+					partID = pathID
+					ok = true
+				} else {
+					partID = model.PartID(missis.NewID("part"))
+				}
+				diagnostics = append(diagnostics, fmt.Sprintf("identity_unresolved at line %d: source Part identity %q was not found; using %q", part.StartLine, part.ID, partID))
+			}
+			if pathID, pathExists := pathToID[pathKey]; pathExists && pathID != partID {
+				return nil, nil, fmt.Errorf("explicit Markdown Part identity %q conflicts with current Part %q at path %s", partID, pathID, pathKey)
+			}
+			if matched[partID] {
+				return nil, nil, fmt.Errorf("explicit Markdown Part identity %q is repeated", partID)
+			}
+		} else if existingID, pathExists := pathToID[pathKey]; pathExists {
+			partID = existingID
+			ok = true
+		} else {
 			for id, existing := range proj.Parts {
 				if sourceMatchesArtifact(existing, artifact, part.StartLine, part.EndLine) {
 					partID = id
+					ok = true
 					break
 				}
 			}
@@ -87,6 +116,9 @@ func buildReimportEvents(proj *model.Projection, ticketID model.TicketID, parts 
 
 		if partID == "" {
 			partID = model.PartID(missis.NewID("part"))
+			ok = false
+		}
+		if !ok || proj.Parts[partID] == nil {
 			parentRef := parentRefForPath(part.Path, pathToID)
 			event := importPartEvent(ticketID, partID, part, parentRef, actor, recordedAt, effectiveAt, batchID, artifact, model.OpCreatePart, model.ValueKindMarkdown)
 			event.Value.OrderKey = model.OrderKeyForIndex(orderByParent[parentPathKey(part.Path)])
@@ -119,11 +151,8 @@ func buildReimportEvents(proj *model.Projection, ticketID model.TicketID, parts 
 			events = append(events, event)
 		}
 
-		currentBody := ""
-		if existing != nil && existing.Value != nil {
-			currentBody = existing.Value.Text
-		}
-		if part.Body != currentBody {
+		desired := markdownPartValue(part, model.ValueKindMarkdown)
+		if !sameMarkdownValue(existing, desired) {
 			events = append(events, importPartEvent(ticketID, partID, part, nil, actor, recordedAt, effectiveAt, batchID, artifact, model.OpSetValue, model.ValueKindMarkdown))
 		}
 	}
@@ -131,10 +160,18 @@ func buildReimportEvents(proj *model.Projection, ticketID model.TicketID, parts 
 	for id, existing := range proj.Parts {
 		if !matched[id] && existing != nil && sourceHasArtifact(existing, artifact) {
 			path := currentPathForPart(proj, id)
-			return nil, fmt.Errorf("existing imported part missing from source: %s", strings.Join(path, "/"))
+			return nil, nil, fmt.Errorf("existing imported part missing from source: %s", strings.Join(path, "/"))
 		}
 	}
-	return events, nil
+	return events, diagnostics, nil
+}
+
+func markdownDiagnosticMessages(parsed []model.MarkdownDiagnostic, extra []string) []string {
+	messages := make([]string, 0, len(parsed)+len(extra))
+	for _, diagnostic := range parsed {
+		messages = append(messages, fmt.Sprintf("%s at line %d: %s", diagnostic.Code, diagnostic.Line, diagnostic.Message))
+	}
+	return append(messages, extra...)
 }
 
 func importPartEvent(ticketID model.TicketID, partID model.PartID, part model.MarkdownPart, parentRef *model.Ref, actor model.ActorRef, recordedAt, effectiveAt time.Time, batchID model.BatchID, artifact string, operation model.Operation, valueKind model.ValueKind) model.Event {
@@ -147,12 +184,10 @@ func importPartEvent(ticketID model.TicketID, partID model.PartID, part model.Ma
 	value := model.Value{}
 	switch operation {
 	case model.OpCreatePart:
-		if part.Body != "" {
-			value = model.Value{Kind: valueKind, Text: part.Body}
-		}
+		value = markdownPartValue(part, valueKind)
 		value.Ref = parentRef
 	case model.OpSetValue:
-		value = model.Value{Kind: valueKind, Text: part.Body}
+		value = markdownPartValue(part, valueKind)
 	case model.OpRenamePart:
 		value = model.Value{Kind: valueKind, Text: part.Path[len(part.Path)-1]}
 	case model.OpMovePart:
@@ -170,6 +205,34 @@ func importPartEvent(ticketID model.TicketID, partID model.PartID, part model.Ma
 		BatchID:     &batchID,
 		Sources:     []model.SourceRef{source},
 	}
+}
+
+func markdownPartValue(part model.MarkdownPart, fallbackKind model.ValueKind) model.Value {
+	if part.Inline != nil {
+		return model.Value{Kind: model.ValueKindInlineSequence, Data: *part.Inline}
+	}
+	value := model.Value{Kind: fallbackKind}
+	if part.Body != "" {
+		value.Text = part.Body
+	}
+	return value
+}
+
+func sameMarkdownValue(part *model.Part, desired model.Value) bool {
+	if part == nil || part.Value == nil {
+		return desired.Kind == model.ValueKindMarkdown && desired.Text == "" && desired.Data == nil
+	}
+	current := *part.Value
+	// Containment metadata belongs to the create/move event, not the
+	// Markdown value. Ignore it when deciding whether a reimport changed the
+	// content payload.
+	current.Ref = nil
+	current.OrderKey = ""
+	current.Retracted = false
+	desired.Ref = nil
+	desired.OrderKey = ""
+	desired.Retracted = false
+	return reflect.DeepEqual(current, desired)
 }
 
 func sortParts(parts []model.MarkdownPart) {

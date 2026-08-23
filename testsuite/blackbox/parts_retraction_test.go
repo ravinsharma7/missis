@@ -7,7 +7,7 @@ import (
 
 func TestNestedPartRenameMoveRetractHistory(t *testing.T) {
 	t.Parallel()
-	// covers PH1-PART-001 PH1-PART-002 PH1-PART-003 PH1-PART-004 PH1-PART-005 PH1-PART-006 PH1-PART-007 PH1-PART-010 PH1-PART-011 PH1-PART-012 PH1-REF-001 PH1-REF-003 PH1-REF-004 PH1-EVT-002 PH1-EVT-003 PH1-EVT-004 PH1-EVT-006 PH1-EVT-007 PH1-PRJ-002 PH1-PRJ-003 PH1-PRJ-004 PH1-PRJ-005 PH1-PRV-001 PH1-PRV-002 PH1-PRV-004 N009 N012 N014 N019 N028 N029 N042 N047 N049 N051 N053 N055 N111
+	// covers PH1-PART-001 PH1-PART-002 PH1-PART-003 PH1-PART-004 PH1-PART-005 PH1-PART-006 PH1-PART-007 PH1-PART-010 PH1-PART-011 PH1-PART-012 PH1-REF-001 PH1-REF-003 PH1-REF-004 PH1-EVT-002 PH1-EVT-003 PH1-EVT-004 PH1-EVT-006 PH1-EVT-007 PH1-PRJ-002 PH1-PRJ-003 PH1-PRJ-004 PH1-PRJ-005 PH1-PRV-001 PH1-PRV-002 PH1-PRV-004 N009 N011 N012 N013 N014 N019 N023 N028 N029 N042 N047 N049 N051 N053 N055 N111
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Nested")
 	ref := created["ref"].(string)
@@ -55,7 +55,7 @@ func TestSupersession(t *testing.T) {
 
 func TestParentValueRetractionPreservesChild(t *testing.T) {
 	t.Parallel()
-	// covers PH1-PART-008 PH1-PART-009 N014
+	// covers PH1-PART-008 PH1-PART-009 N014 N017
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Parent retraction")
 	ref := created["ref"].(string)
@@ -79,7 +79,7 @@ func TestParentValueRetractionPreservesChild(t *testing.T) {
 
 func TestRecursiveRetractionRemovesSubtree(t *testing.T) {
 	t.Parallel()
-	// covers PH1-PART-009 N019 N109 N111
+	// covers PH1-PART-009 N018 N019 N020 N109 N111
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Recursive retraction")
 	ref := created["ref"].(string)
@@ -97,7 +97,7 @@ func TestRecursiveRetractionRemovesSubtree(t *testing.T) {
 
 func TestStalePathDoesNotRetarget(t *testing.T) {
 	t.Parallel()
-	// covers PH1-REF-003 N028
+	// covers PH1-REF-003 N027 N028
 	store := filepath.Join(t.TempDir(), "missis.db")
 	created := newTicket(t, store, "Stale path")
 	ref := created["ref"].(string)

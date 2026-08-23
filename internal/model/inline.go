@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
 )
 
 // InlineSequence is an explicit ordered value. It is separate from raw
@@ -172,18 +176,67 @@ func InlineSequenceMarkdown(sequence InlineSequence) (string, error) {
 // URLs, image syntax, HTML, and other unmarked Markdown remain inert text.
 func ParseInlineSequenceMarkdown(markdown string) (InlineSequence, error) {
 	var result InlineSequence
-	for _, line := range strings.Split(markdown, "\n") {
+	protectedLines := markdownCodeLines([]byte(markdown))
+	for lineNumber, line := range strings.Split(markdown, "\n") {
+		if protectedLines[lineNumber+1] {
+			continue
+		}
 		const prefix = "<!-- missis-inline "
 		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, prefix) || !strings.HasSuffix(trimmed, " -->") {
+		if !hasMarkdownMarkerName(trimmed, "missis-inline") {
 			continue
+		}
+		if !strings.HasPrefix(trimmed, prefix) || !strings.HasSuffix(trimmed, " -->") {
+			return InlineSequence{}, fmt.Errorf("malformed missis-inline marker on line %d", lineNumber+1)
 		}
 		payload := strings.TrimSuffix(strings.TrimPrefix(trimmed, prefix), " -->")
 		var item InlineItem
 		if err := json.Unmarshal([]byte(payload), &item); err != nil {
-			return InlineSequence{}, fmt.Errorf("parse inline marker: %w", err)
+			return InlineSequence{}, fmt.Errorf("parse inline marker on line %d: %w", lineNumber+1, err)
+		}
+		if strings.TrimSpace(item.ID) == "" {
+			return InlineSequence{}, fmt.Errorf("inline marker on line %d is missing ID", lineNumber+1)
 		}
 		result.Items = append(result.Items, item)
 	}
-	return CoerceInlineSequence(result)
+	coerced, err := CoerceInlineSequence(result)
+	if err != nil {
+		return InlineSequence{}, err
+	}
+	if err := ValidateBuiltInValue(Value{Kind: ValueKindInlineSequence, Data: coerced}); err != nil {
+		return InlineSequence{}, fmt.Errorf("validate inline markers: %w", err)
+	}
+	return coerced, nil
+}
+
+// markdownCodeLines returns source lines owned by Goldmark code-block nodes.
+// Explicit transport markers inside code are examples, not Missis values;
+// using the AST here prevents a fenced or indented code sample from being
+// promoted merely because it contains a marker-looking comment.
+func markdownCodeLines(source []byte) map[int]bool {
+	protected := make(map[int]bool)
+	document := goldmark.DefaultParser().Parse(text.NewReader(source))
+	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		var lines *text.Segments
+		switch code := node.(type) {
+		case *ast.CodeBlock:
+			lines = code.Lines()
+		case *ast.FencedCodeBlock:
+			lines = code.Lines()
+		default:
+			return ast.WalkContinue, nil
+		}
+		if lines == nil {
+			return ast.WalkSkipChildren, nil
+		}
+		for i := 0; i < lines.Len(); i++ {
+			segment := lines.At(i)
+			protected[sourceLine(source, segment.Start)] = true
+		}
+		return ast.WalkSkipChildren, nil
+	})
+	return protected
 }

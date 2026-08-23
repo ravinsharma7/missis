@@ -231,6 +231,7 @@ func TestConcurrentMoveHomeExactlyOneWinner(t *testing.T) {
 }
 
 func TestConcurrentMoveLinkAcrossScopes(t *testing.T) {
+	// covers N079
 	now := fixedNow()
 	svc := openFixed(t, fixedClock{now})
 	ctx := context.Background()

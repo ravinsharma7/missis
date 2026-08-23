@@ -48,6 +48,19 @@
     },
     {
       "ID": "inline-000007",
+      "Kind": "artifact",
+      "Data": {
+        "Ref": {
+          "Kind": "artifact",
+          "Entity": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "Path": null
+        },
+        "MediaType": "application/octet-stream",
+        "Size": 42
+      }
+    },
+    {
+      "ID": "inline-000008",
       "Kind": "git-ref",
       "Data": {
         "Repository": "github.com/example/missis",
@@ -55,7 +68,7 @@
       }
     },
     {
-      "ID": "inline-000008",
+      "ID": "inline-000009",
       "Kind": "raw-markdown",
       "Text": "![ordinary](https://example.test/image.png)"
     }

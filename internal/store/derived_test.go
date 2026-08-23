@@ -135,6 +135,201 @@ func TestPartsCurrentPersistsOrderKeyAcrossRebuild(t *testing.T) {
 	}
 }
 
+func TestOpenRepairsStaleOrderedProjection(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missis.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketID := model.TicketID("ticket:stale-order")
+	stream := model.Ref{Kind: model.KindTicket, Entity: string(ticketID)}
+	at := time.Now().UTC()
+	orderKey := model.OrderKeyForIndex(4)
+	events := []model.Event{
+		{ID: "event:stale-order:1", Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: stream, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: "event:stale-order:2", Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:stale-order:body", Path: []string{"body"}}, Value: model.Value{Kind: model.ValueKindMarkdown, Text: "body", OrderKey: orderKey}, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, _, err := s.AppendTicketBatch(events, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	var beforeHead string
+	if err := s.reader.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&beforeHead); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.writer.Exec(`UPDATE parts_current SET order_key = '' WHERE ticket_id = ? AND path = 'body'`, string(ticketID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	var stored string
+	if err := reopened.reader.QueryRow(`SELECT order_key FROM parts_current WHERE ticket_id = ? AND path = 'body'`, string(ticketID)).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != orderKey {
+		t.Fatalf("repaired order key = %q, want %q", stored, orderKey)
+	}
+	var afterHead string
+	if err := reopened.reader.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&afterHead); err != nil {
+		t.Fatal(err)
+	}
+	if afterHead != beforeHead {
+		t.Fatalf("projection repair changed ledger head: before=%s after=%s", beforeHead, afterHead)
+	}
+	if err := reopened.CheckConsistency(); err != nil {
+		t.Fatalf("consistency after ordered projection repair: %v", err)
+	}
+}
+
+func TestConcurrentOrderedProjectionRepairAndAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missis.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	baseID := model.TicketID("ticket:repair-base")
+	baseStream := model.Ref{Kind: model.KindTicket, Entity: string(baseID)}
+	baseEvents := []model.Event{
+		{ID: "event:repair-base:1", Stream: baseStream, Sequence: 1, Operation: model.OpCreateEntity, Target: baseStream, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		{ID: "event:repair-base:2", Stream: baseStream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: "part:repair-base:body", Path: []string{"body"}}, Value: model.Value{Kind: model.ValueKindMarkdown, Text: "body", OrderKey: model.OrderKeyForIndex(0)}, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+	}
+	if _, _, err := s.AppendTicketBatch(baseEvents, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.writer.Exec(`UPDATE parts_current SET order_key = '' WHERE ticket_id = ? AND path = 'body'`, string(baseID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 6
+	start := make(chan struct{})
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			client, openErr := Open(path)
+			if openErr != nil {
+				errCh <- openErr
+				return
+			}
+			defer client.Close()
+			id := model.TicketID(fmt.Sprintf("ticket:repair-worker-%d", i))
+			stream := model.Ref{Kind: model.KindTicket, Entity: string(id)}
+			events := []model.Event{
+				{ID: model.EventID(fmt.Sprintf("event:repair-worker-%d:1", i)), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: stream, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+				{ID: model.EventID(fmt.Sprintf("event:repair-worker-%d:2", i)), Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: fmt.Sprintf("part:repair-worker-%d:body", i), Path: []string{"body"}}, Value: model.Value{Kind: model.ValueKindMarkdown, Text: "worker", OrderKey: model.OrderKeyForIndex(0)}, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+			}
+			if _, _, appendErr := client.AppendTicketBatch(events, "", nil); appendErr != nil {
+				errCh <- appendErr
+			}
+			if consistencyErr := client.CheckConsistency(); consistencyErr != nil {
+				errCh <- consistencyErr
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+
+	final, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer final.Close()
+	if err := final.CheckConsistency(); err != nil {
+		t.Fatalf("final consistency after concurrent repair/appends: %v", err)
+	}
+	var repairedKey string
+	if err := final.reader.QueryRow(`SELECT order_key FROM parts_current WHERE ticket_id = ? AND path = 'body'`, string(baseID)).Scan(&repairedKey); err != nil {
+		t.Fatal(err)
+	}
+	if repairedKey != model.OrderKeyForIndex(0) {
+		t.Fatalf("base order key = %q, want %q", repairedKey, model.OrderKeyForIndex(0))
+	}
+}
+
+func TestOrderedProjectionRepairKeepsStoresIndependent(t *testing.T) {
+	t.Parallel()
+	paths := []string{
+		filepath.Join(t.TempDir(), "one.db"),
+		filepath.Join(t.TempDir(), "two.db"),
+	}
+	stores := make([]*Store, 0, len(paths))
+	for i, path := range paths {
+		s, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores = append(stores, s)
+		id := model.TicketID(fmt.Sprintf("ticket:independent-%d", i))
+		stream := model.Ref{Kind: model.KindTicket, Entity: string(id)}
+		at := time.Now().UTC()
+		events := []model.Event{
+			{ID: model.EventID(fmt.Sprintf("event:independent-%d:1", i)), Stream: stream, Sequence: 1, Operation: model.OpCreateEntity, Target: stream, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+			{ID: model.EventID(fmt.Sprintf("event:independent-%d:2", i)), Stream: stream, Sequence: 2, Operation: model.OpCreatePart, Target: model.Ref{Kind: model.KindPart, Entity: fmt.Sprintf("part:independent-%d:body", i), Path: []string{"body"}}, Value: model.Value{Kind: model.ValueKindMarkdown, Text: "body", OrderKey: model.OrderKeyForIndex(0)}, RecordedAt: at, EffectiveAt: at, Actor: model.ActorRef{Kind: "test", ID: "test"}},
+		}
+		if _, _, err := s.AppendTicketBatch(events, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := s.LoadTicketEvents(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		projection, err := model.CurrentProjection(loaded, id, model.MaxRecordedAt(loaded))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := projection.Paths["body"]; !ok {
+			t.Fatalf("store %d projection paths = %v", i, projection.Paths)
+		}
+	}
+	defer func() {
+		for _, s := range stores {
+			_ = s.Close()
+		}
+	}()
+	if _, err := stores[0].writer.Exec(`UPDATE parts_current SET order_key = '' WHERE path = 'body'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := stores[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	stores[0] = reopened
+	if err := stores[0].CheckConsistency(); err != nil {
+		t.Fatalf("store one after repair: %v", err)
+	}
+	if err := stores[1].CheckConsistency(); err != nil {
+		t.Fatalf("store two while store one repairs: %v", err)
+	}
+	var repaired string
+	if err := stores[0].reader.QueryRow(`SELECT order_key FROM parts_current WHERE ticket_id = ? AND path = 'body'`, "ticket:independent-0").Scan(&repaired); err != nil {
+		t.Fatal(err)
+	}
+	if repaired != model.OrderKeyForIndex(0) {
+		t.Fatalf("store one order key = %q", repaired)
+	}
+}
+
 func TestListTicketsHistoricalFallback(t *testing.T) {
 	t.Parallel()
 	s := openDerivedStore(t)

@@ -3,6 +3,7 @@ package model
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -132,6 +133,75 @@ func TestParseMarkdownRecognizesSetextHeading(t *testing.T) {
 	}
 	if len(parts) != 1 || joinPath(parts[0].Path) != "problem" || parts[0].Body != "The body." {
 		t.Fatalf("parts = %+v", parts)
+	}
+}
+
+func TestParseMarkdownPreservesExplicitPartIdentity(t *testing.T) {
+	content := "# Ticket\n\n<!-- missis-part {\"id\":\"part:evidence\"} -->\n## Evidence\n\nBody.\n"
+	parts, err := ParseMarkdownParts(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 2 || parts[1].ID != "part:evidence" {
+		t.Fatalf("parts = %+v, want explicit identity on evidence", parts)
+	}
+	remaining := ExcludeMarkdownDocumentTitle(parts)
+	if len(remaining) != 1 || joinPath(remaining[0].Path) != "evidence" || remaining[0].ID != "part:evidence" {
+		t.Fatalf("title exclusion changed identity/path unexpectedly: %+v", remaining)
+	}
+}
+
+func TestParseMarkdownRejectsDuplicateExplicitPartIdentity(t *testing.T) {
+	content := "<!-- missis-part {\"id\":\"part:same\"} -->\n## A\n\n<!-- missis-part {\"id\":\"part:same\"} -->\n## B\n"
+	if _, err := ParseMarkdownParts(content); err == nil {
+		t.Fatal("expected duplicate explicit Part identity to be rejected")
+	}
+}
+
+func TestParseMarkdownPartMarkerInsideCodeRemainsBody(t *testing.T) {
+	content := "## Evidence\n\n```markdown\n<!-- missis-part {\"id\":\"part:literal\"} -->\n```\n\n### Actual\nbody\n\n    <!-- missis-part {\"id\":\"part:indented\"} -->\n"
+	parsed, err := ParseMarkdownPartsWithDiagnostics(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Diagnostics) != 0 {
+		t.Fatalf("code markers produced diagnostics: %+v", parsed.Diagnostics)
+	}
+	if len(parsed.Parts) != 2 {
+		t.Fatalf("parts = %+v", parsed.Parts)
+	}
+	combinedBody := parsed.Parts[0].Body + "\n" + parsed.Parts[1].Body
+	if parsed.Parts[0].ID != "" || !strings.Contains(combinedBody, "part:literal") || !strings.Contains(combinedBody, "part:indented") {
+		t.Fatalf("code marker was not preserved as body: %+v", parsed.Parts)
+	}
+	if parsed.Parts[1].ID != "" {
+		t.Fatalf("actual heading unexpectedly received code marker identity: %+v", parsed.Parts[1])
+	}
+}
+
+func TestParseMarkdownReportsUnattachedIdentityMarker(t *testing.T) {
+	content := "## Evidence\n\n<!-- missis-part {\"id\":\"part:unattached\"} -->\nordinary body\n"
+	parsed, err := ParseMarkdownPartsWithDiagnostics(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Diagnostics) != 1 || parsed.Diagnostics[0].Code != "identity_unattached" || parsed.Diagnostics[0].Line != 3 {
+		t.Fatalf("diagnostics = %+v", parsed.Diagnostics)
+	}
+	if !strings.Contains(parsed.Parts[0].Body, "part:unattached") {
+		t.Fatalf("unattached marker was not preserved: %+v", parsed.Parts[0])
+	}
+}
+
+func TestParseMarkdownRejectsMalformedIdentityMarkers(t *testing.T) {
+	for _, content := range []string{
+		"<!-- missis-part -->\n## Evidence\n",
+		"<!-- missis-part {\"id\":\"\"} -->\n## Evidence\n",
+		"<!-- missis-part {\"id\":} -->\n## Evidence\n",
+	} {
+		if _, err := ParseMarkdownParts(content); err == nil {
+			t.Fatalf("expected malformed identity marker error for %q", content)
+		}
 	}
 }
 

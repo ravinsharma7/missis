@@ -8,6 +8,7 @@ import (
 
 func TestHasHomeMembershipEndToEnd(t *testing.T) {
 	t.Parallel()
+	// covers N080
 	store := filepath.Join(t.TempDir(), "missis.db")
 	if result := runMissis(t, store, "new", "--json", "--kind", "project", "--id", "safedesign", "SafeDesign"); result.code != 0 {
 		t.Fatalf("create project: %d %s", result.code, result.stderr)

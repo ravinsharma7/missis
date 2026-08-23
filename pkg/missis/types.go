@@ -202,12 +202,13 @@ type LineageEdge struct {
 }
 
 type NewTicketResult struct {
-	Ref        string  `json:"ref"`
-	ID         string  `json:"id"`
-	Title      string  `json:"title"`
-	Status     string  `json:"status"`
-	Project    *string `json:"project"`
-	RecordedAt string  `json:"recorded_at"`
+	Ref         string   `json:"ref"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Status      string   `json:"status"`
+	Project     *string  `json:"project"`
+	RecordedAt  string   `json:"recorded_at"`
+	Diagnostics []string `json:"diagnostics,omitempty"`
 }
 
 type EntityResult struct {
@@ -227,10 +228,11 @@ type SetResult struct {
 }
 
 type ImportResult struct {
-	Ref       string `json:"ref"`
-	Event     string `json:"event"`
-	Operation string `json:"operation"`
-	Value     int    `json:"value"`
+	Ref         string   `json:"ref"`
+	Event       string   `json:"event"`
+	Operation   string   `json:"operation"`
+	Value       int      `json:"value"`
+	Diagnostics []string `json:"diagnostics,omitempty"`
 }
 
 // ----- option types -----

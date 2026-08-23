@@ -2,6 +2,7 @@ package model
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,6 +13,10 @@ import (
 )
 
 type MarkdownPart struct {
+	// ID is an optional explicit canonical Part identity transported by the
+	// lossless missis Markdown format. Ordinary Markdown leaves it empty and
+	// the core assigns a new identity on import.
+	ID        string
 	Path      []string
 	Body      string
 	StartLine int
@@ -21,14 +26,76 @@ type MarkdownPart struct {
 	Inline *InlineSequence
 }
 
+// MarkdownDiagnostic describes recoverable transport metadata that was
+// ignored without changing the Markdown body. Validation failures remain
+// errors because accepting them would make identity loss silent.
+type MarkdownDiagnostic struct {
+	Code    string
+	Line    int
+	Message string
+}
+
+type MarkdownParseResult struct {
+	Parts       []MarkdownPart
+	Diagnostics []MarkdownDiagnostic
+}
+
+// ExcludeMarkdownDocumentTitle removes the first top-level heading used as a
+// document title and strips that heading's path prefix from its descendants.
+// The prefix normalization is important because the title is represented by
+// the ticket entity rather than a stored child Part.
+func ExcludeMarkdownDocumentTitle(parts []MarkdownPart) []MarkdownPart {
+	for i, part := range parts {
+		if len(part.Path) != 1 || part.Path[0] == "preamble" {
+			continue
+		}
+		prefix := append([]string(nil), part.Path...)
+		remaining := append([]MarkdownPart(nil), parts[:i]...)
+		remaining = append(remaining, parts[i+1:]...)
+		for j := range remaining {
+			if len(remaining[j].Path) < len(prefix) {
+				continue
+			}
+			matches := true
+			for k := range prefix {
+				if remaining[j].Path[k] != prefix[k] {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				remaining[j].Path = append([]string(nil), remaining[j].Path[len(prefix):]...)
+			}
+		}
+		return remaining
+	}
+	return append([]MarkdownPart(nil), parts...)
+}
+
 func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
-	source := []byte(content)
-	headings, err := parseMarkdownHeadings(source)
+	parsed, err := ParseMarkdownPartsWithDiagnostics(content)
 	if err != nil {
 		return nil, err
 	}
+	return parsed.Parts, nil
+}
+
+// ParseMarkdownPartsWithDiagnostics is the application-facing parser. The
+// compatibility wrapper above intentionally keeps the original API for
+// callers that do not need recoverable transport diagnostics.
+func ParseMarkdownPartsWithDiagnostics(content string) (MarkdownParseResult, error) {
+	source := []byte(content)
+	headings, err := parseMarkdownHeadings(source)
+	if err != nil {
+		return MarkdownParseResult{}, err
+	}
 	lines := strings.Split(content, "\n")
+	partMarkers, err := parsePartIdentityMarkers(source, lines)
+	if err != nil {
+		return MarkdownParseResult{}, err
+	}
 	type node struct {
+		id        string
 		level     int
 		path      []string
 		body      []string
@@ -43,6 +110,8 @@ func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
 		taken       = make(map[string]bool) // final path key -> occupied
 		preamble    []string
 		firstHeader int // 1-based line number of the first heading; 0 when none
+		pending     *markdownIdentityMarker
+		diagnostics []MarkdownDiagnostic
 	)
 	headingByLine := make(map[int]markdownHeading, len(headings))
 	headingSyntaxLines := make(map[int]bool)
@@ -63,10 +132,46 @@ func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
 		}
 		parts = append(parts, n)
 	}
+	appendRawLine := func(line string) {
+		if len(stack) > 0 {
+			stack[len(stack)-1].body = append(stack[len(stack)-1].body, line)
+			return
+		}
+		preamble = append(preamble, line)
+	}
+	flushUnattached := func() {
+		if pending == nil {
+			return
+		}
+		appendRawLine(pending.raw)
+		diagnostics = append(diagnostics, MarkdownDiagnostic{
+			Code:    "identity_unattached",
+			Line:    pending.line,
+			Message: fmt.Sprintf("missis-part identity marker on line %d is not attached to a heading", pending.line),
+		})
+		pending = nil
+	}
 
 	for i, line := range lines {
+		if marker, ok := partMarkers[i+1]; ok {
+			flushUnattached()
+			markerCopy := marker
+			pending = &markerCopy
+			continue
+		}
 		heading, isHeading := headingByLine[i+1]
 		if !isHeading {
+			// A marker may be separated from its heading by the blank line
+			// emitted by the exporter. Do not let that transport whitespace
+			// become part of the preceding value.
+			if pending != nil && strings.TrimSpace(line) == "" {
+				continue
+			}
+			if pending != nil {
+				// Preserve an otherwise valid marker when it is not attached
+				// to a heading instead of silently discarding user content.
+				flushUnattached()
+			}
 			// Setext heading underlines are part of the heading syntax, not
 			// body content. Other non-heading lines, including lines inside
 			// fenced code blocks, remain body content.
@@ -121,12 +226,18 @@ func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
 		path := append(append([]string(nil), parentPath...), candidate)
 
 		n := &node{
+			id:        "",
 			level:     level,
 			path:      path,
 			startLine: i + 1,
 		}
+		if pending != nil {
+			n.id = pending.id
+			pending = nil
+		}
 		stack = append(stack, n)
 	}
+	flushUnattached()
 	for len(stack) > 0 {
 		flushNode(stack[len(stack)-1])
 		stack = stack[:len(stack)-1]
@@ -146,6 +257,7 @@ func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
 	}
 
 	result := make([]MarkdownPart, 0, len(parts))
+	seenIDs := make(map[string]struct{})
 	sort.SliceStable(parts, func(i, j int) bool {
 		return parts[i].startLine < parts[j].startLine
 	})
@@ -154,14 +266,72 @@ func ParseMarkdownParts(content string) ([]MarkdownPart, error) {
 			continue
 		}
 		body := strings.TrimSpace(strings.Join(n.body, "\n"))
+		var inline *InlineSequence
+		if sequence, parseErr := ParseInlineSequenceMarkdown(body); parseErr != nil {
+			return MarkdownParseResult{}, fmt.Errorf("parse explicit inline content: %w", parseErr)
+		} else if len(sequence.Items) > 0 {
+			inline = &sequence
+		}
+		if n.id != "" {
+			if _, exists := seenIDs[n.id]; exists {
+				return MarkdownParseResult{}, fmt.Errorf("duplicate Markdown Part identity %q", n.id)
+			}
+			seenIDs[n.id] = struct{}{}
+		}
 		result = append(result, MarkdownPart{
+			ID:        n.id,
 			Path:      append([]string(nil), n.path...),
 			Body:      body,
 			StartLine: n.startLine,
 			EndLine:   n.endLine,
+			Inline:    inline,
 		})
 	}
-	return result, nil
+	return MarkdownParseResult{Parts: result, Diagnostics: diagnostics}, nil
+}
+
+const (
+	partIdentityMarkerPrefix = "<!-- missis-part "
+	partIdentityMarkerSuffix = " -->"
+)
+
+// parsePartIdentityMarkers recognizes only the explicit missis transport
+// marker outside Goldmark code blocks. Other HTML comments and marker-looking
+// text inside code remain ordinary Markdown.
+func parsePartIdentityMarkers(source []byte, lines []string) (map[int]markdownIdentityMarker, error) {
+	markers := make(map[int]markdownIdentityMarker)
+	protectedLines := markdownCodeLines(source)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if protectedLines[i+1] || !hasMarkdownMarkerName(trimmed, "missis-part") {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, partIdentityMarkerPrefix) || !strings.HasSuffix(trimmed, partIdentityMarkerSuffix) {
+			return nil, fmt.Errorf("malformed missis-part marker on line %d", i+1)
+		}
+		payload := strings.TrimSuffix(strings.TrimPrefix(trimmed, partIdentityMarkerPrefix), partIdentityMarkerSuffix)
+		var marker struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(payload), &marker); err != nil {
+			return nil, fmt.Errorf("parse Markdown Part identity on line %d: %w", i+1, err)
+		}
+		marker.ID = strings.TrimSpace(marker.ID)
+		if marker.ID == "" {
+			return nil, fmt.Errorf("Markdown Part identity on line %d is empty", i+1)
+		}
+		markers[i+1] = markdownIdentityMarker{id: marker.ID, line: i + 1, raw: line}
+	}
+	return markers, nil
+}
+
+func hasMarkdownMarkerName(line, name string) bool {
+	prefix := "<!-- " + name
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	remainder := strings.TrimPrefix(line, prefix)
+	return remainder == "" || strings.HasPrefix(remainder, " ") || strings.HasPrefix(remainder, "-->")
 }
 
 type markdownHeading struct {
@@ -169,6 +339,12 @@ type markdownHeading struct {
 	title     string
 	startLine int
 	endLine   int
+}
+
+type markdownIdentityMarker struct {
+	id   string
+	line int
+	raw  string
 }
 
 // parseMarkdownHeadings delegates Markdown structure recognition to Goldmark.

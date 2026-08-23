@@ -307,6 +307,16 @@ func ShowMarkdown(projection missis.TicketProjection, links []missis.LinkView) s
 		if idx := strings.LastIndex(path, "/"); idx >= 0 {
 			last = path[idx+1:]
 		}
+		if part.ID != "" {
+			marker, err := json.Marshal(struct {
+				ID string `json:"id"`
+			}{ID: part.ID})
+			if err == nil {
+				b.WriteString("<!-- missis-part ")
+				b.Write(marker)
+				b.WriteString(" -->\n")
+			}
+		}
 		b.WriteString(heading + " " + last + "\n\n")
 		if part.Value != nil {
 			b.WriteString(renderPartValue(part) + "\n\n")

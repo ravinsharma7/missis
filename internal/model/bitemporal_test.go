@@ -31,6 +31,19 @@ func bStatusValue(proj *Projection) *string {
 	return &text
 }
 
+func TestEventOrderingUsesDeterministicTieBreakers(t *testing.T) {
+	// covers N046
+	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
+	events := []Event{
+		bScalarEvent("e2", 2, OpSetValue, base, base, "second"),
+		bScalarEvent("e1", 1, OpSetValue, base, base, "first"),
+	}
+	sortEventsByValidTime(events)
+	if events[0].Sequence != 1 || events[1].Sequence != 2 {
+		t.Fatalf("event order = %d, %d; want stream sequence order", events[0].Sequence, events[1].Sequence)
+	}
+}
+
 func TestBitemporalNormalUpdate(t *testing.T) {
 	// covers PH1-BT-001
 	base := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)

@@ -67,7 +67,7 @@ func TestRegistryMarkersAreExplicit(t *testing.T) {
 }
 
 func TestOperationValidation(t *testing.T) {
-	// covers PH1-REG-003
+	// covers PH1-REG-003 N056
 	to := Ref{Kind: KindTicket, Entity: "ticket:other"}
 	tests := []struct {
 		name    string

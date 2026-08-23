@@ -1712,6 +1712,12 @@ func ensureDerivedFresh(db *sql.DB) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	// Close explicitly before issuing more queries on db. The writer is
+	// configured with a single connection, so relying on database/sql to
+	// auto-close rows at EOF can unnecessarily serialize or block repair.
+	if err := rows.Close(); err != nil {
+		return err
+	}
 	if len(heads) != ticketCount {
 		return rebuildDerived(db)
 	}
@@ -1724,7 +1730,97 @@ func ensureDerivedFresh(db *sql.DB) error {
 			return rebuildDerived(db)
 		}
 	}
+	orderedDrift, err := orderedProjectionDrift(db)
+	if err != nil {
+		return err
+	}
+	if orderedDrift {
+		return rebuildDerived(db)
+	}
 	return nil
+}
+
+// orderedProjectionDrift checks only ticket streams that have ever carried an
+// explicit order key. Legacy streams with no order metadata retain their
+// sequence/Part-ID fallback and do not pay the projection-fold cost here.
+// The check is read-snapshot based; rebuildDerived obtains the writer
+// transaction afterward, so concurrent appends are serialized with the
+// rebuild and cannot be lost.
+func orderedProjectionDrift(db *sql.DB) (bool, error) {
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`
+		SELECT DISTINCT stream_entity
+		FROM events
+		WHERE stream_kind = ?
+		  AND json_extract(event_json, '$.Value.OrderKey') IS NOT NULL
+		  AND json_extract(event_json, '$.Value.OrderKey') <> ''`,
+		string(model.KindTicket))
+	if err != nil {
+		return false, err
+	}
+	var ticketIDs []model.TicketID
+	for rows.Next() {
+		var entity string
+		if err := rows.Scan(&entity); err != nil {
+			rows.Close()
+			return false, err
+		}
+		ticketIDs = append(ticketIDs, model.TicketID(entity))
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	for _, ticketID := range ticketIDs {
+		streamEvents, err := loadStreamEventsTx(tx, string(model.KindTicket), string(ticketID))
+		if err != nil {
+			return false, err
+		}
+		projection, err := model.CurrentProjection(streamEvents, ticketID, model.MaxRecordedAt(streamEvents))
+		if err != nil {
+			return false, err
+		}
+		rows, err := tx.Query(`SELECT path, order_key FROM parts_current WHERE ticket_id = ?`, string(ticketID))
+		if err != nil {
+			return false, err
+		}
+		got := make(map[string]string)
+		for rows.Next() {
+			var path, orderKey string
+			if err := rows.Scan(&path, &orderKey); err != nil {
+				rows.Close()
+				return false, err
+			}
+			got[path] = orderKey
+		}
+		if err := rows.Close(); err != nil {
+			return false, err
+		}
+		if err := rows.Err(); err != nil {
+			return false, err
+		}
+		if len(got) != len(projection.Paths) {
+			return true, nil
+		}
+		for path, partID := range projection.Paths {
+			part := projection.Parts[partID]
+			if part == nil {
+				return true, nil
+			}
+			orderKey, ok := got[path]
+			if !ok || orderKey != part.OrderKey {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func rebuildDerived(db *sql.DB) error {

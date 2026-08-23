@@ -3012,6 +3012,21 @@ A round-trip need not reproduce exact whitespace, but it SHOULD preserve:
 
 An importer SHOULD preserve explicit part IDs across export and re-import. This lets a heading rename or move without creating a different logical part.
 
+The v0.1 Markdown transport encodes an explicit identity as an inert comment
+immediately before the corresponding heading:
+
+```markdown
+<!-- missis-part {"id":"part:01K2MR7B8Q"} -->
+### Race test
+```
+
+Goldmark identifies the heading and the importer associates only this exact
+transport marker with it; ordinary HTML comments and marker-looking text in
+fenced or indented code remain Markdown data. Export emits the marker for
+known Parts, and re-import reuses the identity. A document title is represented
+by the ticket rather than a child Part, so its descendant paths are normalized
+when the title heading is removed during import.
+
 Conceptually:
 
 ```markdown
@@ -3023,6 +3038,100 @@ If an explicit ID moves under a different heading, the importer proposes a `move
 Without an explicit ID, matching MAY use deterministic heuristics such as source artifact identity, previous source span, heading ancestry, content hash, and ontology type. Heuristic matches MUST be explainable and SHOULD require confirmation or conflict reporting when ambiguous.
 
 One Markdown import SHOULD preserve hierarchy changes as one atomic batch so readers never observe a half-moved subtree.
+
+## 15.8 Markdown transport safety and diagnostics
+
+Missis Markdown transport metadata is an exact, full-line HTML comment. It is
+not metadata hidden inside a code fence. Goldmark identifies fenced and
+indented code blocks first; marker-looking text owned by those blocks remains
+literal Markdown.
+
+Part identity transport uses:
+
+```markdown
+<!-- missis-part {"id":"part:01K2MR7B8Q"} -->
+## Evidence
+```
+
+The marker must contain a non-empty `id` and be attached to the next heading;
+exporter-generated blank lines are allowed. No marker means ordinary Markdown
+and the core assigns a new Part ID. An existing identity is reused only when
+it resolves in the target projection. An unknown identity receives a new
+core-assigned ID and an `identity_unresolved` diagnostic. A valid marker that
+is not attached to a heading remains raw Markdown with an
+`identity_unattached` diagnostic. Missing IDs, malformed JSON, and duplicate
+identities reject the import atomically. Other HTML comments remain ordinary
+Markdown.
+
+Examples of identity diagnostics are:
+
+```markdown
+<!-- missis-part {"id":"part:unknown"} -->
+## Imported heading
+
+<!-- missis-part -->
+## Missing identity
+
+<!-- missis-part {"id":"part:duplicate"} -->
+## First copy
+<!-- missis-part {"id":"part:duplicate"} -->
+## Second copy
+
+<!-- missis-part {"id":} -->
+## Invalid JSON
+```
+
+The unknown identity is syntactically valid but receives a new core ID and
+an `identity_unresolved` diagnostic. Missing IDs, duplicate identities, and
+invalid JSON fail atomically with line diagnostics; malformed metadata is
+never silently discarded.
+
+Inline sequence transport uses `missis-inline` comments. The complete inline
+kind set is `markdown-text`, `code-ref`, `git-ref`, `artifact`, `image`,
+`audio`, `video`, and `raw-markdown`. Marker order is semantic sequence order;
+typed payloads contain only descriptors and references. Artifact bytes are
+stored in the artifact backend, never in Markdown or event metadata.
+
+For example:
+
+```markdown
+<!-- missis-inline {"ID":"inline-text-001","Kind":"markdown-text","Text":"A human explanation."} -->
+<!-- missis-inline {"ID":"inline-image-001","Kind":"image","Data":{"kind":"image","uri":"artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","media_type":"image/png"}} -->
+<!-- missis-inline {"ID":"inline-audio-001","Kind":"audio","Data":{"kind":"audio","uri":"artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","media_type":"audio/mpeg"}} -->
+<!-- missis-inline {"ID":"inline-video-001","Kind":"video","Data":{"kind":"video","uri":"https://example.test/demo.mp4","media_type":"video/mp4"}} -->
+<!-- missis-inline {"ID":"inline-artifact-001","Kind":"artifact","Data":{"Ref":{"Kind":"artifact","Entity":"artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"MediaType":"application/octet-stream","Size":42}} -->
+<!-- missis-inline {"ID":"inline-code-001","Kind":"code-ref","Data":{"Repository":"github.com/example/missis","Commit":"abc123","Path":"main.go"}} -->
+<!-- missis-inline {"ID":"inline-git-001","Kind":"git-ref","Data":{"Repository":"github.com/example/missis","Commit":"abc123"}} -->
+<!-- missis-inline {"ID":"inline-raw-001","Kind":"raw-markdown","Text":"![inert](https://example.test/image.png)"} -->
+```
+
+Malformed inline JSON, missing or duplicate IDs, unknown kinds, missing typed
+data, and invalid descriptors produce explicit diagnostics or validation
+errors. URLs, Git references, and raw Markdown media syntax are inert; no
+renderer fetches or executes them. Normal UI views hide transport comments,
+while raw Markdown export includes them for identity-preserving round trips.
+
+The following remains literal code and is never promoted to transport data:
+
+````markdown
+```markdown
+<!-- missis-part {"id":"part:literal-example"} -->
+<!-- missis-inline {"ID":"literal-example","Kind":"image"} -->
+```
+````
+
+Indented code is also literal:
+
+```markdown
+    <!-- missis-part {"id":"part:indented-literal"} -->
+    <!-- missis-inline {"ID":"indented-literal","Kind":"image"} -->
+```
+
+Normal UI views hide transport comments; raw Markdown export keeps them for
+identity-preserving round trips. Removing a valid Part marker causes an
+identity-loss diagnostic, while changing its heading without removing the
+marker preserves identity. Typed media, artifact, CodeRef, and GitRef data
+should be edited through structured API/UI fields where available.
 
 ---
 

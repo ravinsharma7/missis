@@ -226,6 +226,34 @@ func TestMarkdownImportAndReimport(t *testing.T) {
 	}
 }
 
+func TestMarkdownIdentityDiagnosticsAndCoreAssignment(t *testing.T) {
+	client := testClient(t)
+	ctx := context.Background()
+	content := "# Root\n\n<!-- missis-part {\"id\":\"part:from-another-store\"} -->\n## Evidence\n\n<!-- missis-part {\"id\":\"part:unattached\"} -->\nBody\n"
+	created, err := client.ImportMarkdown(ctx, req(), missis.ImportOptions{Content: content, Artifact: "artifact:identity.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Diagnostics) != 2 || !strings.Contains(strings.Join(created.Diagnostics, "\n"), "identity_unresolved") || !strings.Contains(strings.Join(created.Diagnostics, "\n"), "identity_unattached") {
+		t.Fatalf("identity diagnostics = %v", created.Diagnostics)
+	}
+	projection, err := client.ShowTicket(ctx, created.Ref, missis.ShowOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, ok := projection.Parts["evidence"]
+	if !ok {
+		t.Fatalf("evidence Part missing: %+v", projection.Parts)
+	}
+	if evidence.ID == "part:from-another-store" || evidence.ID == "part:unattached" {
+		t.Fatalf("source identity was incorrectly trusted: %q", evidence.ID)
+	}
+	body, ok := evidence.Value.(string)
+	if !ok || !strings.Contains(body, "part:unattached") {
+		t.Fatalf("unattached marker was not preserved in body: %#v", evidence.Value)
+	}
+}
+
 func TestSearchAndFilters(t *testing.T) {
 	client := testClient(t)
 	ctx := context.Background()
