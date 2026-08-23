@@ -120,7 +120,7 @@ func TestGetStarted(t *testing.T) {
 		"AGENTS.md",
 		"missis new",
 		"missis set",
-		"go install \"github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF\"",
+		"go run \"github.com/ravinsharma7/missis/tools/paired-install@$MISSIS_REF\"",
 		"missis-tools backup",
 		"missis-tools repair",
 	} {

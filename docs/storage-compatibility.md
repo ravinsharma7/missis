@@ -1,6 +1,6 @@
 # Storage Compatibility Statement
 
-**Status:** v0.1.0 (alpha) — 2026-08-18
+**Status:** store format revision 2 (local alpha) — 2026-08-24
 
 This statement is the compatibility contract for the on-disk store format.
 It exists so upgrades and cross-platform moves are predictable. Ticket: #53.
@@ -30,10 +30,16 @@ A single SQLite database file, holding:
 - Schema migrations are **forward-only and additive**. Current set:
   `0001_init`, `0002_link_operation_index`, `0003_store_identity`,
   `0004_projection_snapshots`, `0005_artifacts`, and
-  `0006_ordered_parts`.
-- On open, the store: (1) applies pending migrations in order, (2) verifies
-  store identity and the hash chain, (3) backfills derived tables for stores
+  `0006_ordered_parts`, followed by `0007_store_format_revision`.
+- Store format is one internal integer independent of binary versions. The
+  current value is 2. Stores through 0005 without a marker are implicit
+  revision 1; unmarked 0006 stores are implicit revision 2.
+- On open, the store: (1) probes compatibility read-only, (2) applies pending
+  migrations in order, (3) verifies
+  store identity and the hash chain, (4) backfills derived tables for stores
   created before migration 0004.
+- Unknown migrations or a revision newer than the binary supports fail before
+  WAL setup, migration, integrity verification, or projection repair.
 - **Upgrades are in place:** an older store is migrated and backfilled on first
   open by a newer binary. Always back up first
   (`missis-tools backup`, then `missis-tools remote upload`).
@@ -41,6 +47,27 @@ A single SQLite database file, holding:
   version, an older binary may not be able to read it. Forward-compatible with
   later versions; not backward-compatible with earlier binaries after
   migration.
+
+### Compatibility corpus
+
+The checked-in `internal/store/testdata/compatibility/revision-0002/` corpus
+contains a deterministic database, manifest, and synthetic artifact CAS. It
+covers every registered operation, built-in value/inline/reference kind,
+relation, first-party ingestion plugin output, provenance shape, temporal
+behavior, and derived projection supported by revision 2. It uses fixed IDs,
+UTC timestamps, logical slash paths, and synthetic bytes, so tests compare
+logical state and hashes consistently on Linux and Windows.
+
+Ordinary `go test ./...` regenerates the corpus in a temporary directory and
+checks completeness and freshness. Compatible changes preserve revision 2
+and its logical snapshot. Incompatible durable changes increment the revision
+and add a retained fixture directory. Never rewrite an accepted fixture in
+place. `go run ./tools/store-fixture --output DIR` is the explicit builder.
+
+Confirmed boundary: `v0.2.1` cannot verify revision-2 ledgers containing
+ordered events because it did not deserialize `OrderKey` before recomputing
+event hashes. Use the paired `v0.2.2` release or newer; this is not evidence of
+corruption in such a store.
 
 ## Integrity contract
 
@@ -274,9 +301,31 @@ heading while retaining its marker preserves the Part identity. Structured
 media, artifacts, CodeRef, and GitRef changes should use typed API/UI fields
 when available, because hand-editing their JSON is intentionally strict.
 
-## Stability promise for v0.1.0
+## Release identity and paired updates
 
-- The on-disk format is stable within the v0.1.x series.
+Binary versions remain SemVer while store format uses the independent integer
+above. Tagged builds of both binaries report the same full commit and a display
+version such as `v0.2.2+g0123456789ab`; local builds report `dev` plus available
+Git identity and dirty state.
+
+Stable releases package `missis` and `missis-tools` together. The release
+manifest binds both binary hashes and the archive hash/size to one release,
+commit, platform, architecture, and store revision. The release installer is
+the default path in `scripts/install.sh` and `scripts/install.ps1`. Direct Go
+or source installs may be selected explicitly for development, but are not
+registered for automatic update.
+
+Self-update refuses split installations, development or dirty builds,
+downgrades, malformed manifests, non-HTTPS remote URLs, oversized archives,
+unsafe archive paths, checksum failures, and binary identity mismatches. It
+stages and verifies both binaries before publication, records rollback state,
+and writes `.missis-install.json` last. A later invocation either completes or
+rolls back an interrupted update; a persistent journal file alone is not
+treated as success.
+
+## Stability promise for revision 2
+
+- The on-disk format is stable while `store_format_revision` remains 2.
 - Any future breaking change to the ledger format is gated behind a new
   migration and documented here before release.
 - Canonical event payloads (v1) will not be reinterpreted by later phases.

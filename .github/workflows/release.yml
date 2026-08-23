@@ -1,0 +1,116 @@
+name: stable-release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+      - name: Select next patch version
+        id: version
+        run: echo "version=$(go run ./tools/release-version)" >> "$GITHUB_OUTPUT"
+      - name: Verify
+        run: |
+          go test -count=1 ./...
+          go test -race -count=1 ./...
+          go run ./tools/check-done
+          go run ./tools/coverage --registry specs/requirements-registry.v3.json
+          git diff --check
+      - name: Build paired bundles
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist work
+          sha="$GITHUB_SHA"
+          ldflags="-s -w -X github.com/ravinsharma7/missis/internal/buildinfo.releaseVersion=$VERSION -X github.com/ravinsharma7/missis/internal/buildinfo.releaseCommit=$sha"
+          targets='linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 freebsd/amd64 openbsd/amd64 netbsd/amd64'
+          assets='[]'
+          for target in $targets; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            dir="work/${goos}-${goarch}"
+            mkdir -p "$dir"
+            suffix=''
+            format='tar.gz'
+            if [ "$goos" = windows ]; then suffix='.exe'; format='zip'; fi
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$dir/missis$suffix" ./cmd/missis
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$dir/missis-tools$suffix" ./tools/missis-tools
+            missis_hash="$(sha256sum "$dir/missis$suffix" | cut -d' ' -f1)"
+            tools_hash="$(sha256sum "$dir/missis-tools$suffix" | cut -d' ' -f1)"
+            base="missis_${VERSION}_${goos}_${goarch}"
+            if [ "$format" = zip ]; then
+              archive="$base.zip"
+              (cd "$dir" && zip -q "$GITHUB_WORKSPACE/dist/$archive" "missis$suffix" "missis-tools$suffix")
+            else
+              archive="$base.tar.gz"
+              tar -C "$dir" -czf "dist/$archive" "missis$suffix" "missis-tools$suffix"
+            fi
+            archive_hash="$(sha256sum "dist/$archive" | cut -d' ' -f1)"
+            archive_size="$(stat -c %s "dist/$archive")"
+            url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}/${archive}"
+            asset="$(jq -n --arg os "$goos" --arg arch "$goarch" --arg url "$url" --arg format "$format" --arg sha "$archive_hash" --argjson size "$archive_size" --arg missis "$missis_hash" --arg tools "$tools_hash" '{os:$os,arch:$arch,url:$url,format:$format,sha256:$sha,size:$size,binary_sha256:{missis:$missis,"missis-tools":$tools}}')"
+            assets="$(jq --argjson asset "$asset" '. + [$asset]' <<<"$assets")"
+          done
+          jq -n --arg version "$VERSION" --arg commit "$sha" --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson assets "$assets" '{version:$version,commit:$commit,store_format_revision:2,published_at:$published_at,assets:$assets}' > dist/release-manifest.json
+      - name: Inspect bundles
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          jq -e '.store_format_revision == 2 and (.assets | length) == 9' dist/release-manifest.json >/dev/null
+          while IFS= read -r asset; do
+            archive="dist/$(basename "$(jq -r '.url' <<<"$asset")")"
+            test "$(stat -c %s "$archive")" = "$(jq -r '.size' <<<"$asset")"
+            test "$(sha256sum "$archive" | cut -d' ' -f1)" = "$(jq -r '.sha256' <<<"$asset")"
+            inspect="$(mktemp -d)"
+            if [ "$(jq -r '.format' <<<"$asset")" = zip ]; then
+              unzip -q "$archive" -d "$inspect"
+              suffix=.exe
+            else
+              tar -xzf "$archive" -C "$inspect"
+              suffix=
+            fi
+            test "$(sha256sum "$inspect/missis$suffix" | cut -d' ' -f1)" = "$(jq -r '.binary_sha256.missis' <<<"$asset")"
+            test "$(sha256sum "$inspect/missis-tools$suffix" | cut -d' ' -f1)" = "$(jq -r '.binary_sha256."missis-tools"' <<<"$asset")"
+            rm -rf "$inspect"
+          done < <(jq -c '.assets[]' dist/release-manifest.json)
+          mkdir -p smoke
+          tar -xzf "dist/missis_${VERSION}_linux_amd64.tar.gz" -C smoke
+          PATH="$PWD/smoke:$PATH" smoke/missis --version --json | jq -e --arg version "$VERSION" '.version == $version and .store_format_revision == 2' >/dev/null
+          PATH="$PWD/smoke:$PATH" smoke/missis-tools --version --json | jq -e --arg version "$VERSION" '.version == $version and .store_format_revision == 2' >/dev/null
+          smoke/missis --register-install --bin-dir "$PWD/smoke" >/dev/null
+          jq -e --arg version "$VERSION" '.version == $version and (.binaries | length) == 2' smoke/.missis-install.json >/dev/null
+          project="$(mktemp -d)"
+          export PATH="$PWD/smoke:$PATH"
+          export MISSIS_ARTIFACT_STORE="$project/artifacts"
+          cd "$project"
+          missis --init --json >/dev/null
+          ref="$(missis new --json 'release bundle smoke' | jq -r '.ref')"
+          missis set --json "$ref/smoke" 'verified pair' --kind text >/dev/null
+          missis show --json "$ref" >/dev/null
+          missis-tools backup "$project/backup.db" >/dev/null
+          missis-tools backup verify "$project/backup.db" >/dev/null
+      - name: Publish draft, then release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" dist/* --target "$GITHUB_SHA" --title "$VERSION" --notes "Automated paired Missis release from $GITHUB_SHA" --draft
+          gh release edit "$VERSION" --draft=false --latest

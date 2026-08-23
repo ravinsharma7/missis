@@ -4940,3 +4940,67 @@ items are rendered through `missis-inline` Markdown markers. Unmarked URLs,
 images, audio, and video remain raw Markdown. Ordered mixed-content traversal
 is verified across import, typed attachment, export/re-import, reorder,
 close/reopen, and projection rebuild.
+
+## 34. Store-format compatibility and verified releases
+
+### 34.1 Store-format revision and compatibility corpus
+
+Binary release identity and durable store compatibility are independent.
+`store_format_revision` is one internal monotonically increasing integer;
+revision 2 is the current format. Unmarked stores through migration 0005 are
+implicit revision 1, unmarked stores containing migration 0006 are implicit
+revision 2, and migration `0007_store_format_revision` records revision 2 in
+`store_meta`.
+
+Opening an existing database MUST probe this revision read-only before WAL
+configuration, migration, integrity verification, or projection repair.
+Known implicit revisions may migrate forward. Unknown migrations and newer
+revisions MUST fail closed with the found and supported revision range. The
+gate records neither a binary hash nor a growing feature-name list: several
+binary releases may correctly support the same store revision.
+
+`internal/store/testdata/compatibility/revision-NNNN` is the immutable,
+cross-platform compatibility corpus. Each retained revision contains a
+deterministic SQLite fixture, manifest, and synthetic artifact CAS. The
+manifest covers every registered operation/version, built-in durable value,
+inline and reference kind, link relation, first-party ingestion plugin, and
+the provenance and temporal shapes supported by that revision. Tests compare
+logical rows, canonical event hashes, projections, plugin identities, and
+artifact digests rather than raw SQLite bytes.
+
+Adding a registered durable shape without fixture coverage fails ordinary
+`go test ./...`. A compatible implementation change must reproduce the
+existing logical snapshot. An incompatible encoding or interpretation change
+requires an explicit revision increment and a new retained fixture directory;
+the fixture tool never overwrites an accepted revision automatically.
+
+Revision 2 records the ordered-containment and artifact-capable contract.
+`v0.2.1` omitted `OrderKey` during typed event deserialization and therefore
+recomputed a different hash for ordered events. It is explicitly unsupported
+for revision-2 stores containing those events; the first compatible paired
+release is `v0.2.2`.
+
+### 34.2 Release identity and paired update
+
+Stable Git tags remain SemVer. The release workflow selects the next patch
+automatically and builds `missis` and `missis-tools` from the same full Git
+commit. Both binaries report release version, commit, display identity
+`vX.Y.Z+g<short-sha>`, and supported store-format revision. Development builds
+report `dev+g<short-sha>` and dirty state when available.
+
+Every platform release is one archive containing both binaries. Its HTTPS
+release manifest binds release identity, store revision, platform,
+architecture, archive size and SHA-256, and each binary SHA-256. The installer
+and self-updater verify the archive and execute both staged binaries only for
+identity inspection after checksum validation. Unsupported platforms,
+malformed manifests, oversized archives, traversal entries, split installs,
+mismatched identities, development/dirty builds, and downgrades fail closed.
+
+The pair is staged before either live binary is replaced. A local update
+journal and previous binaries permit rollback or completion on the next
+invocation; the installation manifest is written last. POSIX replaces the
+pair directly after verification. Windows starts a verified staged helper,
+waits for the running executable to exit, then applies the same journaled
+replacement. Release installation writes the same paired manifest. Independent
+cryptographic signing is deferred; SHA-256 verification currently relies on
+the GitHub HTTPS release trust boundary.

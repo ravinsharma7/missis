@@ -75,6 +75,14 @@ func (c *Client) EventCountContext(ctx context.Context) (int64, error) {
 	return c.service.EventCountContext(ctx)
 }
 
+func (c *Client) FormatRevision() (int, error) {
+	return c.service.FormatRevision()
+}
+
+func (c *Client) FormatRevisionContext(ctx context.Context) (int, error) {
+	return c.service.FormatRevisionContext(ctx)
+}
+
 func (c *Client) SchemaVersion() (string, error) {
 	return c.service.SchemaVersion()
 }

@@ -110,20 +110,20 @@ The required setup must:
 
 ## Required setup: POSIX shell
 
-The following example targets the `v0.2.1` release. If this guide was
-opened at another immutable tag or commit, replace `v0.2.1` with the matching
+The following example targets the `v0.2.2` release. If this guide was
+opened at another immutable tag or commit, replace `v0.2.2` with the matching
 published ref before running the install command.
 
 Run the install commands outside the target project if you prefer, then
 return to the target project for initialization:
 
 ```bash
-export MISSIS_REF=v0.2.1
+export MISSIS_REF=v0.2.2
 export MISSIS_BIN_DIR="$HOME/go/bin"
 mkdir -p "$MISSIS_BIN_DIR"
 export PATH="$MISSIS_BIN_DIR:$PATH"
-GOBIN="$MISSIS_BIN_DIR" go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
-GOBIN="$MISSIS_BIN_DIR" go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
+go run "github.com/ravinsharma7/missis/tools/paired-install@$MISSIS_REF" \
+  --ref "$MISSIS_REF" --bin-dir "$MISSIS_BIN_DIR"
 
 command -v missis
 command -v missis-tools
@@ -132,10 +132,10 @@ missis --version
 missis-tools --help
 ```
 
-The explicit `MISSIS_BIN_DIR` is intentional. Go installs into `GOBIN` when
-that variable is set, and mise can set `GOBIN` to a tool-managed directory
-that is not on `PATH`. A successful `go install` is not sufficient; the
-commands above verify that the shell resolves the newly installed binaries.
+The explicit `MISSIS_BIN_DIR` is intentional. The release installer verifies
+the paired archive and both binary identities before writing its installation
+manifest. Set `MISSIS_INSTALL_SOURCE=go` only for a development/module build;
+that path is not eligible for verified self-update.
 
 When this setup runs inside WSL, use the Linux binaries without `.exe`. WSL
 normally imports the Windows user `PATH`, so Windows Missis directories may be
@@ -268,13 +268,12 @@ provides a review-first, reversible procedure.
 For Windows PowerShell, use the corresponding commands:
 
 ```powershell
-$env:MISSIS_REF = "v0.2.1"
+$env:MISSIS_REF = "v0.2.2"
 $env:MISSIS_BIN_DIR = "$env:LOCALAPPDATA\MissisTools\bin"
 New-Item -ItemType Directory -Force $env:MISSIS_BIN_DIR | Out-Null
 $env:Path = "$env:MISSIS_BIN_DIR;$env:Path"
-$env:GOBIN = $env:MISSIS_BIN_DIR
-go install "github.com/ravinsharma7/missis/cmd/missis@$env:MISSIS_REF"
-go install "github.com/ravinsharma7/missis/tools/missis-tools@$env:MISSIS_REF"
+go run "github.com/ravinsharma7/missis/tools/paired-install@$env:MISSIS_REF" `
+  --ref $env:MISSIS_REF --bin-dir $env:MISSIS_BIN_DIR
 
 Get-Command missis
 Get-Command missis-tools
@@ -325,9 +324,9 @@ Then put the resulting Go bin directory on `PATH`, return to the target
 project, and follow the required initialization and verification steps above.
 This alternative still requires a compatible Go toolchain.
 
-`missis --self-update` updates only the domain CLI. When upgrading a project,
-install `missis` and `missis-tools` again with the same tag or commit so the
-two binaries remain aligned.
+`missis --self-update` updates the verified pair atomically. It requires the
+installation manifest written by the v0.2.2-or-later release installer and
+refuses split, development, dirty, downgraded, or mismatched installations.
 
 ## Optional mise setup
 
@@ -337,8 +336,8 @@ own `mise.toml`:
 ```toml
 [tools]
 go = "1.26"
-"go:github.com/ravinsharma7/missis/cmd/missis" = "v0.2.1"
-"go:github.com/ravinsharma7/missis/tools/missis-tools" = "v0.2.1"
+"go:github.com/ravinsharma7/missis/cmd/missis" = "v0.2.2"
+"go:github.com/ravinsharma7/missis/tools/missis-tools" = "v0.2.2"
 ```
 
 After `mise install`, verify both commands in the active shell. If the Go

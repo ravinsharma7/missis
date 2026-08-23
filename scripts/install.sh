@@ -4,6 +4,7 @@ set -euo pipefail
 module="github.com/ravinsharma7/missis"
 ref="${MISSIS_REF:-latest}"
 tools_only=0
+legacy_go="${MISSIS_INSTALL_SOURCE:-release}"
 
 for arg in "$@"; do
 	case "$arg" in
@@ -63,10 +64,15 @@ install_package() {
 	GOBIN="$bin_dir" go install "$module/$package@$ref"
 }
 
-if [[ "$tools_only" -eq 0 ]]; then
-	install_package cmd/missis
+if [[ "$tools_only" -eq 0 && "$legacy_go" != "go" ]]; then
+	echo "installing verified paired release $ref to $bin_dir"
+	go run "$module/tools/paired-install@$ref" --ref "$ref" --bin-dir "$bin_dir"
+else
+	if [[ "$tools_only" -eq 0 ]]; then
+		install_package cmd/missis
+	fi
+	install_package tools/missis-tools
 fi
-install_package tools/missis-tools
 
 verify_binary() {
 	local name="$1"
@@ -101,6 +107,12 @@ if [[ "$tools_only" -eq 0 ]]; then
 	verify_binary missis
 fi
 verify_binary missis-tools
+
+if [[ "$tools_only" -eq 0 && "$legacy_go" == "go" ]]; then
+	if ! "$bin_dir/missis$goexe" --register-install --bin-dir "$bin_dir" >/dev/null 2>&1; then
+		echo "source/module installation is not eligible for verified self-update; use the release installer for v0.2.2 or newer" >&2
+	fi
+fi
 
 echo "installed native $goos Missis binaries in $bin_dir"
 if [[ "$tools_only" -eq 0 ]]; then

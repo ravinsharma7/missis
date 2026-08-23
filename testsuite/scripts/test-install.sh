@@ -49,6 +49,7 @@ output="$tmpdir/output"
 FAKE_GOPATH="$gopath" \
 PATH="$gopath/bin:$fakebin:$PATH" \
 MISSIS_BIN_DIR='' \
+MISSIS_INSTALL_SOURCE=go \
 GOBIN="$tmpdir/not-on-path" \
 bash "$root/scripts/install.sh" >"$output" 2>"$tmpdir/error"
 

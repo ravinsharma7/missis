@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 
+	"github.com/ravinsharma7/missis/internal/buildinfo"
 	"github.com/ravinsharma7/missis/internal/tooling"
 	"github.com/ravinsharma7/missis/internal/tui"
+	"github.com/ravinsharma7/missis/internal/update"
 )
 
 const usage = "usage: missis-tools <command> [args]\n\n" +
@@ -41,8 +46,62 @@ func run(args []string, input io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
+	if args[0] == "--complete-self-update" || args[0] == "--recover-self-update" {
+		action := args[0]
+		var binDir string
+		var parentPID int
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--bin-dir":
+				i++
+				if i < len(args) {
+					binDir = args[i]
+				}
+			case "--parent-pid":
+				i++
+				if i < len(args) {
+					parentPID, _ = strconv.Atoi(args[i])
+				}
+			}
+		}
+		if binDir == "" || parentPID <= 0 {
+			fmt.Fprintln(stderr, "invalid self-update completion request")
+			return 2
+		}
+		var err error
+		if action == "--complete-self-update" {
+			err = update.CompleteWindowsUpdate(binDir, parentPID)
+		} else {
+			err = update.CompleteWindowsRecovery(binDir, parentPID)
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if err := update.RecoverCurrentInstallation(); err != nil {
+		if errors.Is(err, update.ErrRecoveryStaged) {
+			fmt.Fprintln(stderr, "interrupted update recovery staged; rerun after this process exits")
+			return 1
+		}
+		fmt.Fprintf(stderr, "recover interrupted update: %v\n", err)
+		return 1
+	}
 	if args[0] == "--help" || args[0] == "-h" {
 		fmt.Fprint(stdout, usage)
+		return 0
+	}
+	if args[0] == "--version" {
+		info := buildinfo.Read()
+		if len(args) > 1 && args[1] == "--json" {
+			if err := json.NewEncoder(stdout).Encode(info); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
+		fmt.Fprintf(stdout, "missis-tools version=%s commit=%s store_format=%d\n", info.DisplayVersion, info.Commit, info.StoreFormatRevision)
 		return 0
 	}
 

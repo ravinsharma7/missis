@@ -30,6 +30,16 @@ const (
 	InlineRawMarkdown  InlineItemKind = "raw-markdown"
 )
 
+var builtInInlineItemKinds = []InlineItemKind{
+	InlineMarkdownText, InlineCodeRef, InlineGitRef, InlineArtifact,
+	InlineImage, InlineAudio, InlineVideo, InlineRawMarkdown,
+}
+
+// AllInlineItemKinds returns the complete durable inline transport vocabulary.
+func AllInlineItemKinds() []InlineItemKind {
+	return append([]InlineItemKind(nil), builtInInlineItemKinds...)
+}
+
 // InlineItem carries no executable payload. Data contains a typed model
 // descriptor for typed items; Text is raw, inert Markdown for prose/items.
 type InlineItem struct {

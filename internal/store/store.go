@@ -140,6 +140,9 @@ func open(path string, diag Diagnostics, lease *Lease) (*Store, error) {
 			return nil, err
 		}
 	}
+	if _, err := inspectStoreFormat(path); err != nil {
+		return nil, err
+	}
 	writer, err := sql.Open("sqlite", path+"?_txlock=immediate")
 	if err != nil {
 		return nil, err
@@ -259,6 +262,19 @@ func (s *Store) SchemaVersionContext(ctx context.Context) (string, error) {
 	err := s.reader.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), '') FROM schema_migrations`).Scan(&version)
 	version = strings.TrimSuffix(version, ".sql")
 	return version, err
+}
+
+func (s *Store) FormatRevision() (int, error) {
+	return s.FormatRevisionContext(context.Background())
+}
+
+func (s *Store) FormatRevisionContext(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	var revision int
+	err := s.reader.QueryRowContext(ctx, `SELECT format_revision FROM store_meta WHERE singleton = 1`).Scan(&revision)
+	return revision, err
 }
 
 func (s *Store) Backup(dst string) error {

@@ -96,6 +96,30 @@ const (
 	ValueKindInlineSequence ValueKind = "inline-sequence"
 )
 
+var builtInValueKinds = []ValueKind{
+	ValueKindText, ValueKindMarkdown, ValueKindScalar, ValueKindStatus,
+	ValueKindPriority, ValueKindMap, ValueKindList, ValueKindRef,
+	ValueKindCodeRef, ValueKindGitRef, ValueKindEvidence, ValueKindVerification,
+	ValueKindJSON, ValueKindArtifact, ValueKindAnnotation, ValueKindImage,
+	ValueKindVideo, ValueKindAudio, ValueKindEmbed, ValueKindInlineSequence,
+}
+
+// AllBuiltInValueKinds is the durable built-in value vocabulary. Compatibility
+// fixtures use it as a completeness guard whenever a new kind is registered.
+func AllBuiltInValueKinds() []ValueKind {
+	return append([]ValueKind(nil), builtInValueKinds...)
+}
+
+var builtInRefKinds = []Kind{
+	KindTicket, KindPart, KindEvent, KindProject, KindGroup, KindRun,
+	KindCode, KindGit, KindArtifact,
+}
+
+// AllBuiltInRefKinds returns every durable built-in Ref kind.
+func AllBuiltInRefKinds() []Kind {
+	return append([]Kind(nil), builtInRefKinds...)
+}
+
 // Value is the payload stored on a part. Retracted is a projection flag, not
 // the mechanism for removing history; retraction is represented by events.
 type Value struct {

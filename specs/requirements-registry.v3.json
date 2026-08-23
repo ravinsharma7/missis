@@ -515,6 +515,31 @@
         "TestMarkerOperationsAreProjectionNeutral",
         "TestMarkerVisibleInHistory"
       ]
+    },
+    {
+      "id": "PH1-FMT-001",
+      "source": "34.1",
+      "text": "A store is compatibility-probed before mutation, rejects unsupported revisions, and is covered by an immutable complete compatibility corpus.",
+      "tests": [
+        "TestInspectImplicitStoreFormatRevisions",
+        "TestOpenMigratesFormatWithoutChangingLedger",
+        "TestUnsupportedFormatFailsBeforeWALOrIntegrity",
+        "TestCompatibilityFixtureCompleteness",
+        "TestCompatibilityFixtureFresh",
+        "TestCompatibilityFixtureOpenBackupAndArtifacts"
+      ]
+    },
+    {
+      "id": "PH1-REL-001",
+      "source": "34.2",
+      "text": "Stable releases pair missis and missis-tools from one commit and self-update only after manifest, archive, binary identity, and checksum verification.",
+      "tests": [
+        "TestCheckVersionOrderingAndDevelopmentGuard",
+        "TestReleaseManifestValidation",
+        "TestDownloadRejectsTampering",
+        "TestInstallPublishesVerifiedPairAndManifest",
+        "TestRecoverRollsBackInterruptedPair"
+      ]
     }
   ],
   "norms": [

@@ -9,10 +9,8 @@ import (
 	"io"
 	"mime"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -20,7 +18,10 @@ import (
 	stdctx "context"
 
 	"github.com/ravinsharma7/missis/internal/application"
+	"github.com/ravinsharma7/missis/internal/buildinfo"
 	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/store"
+	"github.com/ravinsharma7/missis/internal/update"
 	"github.com/ravinsharma7/missis/pkg/missis"
 	"github.com/ravinsharma7/missis/pkg/missis/render"
 )
@@ -117,9 +118,10 @@ type errorResult struct {
 	Message            string   `json:"message"`
 	Ontology           *string  `json:"ontology"`
 	MissingObligations []string `json:"missing_obligations"`
+	FoundStoreFormat   *int     `json:"found_store_format_revision,omitempty"`
+	SupportedFormatMin *int     `json:"supported_store_format_min,omitempty"`
+	SupportedFormatMax *int     `json:"supported_store_format_max,omitempty"`
 }
-
-const modulePath = "github.com/ravinsharma7/missis"
 
 const unknownCommit = "unknown"
 
@@ -179,32 +181,12 @@ When asked to create a ticket without a title, report that the title is
 missing; do not derive one from a file or hidden session state.`
 
 func buildVersion() (string, string, string) {
-	version := "dev"
-	commit := unknownCommit
-	note := ""
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return version, commit, "no build metadata embedded in this binary"
+	info := buildinfo.Read()
+	commit := info.Commit
+	if info.Dirty && commit != unknownCommit && !strings.HasSuffix(commit, "-dirty") {
+		commit += "-dirty"
 	}
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		version = info.Main.Version
-	}
-	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			if setting.Value != "" {
-				commit = setting.Value
-			}
-		case "vcs.modified":
-			if commit != unknownCommit && setting.Value == "true" {
-				commit += "-dirty"
-			}
-		}
-	}
-	if commit == unknownCommit {
-		note = commitUnknownNote(info.Main.Version)
-	}
-	return version, commit, note
+	return info.Version, commit, info.CommitNote
 }
 
 // commitUnknownNote picks the most specific explanation the build metadata
@@ -256,72 +238,47 @@ func storePermissionWarnings(path string) []string {
 	return warnings
 }
 
-type moduleVersion struct {
-	Version string `json:"Version"`
-	Time    string `json:"Time"`
-}
-
-func latestModuleVersion() (moduleVersion, error) {
-	var info moduleVersion
-	cmd := exec.Command("go", "list", "-m", "-json", modulePath+"@latest")
-	cmd.Env = append(os.Environ(), "GOPROXY=direct")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return info, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
-	}
-	if err := json.Unmarshal(output, &info); err != nil {
-		return info, err
-	}
-	return info, nil
-}
-
 func runSelfUpdateCheck(jsonMode bool) int {
-	currentVersion, currentCommit, commitNote := buildVersion()
-	latest, err := latestModuleVersion()
+	result, err := update.DefaultClient().Check(stdctx.Background(), buildinfo.Read())
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
 	if jsonMode {
-		writeJSON(selfUpdateCheckJSON(currentVersion, currentCommit, commitNote, latest))
+		writeJSON(map[string]any{
+			"status": result.Status, "current": result.Current, "latest": result.Latest,
+			"platform": result.Asset.OS + "/" + result.Asset.Arch,
+		})
 		return exitSuccess
 	}
-	fmt.Printf("current version=%s commit=%s\n", currentVersion, commitLabel(currentCommit, commitNote))
-	fmt.Printf("latest version=%s time=%s\n", latest.Version, latest.Time)
+	fmt.Printf("status=%s current=%s latest=%s commit=%s format=%d\n", result.Status, result.Current.DisplayVersion, result.Latest.Version, result.Latest.Commit, result.Latest.StoreFormatRevision)
 	return exitSuccess
 }
 
-func selfUpdateCheckJSON(currentVersion, currentCommit, commitNote string, latest moduleVersion) map[string]string {
-	m := map[string]string{
-		"current_version": currentVersion,
-		"current_commit":  currentCommit,
-		"latest_version":  latest.Version,
-		"latest_time":     latest.Time,
-	}
-	if currentCommit == unknownCommit {
-		m["current_commit_note"] = commitNote
-	}
-	return m
-}
-
 func runSelfUpdate(jsonMode bool) int {
-	latest, err := latestModuleVersion()
+	latest, err := update.DefaultClient().Apply(stdctx.Background(), buildinfo.Read())
+	if errors.Is(err, update.ErrNoUpdate) {
+		if jsonMode {
+			writeJSON(map[string]any{"status": "current", "latest_version": latest.Version})
+		} else {
+			fmt.Printf("already current at %s\n", latest.Version)
+		}
+		return exitSuccess
+	}
+	if errors.Is(err, update.ErrUpdateStaged) {
+		if jsonMode {
+			writeJSON(map[string]any{"status": "staged", "latest_version": latest.Version})
+		} else {
+			fmt.Printf("staged update to %s; Windows will complete it after this process exits\n", latest.Version)
+		}
+		return exitSuccess
+	}
 	if err != nil {
 		printError(err, exitStorage, jsonMode, nil)
 		return exitStorage
 	}
-	cmd := exec.Command("go", "install", modulePath+"/cmd/missis@latest")
-	cmd.Env = append(os.Environ(), "GOPROXY=direct")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		printError(fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output))), exitStorage, jsonMode, nil)
-		return exitStorage
-	}
 	if jsonMode {
-		writeJSON(map[string]string{
-			"status":         "updated",
-			"latest_version": latest.Version,
-		})
+		writeJSON(map[string]any{"status": "updated", "latest_version": latest.Version, "commit": latest.Commit, "store_format_revision": latest.StoreFormatRevision})
 		return exitSuccess
 	}
 	fmt.Printf("updated to %s\n", latest.Version)
@@ -329,12 +286,12 @@ func runSelfUpdate(jsonMode bool) int {
 }
 
 func printVersion(jsonMode bool) {
-	version, commit, commitNote := buildVersion()
+	info := buildinfo.Read()
 	if jsonMode {
-		writeJSON(versionJSON(version, commit, commitNote))
+		writeJSON(info)
 		return
 	}
-	fmt.Printf("missis version=%s commit=%s\n", version, commitLabel(commit, commitNote))
+	fmt.Printf("missis version=%s commit=%s store_format=%d\n", info.DisplayVersion, commitLabel(info.Commit, info.CommitNote), info.StoreFormatRevision)
 }
 
 func versionJSON(version, commit, commitNote string) map[string]string {
@@ -426,10 +383,10 @@ second agent workflow:
      No web search is required for setup or ticket work.
      If no checkout is available, use an operator-supplied published ref.
 
-1. Install both CLIs at the same ref (from a checkout, or pin a tag/commit):
-     export MISSIS_REF=v0.2.1
-     go install "github.com/ravinsharma7/missis/cmd/missis@$MISSIS_REF"
-     go install "github.com/ravinsharma7/missis/tools/missis-tools@$MISSIS_REF"
+1. Install both CLIs from one verified stable release:
+     export MISSIS_REF=v0.2.2
+     export MISSIS_BIN_DIR="$(go env GOPATH)/bin"
+     go run "github.com/ravinsharma7/missis/tools/paired-install@$MISSIS_REF" --ref "$MISSIS_REF" --bin-dir "$MISSIS_BIN_DIR"
      # local checkout alternative:
      # go install ./cmd/missis
      # go install ./tools/missis-tools
@@ -675,6 +632,14 @@ func runInit(args []string) int {
 }
 
 func main() {
+	if err := update.RecoverCurrentInstallation(); err != nil {
+		if errors.Is(err, update.ErrRecoveryStaged) {
+			fmt.Fprintln(os.Stderr, "missis: interrupted update recovery staged; rerun after this process exits")
+			os.Exit(exitStorage)
+		}
+		fmt.Fprintf(os.Stderr, "missis: recover interrupted update: %v\n", err)
+		os.Exit(exitStorage)
+	}
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(exitInvalid)
@@ -691,6 +656,22 @@ func main() {
 		os.Exit(exitSuccess)
 	case "--help":
 		fmt.Print(usageText())
+		os.Exit(exitSuccess)
+	}
+	if os.Args[1] == "--register-install" {
+		binDir := filepath.Dir(os.Args[0])
+		for i := 2; i < len(os.Args); i++ {
+			if os.Args[i] == "--bin-dir" && i+1 < len(os.Args) {
+				binDir = os.Args[i+1]
+				i++
+			}
+		}
+		installation, err := update.RegisterPairedInstallation(binDir, buildinfo.Read(), runtime.GOOS)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "missis: register paired installation: %v\n", err)
+			os.Exit(exitStorage)
+		}
+		writeJSON(installation)
 		os.Exit(exitSuccess)
 	}
 	if os.Args[1] == "--init" || os.Args[1] == "--start" {
@@ -1031,21 +1012,23 @@ func runShow(args []string) int {
 		storeID, _ := client.StoreID()
 		headHash, _ := client.HeadHash()
 		eventCount, _ := client.EventCount()
+		formatRevision, _ := client.FormatRevision()
 		version, commit, _ := buildVersion()
 		if jsonMode {
 			writeJSON(map[string]any{
-				"status":           "ok",
-				"store_id":         storeID,
-				"head_hash":        headHash,
-				"event_count":      eventCount,
-				"version":          version,
-				"commit":           commit,
-				"store_path":       storePath,
-				"discovery_source": source,
-				"warnings":         warnings,
+				"status":                "ok",
+				"store_id":              storeID,
+				"head_hash":             headHash,
+				"event_count":           eventCount,
+				"store_format_revision": formatRevision,
+				"version":               version,
+				"commit":                commit,
+				"store_path":            storePath,
+				"discovery_source":      source,
+				"warnings":              warnings,
 			})
 		} else {
-			fmt.Printf("ok store=%s head=%s events=%d version=%s commit=%s\n", storeID, headHash, eventCount, version, commit)
+			fmt.Printf("ok store=%s head=%s events=%d format=%d version=%s commit=%s\n", storeID, headHash, eventCount, formatRevision, version, commit)
 			for _, warning := range warnings {
 				fmt.Printf("warning: %s\n", warning)
 			}
@@ -1576,13 +1559,21 @@ func outputEventView(event missis.EventView, jsonMode bool) {
 }
 func printError(err error, code int, jsonMode bool, target *string) {
 	if jsonMode {
-		writeJSON(errorResult{
+		result := errorResult{
 			Error:              errorCode(code),
 			Target:             target,
 			Message:            err.Error(),
 			Ontology:           nil,
 			MissingObligations: []string{},
-		})
+		}
+		var formatErr *store.IncompatibleStoreFormatError
+		if errors.As(err, &formatErr) {
+			result.Error = "incompatible_store_format"
+			result.FoundStoreFormat = &formatErr.Found
+			result.SupportedFormatMin = &formatErr.Min
+			result.SupportedFormatMax = &formatErr.Max
+		}
+		writeJSON(result)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "missis: %s\n", err.Error())

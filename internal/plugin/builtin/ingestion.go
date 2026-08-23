@@ -29,6 +29,11 @@ func ArtifactManifest() plugin.Manifest {
 	return builtinManifest(ArtifactPluginID)
 }
 
+// Manifests returns every first-party ingestion plugin contract.
+func Manifests() []plugin.Manifest {
+	return []plugin.Manifest{MarkdownManifest(), ArtifactManifest()}
+}
+
 func builtinManifest(id string) plugin.Manifest {
 	sum := sha256.Sum256([]byte(id + "@" + PluginVersion))
 	return plugin.Manifest{ID: id, Version: PluginVersion, CodeHash: hex.EncodeToString(sum[:])}
@@ -120,11 +125,15 @@ func buildPartEvents(input plugin.IngestInput, parts []model.MarkdownPart, kind 
 	actor := model.ActorRef{Kind: "plugin", ID: input.Invocation.Plugin}
 	partIDs := make(map[string]model.PartID, len(parts))
 	seenIDs := make(map[model.PartID]string, len(parts))
+	newID := input.NewID
+	if newID == nil {
+		newID = missis.NewID
+	}
 	for _, part := range parts {
 		// A new ticket cannot resolve source identities against an existing
 		// Part projection. The core therefore assigns fresh IDs; the Markdown
 		// importer reports explicit source IDs as unresolved diagnostics.
-		partID := model.PartID(missis.NewID("part"))
+		partID := model.PartID(newID("part"))
 		path := strings.Join(part.Path, "/")
 		if previousPath, exists := seenIDs[partID]; exists {
 			return nil, fmt.Errorf("duplicate Markdown Part identity %q on %s and %s", partID, previousPath, path)
@@ -158,7 +167,7 @@ func buildPartEvents(input plugin.IngestInput, parts []model.MarkdownPart, kind 
 		value.Kind = valueKind
 		start, end := part.StartLine, part.EndLine
 		event := model.Event{
-			ID:          model.EventID(missis.NewID("event")),
+			ID:          model.EventID(newID("event")),
 			Stream:      input.Request.Target,
 			Operation:   model.OpCreatePart,
 			Target:      model.Ref{Kind: model.KindPart, Entity: string(partIDs[key]), Path: path},

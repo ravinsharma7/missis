@@ -333,6 +333,14 @@ func (s *Service) SchemaVersionContext(ctx context.Context) (string, error) {
 	return s.store.SchemaVersionContext(ctx)
 }
 
+func (s *Service) FormatRevision() (int, error) {
+	return s.store.FormatRevision()
+}
+
+func (s *Service) FormatRevisionContext(ctx context.Context) (int, error) {
+	return s.store.FormatRevisionContext(ctx)
+}
+
 func (s *Service) CheckConsistency(ctx context.Context) error {
 	return s.store.CheckConsistencyContext(ctx)
 }

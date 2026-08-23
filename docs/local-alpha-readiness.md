@@ -13,6 +13,8 @@ does not change the authoritative requirements registry or close ticket #93.
 | Ordering | Core-assigned order keys, move events, rebuildable projections | Dense insertion may rebalance siblings |
 | Backup/restore | SQLite snapshot, manifest, artifact sidecar, completion marker | Restore requires a new destination |
 | Coordination | Shared client leases and exclusive maintenance leases | Migration and GC are offline operations |
+| Compatibility | Revision-2 preflight and complete deterministic fixture corpus | v0.2.1 cannot open ordered revision-2 ledgers |
+| Release/update | Verified paired bundles, installation manifest, and rollback journal | Stable v0.2.2+ releases only; GitHub HTTPS trust boundary |
 
 ## Automated evidence
 
@@ -24,6 +26,8 @@ does not change the authoritative requirements registry or close ticket #93.
 | Migration and GC | tools/missis-tools/main_test.go |
 | Projection repair interleavings | internal/store/derived_test.go |
 | Installation surface | testsuite/scripts/test-install.sh, testsuite/scripts/test-published-install.sh |
+| Store-format fixture | internal/store/format_test.go, internal/store/compatibility_fixture_test.go |
+| Paired updater | internal/update/update_test.go, .github/workflows/release.yml |
 
 Run the acceptance suite from the repository root:
 
@@ -36,8 +40,10 @@ Run the acceptance suite from the repository root:
 
 ## Operator checks
 
-- Install missis and missis-tools from the same immutable tag or commit.
-- Run missis --version, missis --ag-brief, and missis-tools --help.
+- Install the verified paired release; v0.2.2 is the first release compatible
+  with ordered revision-2 stores.
+- Run `missis --version --json`, `missis-tools --version --json`, and verify
+  version, full commit, and store-format revision match.
 - Use a fresh project or verify the existing .missis store before mutation.
 - Set MISSIS_ARTIFACT_STORE when the default user-data location is not
   appropriate.

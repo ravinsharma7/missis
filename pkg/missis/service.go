@@ -23,6 +23,8 @@ type Service interface {
 	HeadHashContext(ctx context.Context) (string, error)
 	EventCount() (int64, error)
 	EventCountContext(ctx context.Context) (int64, error)
+	FormatRevision() (int, error)
+	FormatRevisionContext(ctx context.Context) (int, error)
 	SchemaVersion() (string, error)
 	SchemaVersionContext(ctx context.Context) (string, error)
 	CheckConsistency(ctx context.Context) error

@@ -81,6 +81,7 @@ func (s *Service) prepareIngest(
 		RecordedAt:  now,
 		EffectiveAt: req.EffectiveAt,
 		BatchID:     batchID,
+		NewID:       missis.NewID,
 	}
 	proposal, selected, err := s.ingestion.Run(ctx, input)
 	if err != nil {

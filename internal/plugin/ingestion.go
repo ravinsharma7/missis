@@ -47,6 +47,10 @@ type IngestInput struct {
 	RecordedAt  time.Time
 	EffectiveAt time.Time
 	BatchID     model.BatchID
+	// NewID is supplied by the core. Production uses secure ULIDs; deterministic
+	// compatibility fixtures provide a fixed allocator without giving plugins
+	// database or filesystem authority.
+	NewID func(prefix string) string
 }
 
 // IngestProposal is untrusted plugin output. The application validates all

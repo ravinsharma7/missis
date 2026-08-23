@@ -73,6 +73,8 @@ Public command spelling:
 | PH1-DM-001 | 18 | Go data model defines every Phase 1 entity and projection type. |
 | PH1-DM-002 | 18 | Projection and validation functions have concrete signatures. |
 | PH1-ACC-001 | 29.1, 29.2, 29.3, 29.4, 29.11 | Phase 1 acceptance criteria are mapped to the requirements above. |
+| PH1-FMT-001 | 34.1 | A store is compatibility-probed before mutation, rejects unsupported revisions, and is covered by an immutable complete compatibility corpus. |
+| PH1-REL-001 | 34.2 | Stable releases pair `missis` and `missis-tools` from one commit and self-update only after manifest, archive, binary identity, and checksum verification. |
 
 ## Invariant coverage
 

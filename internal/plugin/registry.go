@@ -315,7 +315,8 @@ func knownCoreKind(kind model.ValueKind) bool {
 		model.ValueKindImage,
 		model.ValueKindVideo,
 		model.ValueKindAudio,
-		model.ValueKindEmbed:
+		model.ValueKindEmbed,
+		model.ValueKindInlineSequence:
 		return true
 	default:
 		return false

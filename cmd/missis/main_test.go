@@ -2,63 +2,10 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
-
-func writeFakeGo(t *testing.T, dir, listJSON string, installExit int) {
-	t.Helper()
-	script := `#!/bin/sh
-if [ "$1" = "list" ]; then
-  cat <<'JSON'
-` + listJSON + `
-JSON
-elif [ "$1" = "install" ]; then
-  exit ` + string(rune('0'+installExit)) + `
-fi
-exit 0
-`
-	path := filepath.Join(dir, "go")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestLatestModuleVersionHermetic(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// Same POSIX sh shim as TestSelfUpdateHermetic (ticket #55).
-		t.Skip("hermetic go shim is POSIX-only")
-	}
-	dir := t.TempDir()
-	writeFakeGo(t, dir, `{"Version":"vTest","Time":"2026-01-01T00:00:00Z"}`, 0)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	info, err := latestModuleVersion()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Version != "vTest" {
-		t.Fatalf("version = %q, want vTest", info.Version)
-	}
-}
-
-func TestSelfUpdateHermetic(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// The hermetic shim fakes `go` with a POSIX #!/bin/sh script; skip on
-		// Windows. A build-tagged go.exe shim is the alternative if Windows
-		// coverage is wanted later (ticket #55).
-		t.Skip("self-update hermetic test uses a POSIX sh shim")
-	}
-	dir := t.TempDir()
-	writeFakeGo(t, dir, `{"Version":"vTest","Time":"2026-01-01T00:00:00Z"}`, 0)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	if code := runSelfUpdate(false); code != exitSuccess {
-		t.Fatalf("self update code = %d", code)
-	}
-}
 
 func TestStorePermissionWarningsPOSIXScoped(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -114,20 +61,5 @@ func TestVersionJSONNotesUnknownCommit(t *testing.T) {
 	body := versionJSON("v0.1.0", unknownCommit, note)
 	if body["commit_note"] != note {
 		t.Fatalf("unknown commit note = %q, want explanation", body["commit_note"])
-	}
-}
-
-func TestSelfUpdateCheckJSONNotesUnknownCommit(t *testing.T) {
-	latest := moduleVersion{Version: "v0.1.0", Time: "2026-08-18T06:39:10Z"}
-	note := commitUnknownNote("v0.1.0")
-	if body := selfUpdateCheckJSON("v0.1.0", "1da0b1f57715", note, latest); body["current_commit_note"] != "" {
-		t.Fatalf("known commit must not carry a note, got %q", body["current_commit_note"])
-	}
-	body := selfUpdateCheckJSON("v0.1.0", unknownCommit, note, latest)
-	if body["current_commit_note"] != note {
-		t.Fatalf("unknown commit note = %q, want explanation", body["current_commit_note"])
-	}
-	if body["latest_version"] != "v0.1.0" || body["latest_time"] != "2026-08-18T06:39:10Z" {
-		t.Fatalf("latest fields lost: %v", body)
 	}
 }

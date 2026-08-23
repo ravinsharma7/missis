@@ -31,6 +31,24 @@ func newTestStore(t *testing.T) string {
 	return path
 }
 
+func TestVersionJSONIncludesSharedStoreFormat(t *testing.T) {
+	// covers PH1-REL-001 PH1-FMT-001
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--version", "--json"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("version code=%d stderr=%s", code, stderr.String())
+	}
+	var info struct {
+		Version             string `json:"version"`
+		StoreFormatRevision int    `json:"store_format_revision"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Version == "" || info.StoreFormatRevision != store.CurrentStoreFormatRevision {
+		t.Fatalf("version info = %#v", info)
+	}
+}
+
 func TestArtifactMigrationIsIdempotentAndQuarantinesLegacyRoot(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "user-data"))
 	storePath := newTestStore(t)
