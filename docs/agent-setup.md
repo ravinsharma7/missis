@@ -364,6 +364,59 @@ If the provider does not support skills, the project-local instruction hook
 remains sufficient. Keep this guide URL or its copied instructions as
 additional handoff context when useful.
 
+## Local alpha artifact and backup operations
+
+The local alpha keeps the three domain commands unchanged:
+missis new, missis show, and missis set. Maintenance operations are provided
+by the separate missis-tools binary.
+
+New stores place artifact bytes in a per-store namespace under the platform
+user-data directory:
+
+    <user-data>/missis/artifacts/<hash-of-store-id>/
+
+Set MISSIS_ARTIFACT_STORE when a deployment needs an explicit location,
+including a mounted volume or a test directory. The source filename is only
+metadata; it is never used as a storage path.
+
+Older stores may have the legacy layout
+<directory-containing-missis.db>/artifacts/. Stop all Missis clients before
+running the migration:
+
+    missis-tools artifacts migrate --store PATH --json
+
+Migration validates content-addressed objects, copies them idempotently into
+the isolated root, verifies the database index, and renames the old directory
+to artifacts.legacy-<timestamp>. The quarantine is retained for rollback and
+is never deleted automatically. If a normal open reports a legacy-root
+warning, migrate it before removing or moving the project directory.
+
+Garbage collection is offline maintenance and is dry-run by default:
+
+    missis-tools artifacts gc --store PATH --grace 24h --json
+    missis-tools artifacts gc --store PATH --grace 24h --confirm --json
+
+Indexed artifacts, including historically referenced artifacts, are live.
+Only unindexed objects older than the grace period are eligible for deletion.
+Active clients cause migration and GC to fail with a structured busy error;
+do not delete lock files or use PID timeouts to bypass that protection.
+
+Backups can run while normal clients are active and publish a database,
+manifest, artifact sidecar, and final completion marker:
+
+    missis-tools backup "$PWD/.missis-backups/missis.db"
+    missis-tools backup verify "$PWD/.missis-backups/missis.db"
+
+The completion marker is written last. Verification must report complete
+before a bundle is copied or restored. Incomplete and corrupt bundles remain
+for inspection; cleanup removes only stale staging or explicitly incomplete
+paths. Restore is offline with a new destination database and an optional
+MISSIS_ARTIFACT_STORE override. Never restore over an active store.
+
+The local alpha supports only local embedded artifact bundles. URLs, Git
+references, Markdown image/audio/video syntax, and untrusted renderer input
+remain inert references or raw Markdown; no network fetch or execution occurs.
+
 ## Completion report and continuation
 
 Before continuing, report:

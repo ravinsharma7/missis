@@ -18,11 +18,34 @@ import (
 
 var missisBin string
 var repairBin string
+var missisToolsBin string
 
 func TestMain(m *testing.M) {
 	if env := os.Getenv("MISSIS_BIN"); env != "" {
 		missisBin = env
 		repairBin = os.Getenv("MISSIS_REPAIR_BIN")
+		missisToolsBin = os.Getenv("MISSIS_TOOLS_BIN")
+		if missisToolsBin == "" {
+			tmpTools, err := os.MkdirTemp("", "missis-tools-bin-*")
+			if err != nil {
+				panic(err)
+			}
+			toolsName := "missis-tools"
+			if runtime.GOOS == "windows" {
+				toolsName += ".exe"
+			}
+			missisToolsBin = filepath.Join(tmpTools, toolsName)
+			buildTools := exec.Command("go", "build", "-o", missisToolsBin, "github.com/ravinsharma7/missis/tools/missis-tools")
+			buildTools.Stdout = os.Stdout
+			buildTools.Stderr = os.Stderr
+			if err := buildTools.Run(); err != nil {
+				os.RemoveAll(tmpTools)
+				panic(err)
+			}
+			code := m.Run()
+			os.RemoveAll(tmpTools)
+			os.Exit(code)
+		}
 		os.Exit(m.Run())
 	}
 
@@ -58,9 +81,43 @@ func TestMain(m *testing.M) {
 			panic(err)
 		}
 	}
+	toolsName := "missis-tools"
+	if runtime.GOOS == "windows" {
+		toolsName += ".exe"
+	}
+	missisToolsBin = filepath.Join(tmp, toolsName)
+	buildTools := exec.Command("go", "build", "-o", missisToolsBin, "github.com/ravinsharma7/missis/tools/missis-tools")
+	buildTools.Stdout = os.Stdout
+	buildTools.Stderr = os.Stderr
+	if err := buildTools.Run(); err != nil {
+		os.RemoveAll(tmp)
+		panic(err)
+	}
 	code := m.Run()
 	os.RemoveAll(tmp)
 	os.Exit(code)
+}
+
+func runMissisTools(t *testing.T, store string, env []string, args ...string) cmdResult {
+	t.Helper()
+	cmd := exec.Command(missisToolsBin, args...)
+	cmdEnv := os.Environ()
+	if store != "" {
+		cmdEnv = append(cmdEnv, "MISSIS_STORE="+store)
+	}
+	cmdEnv = append(cmdEnv, env...)
+	cmd.Env = cmdEnv
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	code := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		code = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("run missis-tools %v: %v", args, err)
+	}
+	return cmdResult{stdout: stdout.String(), stderr: stderr.String(), code: code}
 }
 
 type cmdResult struct {

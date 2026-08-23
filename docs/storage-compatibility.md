@@ -281,6 +281,28 @@ when available, because hand-editing their JSON is intentionally strict.
   migration and documented here before release.
 - Canonical event payloads (v1) will not be reinterpreted by later phases.
 
+## Local alpha readiness
+
+The release-readiness workflow is intentionally public-surface based:
+
+1. Start with a fresh temporary store and explicit MISSIS_ARTIFACT_STORE.
+2. Use missis new, missis set, and missis show for Markdown, typed
+   references, and media attachments.
+3. Verify ordered traversal, reordering, close/reopen, and projection rebuild.
+4. Create and verify a logical backup, restore to a new database and artifact
+   root, and run consistency checks.
+5. Run missis-tools backup verify before treating the bundle as usable.
+
+The black-box test TestLocalAlphaEndToEndWorkflow exercises this path without
+network access. Existing package tests cover concurrent imports, backups,
+projection repair, migration, GC, and lease rejection; those tests remain
+part of the acceptance evidence rather than being replaced by the smoke test.
+
+The current alpha is local-only. Remote S3-compatible or Harbor storage,
+external plugin isolation, asynchronous ingestion, and resumable uploads
+remain deferred under tickets #101, #102, #103, and #104. Ticket #93 remains
+open while its production rich-renderer and backend follow-ups are incomplete.
+
 ## Verification
 
 - `go test ./...` and the black-box suite run in CI on Linux and Windows

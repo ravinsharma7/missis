@@ -17,8 +17,19 @@ go install "$module/tools/missis-tools@$ref"
 export PATH="$GOBIN:$PATH"
 
 cd "$tmp/project"
+test -x "$GOBIN/missis"
+test -x "$GOBIN/missis-tools"
+missis --version | grep -q "missis version="
+missis-tools --help | grep -q "backup verify"
 missis --init --json >/dev/null
 missis show --health >/dev/null
+ticket="$(missis new --json "published install smoke")"
+ref_value="$(printf '%s' "$ticket" | sed -n 's/.*"ref":"\([^"]*\)".*/\1/p')"
+test -n "$ref_value"
+missis set --json "$ref_value/smoke" "installed workflow" --kind text >/dev/null
+missis show --json "$ref_value" >/dev/null
+missis-tools backup "$tmp/published-backup.db"
+missis-tools backup verify "$tmp/published-backup.db" >/dev/null
 missis-tools manifest >/dev/null
 missis-tools gaps .missis-store/missis.db >/dev/null
 
