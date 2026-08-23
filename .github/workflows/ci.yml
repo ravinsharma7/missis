@@ -106,11 +106,32 @@ jobs:
       - name: PowerShell installer smoke
         shell: pwsh
         run: |
+          # A CI commit has no published release bundle yet. Exercise the
+          # source/module path at the exact commit; the verified paired path is
+          # covered by internal/update and the stable-release bundle smoke.
           $bin = Join-Path $env:RUNNER_TEMP "missis-install-bin"
           New-Item -ItemType Directory -Force $bin | Out-Null
           $env:Path = "$bin;$env:Path"
-          & .\scripts\install.ps1 -Ref v0.2.0 -BinDir $bin
+          $env:MISSIS_INSTALL_SOURCE = "go"
+          & .\scripts\install.ps1 -Ref $env:GITHUB_SHA -BinDir $bin
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $missis = (& (Join-Path $bin "missis.exe") --version --json | ConvertFrom-Json)
+          $tools = (& (Join-Path $bin "missis-tools.exe") --version --json | ConvertFrom-Json)
+          if ([string]::IsNullOrWhiteSpace($missis.version) -or $missis.version -eq "dev") {
+            throw "source install did not report its module version"
+          }
+          if ($missis.version -ne $tools.version -or
+              $missis.display_version -ne $tools.display_version -or
+              $missis.commit -ne $tools.commit -or
+              $missis.dirty -ne $tools.dirty -or
+              $missis.store_format_revision -ne 2 -or
+              $tools.store_format_revision -ne 2) {
+            throw "installed binary identities do not match: missis=$($missis | ConvertTo-Json -Compress) tools=$($tools | ConvertTo-Json -Compress)"
+          }
+          & (Join-Path $bin "missis.exe") --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "missis command surface failed" }
+          & (Join-Path $bin "missis-tools.exe") --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "missis-tools command surface failed" }
       - name: TUI smoke
         run: go test -count=1 -run '^TestRunTUISmoke$' -v ./tools/missis-tools
       - name: store diagnostic summary
