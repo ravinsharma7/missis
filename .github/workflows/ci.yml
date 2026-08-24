@@ -40,7 +40,7 @@ jobs:
         run: go test -count=1 ./internal/store
       - name: test TUI internals
         run: go test -count=1 ./internal/tui
-      - name: test support internals
+      - name: test foundation internals
         run: >-
           go test -count=1
           ./internal/artifact
@@ -50,11 +50,14 @@ jobs:
           ./internal/idgen
           ./internal/media
           ./internal/model
-          ./internal/onboarding
           ./internal/plugin/...
           ./internal/schema
-          ./internal/tooling
-          ./internal/update
+      - name: test onboarding internals
+        run: go test -count=1 ./internal/onboarding
+      - name: test tooling internals
+        run: go test -count=1 ./internal/tooling
+      - name: test update internals
+        run: go test -count=1 ./internal/update
       - name: test public packages
         run: go test -count=1 ./pkg/...
       - name: test tools
@@ -121,7 +124,7 @@ jobs:
         run: go test -count=1 ./internal/store
       - name: test TUI internals
         run: go test -count=1 ./internal/tui
-      - name: test support internals
+      - name: test foundation internals
         run: >-
           go test -count=1
           ./internal/artifact
@@ -131,11 +134,14 @@ jobs:
           ./internal/idgen
           ./internal/media
           ./internal/model
-          ./internal/onboarding
           ./internal/plugin/...
           ./internal/schema
-          ./internal/tooling
-          ./internal/update
+      - name: test onboarding internals
+        run: go test -count=1 ./internal/onboarding
+      - name: test tooling internals
+        run: go test -count=1 ./internal/tooling
+      - name: test update internals
+        run: go test -count=1 ./internal/update
       - name: test public packages
         run: go test -count=1 ./pkg/...
       - name: test tools
