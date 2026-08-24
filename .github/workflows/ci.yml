@@ -34,8 +34,27 @@ jobs:
         run: bash testsuite/scripts/test-install.sh
       - name: test commands
         run: go test -count=1 ./cmd/...
-      - name: test internals
-        run: go test -count=1 ./internal/...
+      - name: test application internals
+        run: go test -count=1 ./internal/application
+      - name: test store internals
+        run: go test -count=1 ./internal/store
+      - name: test TUI internals
+        run: go test -count=1 ./internal/tui
+      - name: test support internals
+        run: >-
+          go test -count=1
+          ./internal/artifact
+          ./internal/buildinfo
+          ./internal/compatfixture
+          ./internal/fsutil
+          ./internal/idgen
+          ./internal/media
+          ./internal/model
+          ./internal/onboarding
+          ./internal/plugin/...
+          ./internal/schema
+          ./internal/tooling
+          ./internal/update
       - name: test public packages
         run: go test -count=1 ./pkg/...
       - name: test tools
@@ -96,8 +115,27 @@ jobs:
         run: go vet ./...
       - name: test commands
         run: go test -count=1 ./cmd/...
-      - name: test internals
-        run: go test -count=1 ./internal/...
+      - name: test application internals
+        run: go test -count=1 ./internal/application
+      - name: test store internals
+        run: go test -count=1 ./internal/store
+      - name: test TUI internals
+        run: go test -count=1 ./internal/tui
+      - name: test support internals
+        run: >-
+          go test -count=1
+          ./internal/artifact
+          ./internal/buildinfo
+          ./internal/compatfixture
+          ./internal/fsutil
+          ./internal/idgen
+          ./internal/media
+          ./internal/model
+          ./internal/onboarding
+          ./internal/plugin/...
+          ./internal/schema
+          ./internal/tooling
+          ./internal/update
       - name: test public packages
         run: go test -count=1 ./pkg/...
       - name: test tools
