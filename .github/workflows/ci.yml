@@ -32,8 +32,12 @@ jobs:
           shellcheck scripts/*.sh testsuite/scripts/*.sh testsuite/benchmarks/*.sh
       - name: POSIX installer harness
         run: bash testsuite/scripts/test-install.sh
-      - name: test
-        run: go test -count=1 ./...
+      - name: test core
+        run: go test -count=1 ./cmd/... ./internal/... ./pkg/...
+      - name: test tools
+        run: go test -count=1 ./tools/...
+      - name: test black-box and benchmarks
+        run: go test -count=1 ./testsuite/...
       - name: generated onboarding
         run: go run ./tools/generate-onboarding --check
       - name: consolidated tools build
