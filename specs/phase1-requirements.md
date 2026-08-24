@@ -75,6 +75,10 @@ Public command spelling:
 | PH1-ACC-001 | 29.1, 29.2, 29.3, 29.4, 29.11 | Phase 1 acceptance criteria are mapped to the requirements above. |
 | PH1-FMT-001 | 34.1 | A store is compatibility-probed before mutation, rejects unsupported revisions, and is covered by an immutable complete compatibility corpus. |
 | PH1-REL-001 | 34.2 | Stable releases pair `missis` and `missis-tools` from one commit and self-update only after manifest, archive, binary identity, and checksum verification. |
+| PH1-SETUP-001 | 34.3 | Setup validates the in-project store before atomically publishing the marker and is idempotent on retry. |
+| PH1-SETUP-002 | 34.3 | Setup check mode performs read-only compatibility, consistency, and scope verification. |
+| PH1-SETUP-003 | 34.3 | Stable setup requires a verified paired installation; development use requires an explicit exception. |
+| PH1-SETUP-004 | 34.3 | Clean bootstrap uses one explicitly pinned stable ref and invokes setup through the installed absolute binary. |
 
 ## Invariant coverage
 
@@ -240,6 +244,10 @@ Status values:
 | N119 | MUST NOT | 23.6 | Containment alone does not imply authorization inheritance. | deferred-phase-8 | Security |
 | N120 | MUST | 23.6 | Recursive search and subtree export check authorization for every returned part. | deferred-phase-8 | Security |
 | N121 | MUST | 23.7 | Search candidate generation and reranking apply authorization filters. | deferred-phase-8 | Security |
+| N122 | MUST | 34.3 | Setup validates the in-project store before atomically publishing the marker and is idempotent on retry. | phase-1 | PH1-SETUP-001 |
+| N123 | MUST | 34.3 | Setup check mode performs read-only compatibility, consistency, and scope verification. | phase-1 | PH1-SETUP-002 |
+| N124 | MUST | 34.3 | Stable setup requires a verified paired installation; development use requires an explicit exception. | phase-1 | PH1-SETUP-003 |
+| N125 | MUST | 34.3 | Clean bootstrap uses one explicitly pinned stable ref and invokes setup through the installed absolute binary. | phase-1 | PH1-SETUP-004 |
 
 ## Retirement condition
 

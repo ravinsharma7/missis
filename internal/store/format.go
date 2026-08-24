@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -44,6 +45,10 @@ func (e *IncompatibleStoreFormatError) Unwrap() error { return ErrIncompatibleSt
 // empty path is a new store. Before migration 0007, migration 0005 and older
 // are implicit revision 1 while migration 0006 is implicit revision 2.
 func inspectStoreFormat(path string) (int, error) {
+	return inspectStoreFormatMode(path, false)
+}
+
+func inspectStoreFormatMode(path string, immutable bool) (int, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return CurrentStoreFormatRevision, nil
@@ -59,6 +64,9 @@ func inspectStoreFormat(path string) (int, error) {
 		return 0, err
 	}
 	dsn := "file:" + filepath.ToSlash(absPath) + "?mode=ro"
+	if immutable {
+		dsn += "&immutable=1"
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return 0, err
@@ -113,6 +121,57 @@ func inspectStoreFormat(path string) (int, error) {
 		return CurrentStoreFormatRevision, nil
 	}
 	return MinReadableStoreFormatRevision, nil
+}
+
+// ReadOnlyInspection is the result of checking an existing store without
+// opening a writer, configuring WAL, running migrations, or repairing data.
+type ReadOnlyInspection struct {
+	FormatRevision int
+}
+
+// InspectReadOnly verifies compatibility, ledger/projection consistency, and
+// sequence continuity using a read-only SQLite connection.
+func InspectReadOnly(ctx context.Context, path string) (ReadOnlyInspection, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ReadOnlyInspection{}, err
+	}
+	if info.Size() == 0 {
+		return ReadOnlyInspection{}, fmt.Errorf("store is empty")
+	}
+	if wal, walErr := os.Stat(path + "-wal"); walErr == nil && wal.Size() > 0 {
+		return ReadOnlyInspection{}, fmt.Errorf("store has an uncheckpointed WAL; stop active clients before immutable inspection")
+	} else if walErr != nil && !errors.Is(walErr, os.ErrNotExist) {
+		return ReadOnlyInspection{}, walErr
+	}
+	revision, err := inspectStoreFormatMode(path, true)
+	if err != nil {
+		return ReadOnlyInspection{}, err
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return ReadOnlyInspection{}, err
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(absPath)+"?mode=ro&immutable=1")
+	if err != nil {
+		return ReadOnlyInspection{}, err
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
+		return ReadOnlyInspection{}, err
+	}
+	probe := &Store{reader: db}
+	if err := probe.CheckConsistencyContext(ctx); err != nil {
+		return ReadOnlyInspection{}, err
+	}
+	gaps, err := probe.SequenceGapsContext(ctx)
+	if err != nil {
+		return ReadOnlyInspection{}, err
+	}
+	if len(gaps) != 0 {
+		return ReadOnlyInspection{}, fmt.Errorf("sequence gaps detected")
+	}
+	return ReadOnlyInspection{FormatRevision: revision}, nil
 }
 
 func appliedMigrationVersions(db *sql.DB) ([]string, error) {

@@ -1,7 +1,7 @@
 package model
 
 // MediaDescriptor is the structured payload used by the media rendering
-// prototype. URI may point at a local path, remote URL, or content-addressed
+// revision-2 contract. URI may point at a local path, remote URL, or content-addressed
 // artifact. Consumers must decide whether and how to retrieve it.
 //
 // Kind is explicit so a renderer never has to infer executable behavior from

@@ -34,12 +34,16 @@ jobs:
         run: bash testsuite/scripts/test-install.sh
       - name: test
         run: go test -count=1 ./...
+      - name: generated onboarding
+        run: go run ./tools/generate-onboarding --check
       - name: consolidated tools build
         run: go build ./tools/missis-tools
       - name: requirements coverage
         run: go run ./tools/coverage --registry specs/requirements-registry.v3.json
-      - name: backup script harness
+      - name: backup remote harness
         run: bash testsuite/scripts/test-rclone-backup.sh
+      - name: benchmark selection harness
+        run: bash testsuite/benchmarks/test-benchmark-selection.sh
       - name: TUI smoke
         run: go test -count=1 -run '^TestRunTUISmoke$' -v ./tools/missis-tools
       - name: store diagnostic summary
@@ -84,6 +88,8 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test -count=1 ./...
+      - name: generated onboarding
+        run: go run ./tools/generate-onboarding --check
       - name: requirements coverage
         run: go run ./tools/coverage --registry specs/requirements-registry.v3.json
       - name: consolidated tools build

@@ -19,9 +19,17 @@ type RegistryRequirement struct {
 	Tests    []string `json:"tests"`
 }
 
+type RegistryDecision struct {
+	ID       string `json:"id"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+	Target   string `json:"target"`
+}
+
 type Registry struct {
-	Requirements []RegistryRequirement `json:"requirements"`
-	Norms        []RegistryRequirement `json:"norms"`
+	Requirements          []RegistryRequirement `json:"requirements"`
+	Norms                 []RegistryRequirement `json:"norms"`
+	Phase1ShouldDecisions []RegistryDecision    `json:"phase1_should_decisions"`
 }
 
 func main() {
@@ -60,7 +68,7 @@ func scanAll(root string) ([]string, error) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", ".missis-store", "vendor", "node_modules":
+			case ".git", ".missis-store", ".missis-backups", "temp", "vendor", "node_modules":
 				return fs.SkipDir
 			}
 			return nil
@@ -162,8 +170,12 @@ func verifyRegistry(path string, lines []string) error {
 	}
 
 	known := map[string]bool{}
+	norms := map[string]RegistryRequirement{}
 	for _, r := range append(append([]RegistryRequirement{}, reg.Requirements...), reg.Norms...) {
 		known[r.ID] = true
+	}
+	for _, n := range reg.Norms {
+		norms[n.ID] = n
 	}
 
 	referenced := map[string]map[string]bool{}
@@ -182,6 +194,46 @@ func verifyRegistry(path string, lines []string) error {
 	}
 
 	var violations []string
+	decisions := map[string]RegistryDecision{}
+	for _, decision := range reg.Phase1ShouldDecisions {
+		norm, ok := norms[decision.ID]
+		if !ok {
+			violations = append(violations, fmt.Sprintf("SHOULD decision references unknown norm %s", decision.ID))
+			continue
+		}
+		if _, duplicate := decisions[decision.ID]; duplicate {
+			violations = append(violations, fmt.Sprintf("duplicate SHOULD decision for %s", decision.ID))
+			continue
+		}
+		decisions[decision.ID] = decision
+		if decision.Reason == "" || decision.Target == "" {
+			violations = append(violations, fmt.Sprintf("SHOULD decision %s requires reason and target", decision.ID))
+		}
+		switch decision.Decision {
+		case "adopt":
+			if norm.Status != "phase-1-should" && norm.Status != "phase-1" {
+				violations = append(violations, fmt.Sprintf("adopted SHOULD %s has incompatible status %s", decision.ID, norm.Status))
+			}
+		case "defer":
+			if !strings.HasPrefix(norm.Status, "deferred-") {
+				violations = append(violations, fmt.Sprintf("deferred SHOULD %s has incompatible status %s", decision.ID, norm.Status))
+			}
+		case "reject":
+			if norm.Status != "rejected" {
+				violations = append(violations, fmt.Sprintf("rejected SHOULD %s has incompatible status %s", decision.ID, norm.Status))
+			}
+		default:
+			violations = append(violations, fmt.Sprintf("SHOULD decision %s has invalid value %q", decision.ID, decision.Decision))
+		}
+	}
+	for _, norm := range reg.Norms {
+		if norm.Status == "phase-1-should" {
+			decision, ok := decisions[norm.ID]
+			if !ok || decision.Decision != "adopt" {
+				violations = append(violations, fmt.Sprintf("Phase 1 SHOULD %s lacks an adopt decision", norm.ID))
+			}
+		}
+	}
 	var unknownIDs []string
 	for id := range referenced {
 		if !known[id] {

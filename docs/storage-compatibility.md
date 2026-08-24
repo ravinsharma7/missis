@@ -138,9 +138,9 @@ corruption in such a store.
   (`<store_id>/<head_hash>.db`), and download verifies store identity, head
   hash, schema version, and event count against a manifest computed from the
   live local store.
-- `scripts/verify-restore.sh` verifies a local backup against the live local
-  store; pass an explicit backup path or let it derive the current
-  content-addressed path.
+- `missis-tools backup verify [backup.db] --against-current` verifies a local
+  backup against the live store. Omitting the path derives the current
+  content-addressed backup under the project-aware backup directory.
 
 ## Relation vocabulary
 
@@ -332,6 +332,20 @@ stages and verifies both binaries before publication, records rollback state,
 and writes `.missis-install.json` last. A later invocation either completes or
 rolls back an interrupted update; a persistent journal file alone is not
 treated as success.
+
+### Removed maintenance executables
+
+Only the paired `missis` and `missis-tools` executables are supported. Replace
+the removed standalone wrappers as follows; no runtime aliases are provided.
+
+| Removed executable | Replacement |
+| --- | --- |
+| `ticket-tui` | `missis-tools tui` |
+| `repair-store` | `missis-tools repair` |
+| `store-gaps` | `missis-tools gaps` |
+| `store-manifest` | `missis-tools manifest` |
+| `store-backup` | `missis-tools backup` |
+| `store-remote` | `missis-tools remote` |
 
 ## Stability promise for revision 2
 

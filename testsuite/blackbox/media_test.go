@@ -5,7 +5,7 @@ import "testing"
 func TestMediaValueKindsRoundTrip(t *testing.T) {
 	t.Parallel()
 	store := t.TempDir() + "/missis.db"
-	created := newTicket(t, store, "media prototype")
+	created := newTicket(t, store, "media descriptor")
 	ref := created["ref"].(string)
 
 	image := runMissis(t, store, "set", "--json", ref+"/screenshot", "https://example.test/screenshot.png", "--kind", "image")

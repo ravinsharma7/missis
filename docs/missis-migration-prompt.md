@@ -7,9 +7,9 @@ exports, or copied ticket Markdown.
 The prompt is deliberately review-first. It does not delete files, rewrite
 the event store, create tickets, choose a focus, or infer a task.
 
-For the choice between migration, setup, ordinary ticket work, and the
-optional reviewed project handoff, see [onboarding-workflows.md](onboarding-workflows.md)
-when this repository’s documentation is available.
+For clean setup, ordinary ticket work, and the optional reviewed project
+handoff, see [agent-setup.md](agent-setup.md). This document applies only to
+reviewing and preserving legacy metadata.
 
 ## Copy-paste prompt
 
@@ -44,9 +44,9 @@ Procedure:
    `.missis.d/context.md`, `.missis.d/active.local.md`,
    `.missis.d/active.example.md`, `.missis.d/*backlog*`, exports, and copied
    ticket Markdown.
-5. If `.missis.d/phase1-should-backlog.md` exists, propose the reversible
-   reviewed move to `specs/phase1-should-backlog.md`; do not move it during
-   migration without operator approval.
+5. If `.missis.d/phase1-should-backlog.md` exists, treat it as historical
+   planning metadata. Do not move it; reviewed decisions belong in the
+   requirements registry.
 6. Report which legacy files exist, their timestamps, and whether they
    disagree with the live store. Do not silently resolve the disagreement.
 7. Review the project instruction hook. If it needs a Missis handoff, add

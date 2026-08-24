@@ -205,7 +205,7 @@ func TestLocalAlphaEndToEndWorkflow(t *testing.T) {
 	}
 }
 
-func TestLocalAlphaToolSurfaceAndReadinessDocumentation(t *testing.T) {
+func TestLocalAlphaToolSurface(t *testing.T) {
 	help := runMissisTools(t, "", nil, "--help")
 	if help.code != 0 || help.stderr != "" {
 		t.Fatalf("missis-tools help: code=%d stderr=%q", help.code, help.stderr)
@@ -213,15 +213,6 @@ func TestLocalAlphaToolSurfaceAndReadinessDocumentation(t *testing.T) {
 	for _, want := range []string{"backup verify", "backup cleanup", "artifacts migrate", "artifacts gc"} {
 		if !strings.Contains(help.stdout, want) {
 			t.Errorf("missis-tools help missing %q", want)
-		}
-	}
-	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "local-alpha-readiness.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"Implementation evidence", "Automated evidence", "MISSIS_ARTIFACT_STORE", "#101", "#102", "#103", "#104"} {
-		if !strings.Contains(string(data), want) {
-			t.Errorf("local alpha checklist missing %q", want)
 		}
 	}
 }

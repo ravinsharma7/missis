@@ -19,7 +19,7 @@ import (
 
 // TestConcurrentStatusChangesAcrossClients hammers one shared store with many
 // separate missis clients changing status on different tickets at the same
-// time, while a concurrent repair-store client renumbers sequences. The
+// time, while a concurrent consistency verifier checks sequences. The
 // invariant after the storm: every set succeeded, no sequence gaps, health ok.
 func TestConcurrentStatusChangesAcrossClients(t *testing.T) {
 	t.Parallel()
@@ -125,12 +125,12 @@ func TestRepairStoreRefusesInPlaceRepair(t *testing.T) {
 		t.Fatalf("health should fail with sequence gaps: %s", health.stdout)
 	}
 
-	// repair-store refuses to rewrite accepted history.
-	refusal := exec.Command(repairBin, storePath)
+	// missis-tools repair refuses to rewrite accepted history.
+	refusal := exec.Command(missisToolsBin, "repair", storePath)
 	var stderr bytes.Buffer
 	refusal.Stderr = &stderr
 	if err := refusal.Run(); err == nil {
-		t.Fatalf("repair-store should refuse in-place repair")
+		t.Fatalf("missis-tools repair should refuse in-place repair")
 	}
 	if !strings.Contains(stderr.String(), "restore from a backup") {
 		t.Fatalf("unexpected refusal message: %s", stderr.String())

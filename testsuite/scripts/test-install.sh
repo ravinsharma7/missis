@@ -45,11 +45,22 @@ EOF
 
 chmod +x "$fakebin/go" "$fakebin/file"
 
+set +e
+FAKE_GOPATH="$gopath" \
+PATH="$gopath/bin:$fakebin:$PATH" \
+MISSIS_REF=v0.0.0-test \
+bash "$root/scripts/install.sh" --tools-only >"$tmpdir/removed-output" 2>"$tmpdir/removed-error"
+removed_status=$?
+set -e
+test "$removed_status" -eq 2
+grep -q '^usage: scripts/install.sh$' "$tmpdir/removed-error"
+
 output="$tmpdir/output"
 FAKE_GOPATH="$gopath" \
 PATH="$gopath/bin:$fakebin:$PATH" \
 MISSIS_BIN_DIR='' \
 MISSIS_INSTALL_SOURCE=go \
+MISSIS_REF=v0.0.0-test \
 GOBIN="$tmpdir/not-on-path" \
 bash "$root/scripts/install.sh" >"$output" 2>"$tmpdir/error"
 

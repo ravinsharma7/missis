@@ -105,41 +105,6 @@ func TestShowVersion(t *testing.T) {
 	}
 }
 
-func TestGetStarted(t *testing.T) {
-	result := runMissis(t, "", "--get-started")
-	if result.code != 0 {
-		t.Fatalf("--get-started failed: %d stderr=%s", result.code, result.stderr)
-	}
-	for _, want := range []string{
-		"docs/agent-setup.md",
-		"local-first setup wrapper",
-		"No web search is required",
-		"standalone; no Missis README",
-		"missis --init",
-		"missis --ag-pointer",
-		"AGENTS.md",
-		"missis new",
-		"missis set",
-		"go run \"github.com/ravinsharma7/missis/tools/paired-install@$MISSIS_REF\"",
-		"missis-tools backup",
-		"missis-tools repair",
-	} {
-		if !strings.Contains(result.stdout, want) {
-			t.Fatalf("--get-started output missing %q:\n%s", want, result.stdout)
-		}
-	}
-	for _, stale := range []string{"go run ./tools/store-backup", "go run ./tools/store-gaps", "go run ./tools/repair-store"} {
-		if strings.Contains(result.stdout, stale) {
-			t.Fatalf("--get-started output still contains stale command %q:\n%s", stale, result.stdout)
-		}
-	}
-	for _, repositoryOnly := range []string{"README.md", "spec section 14"} {
-		if strings.Contains(result.stdout, repositoryOnly) {
-			t.Fatalf("--get-started output still requires repository-only reference %q:\n%s", repositoryOnly, result.stdout)
-		}
-	}
-}
-
 func TestSelfTrackingBootstrapIsolated(t *testing.T) {
 	t.Parallel()
 	// covers PH7-SEARCH-003 PH4-SCOPE-004

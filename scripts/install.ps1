@@ -1,14 +1,16 @@
 [CmdletBinding()]
 param(
     [string]$Ref = "",
-    [string]$BinDir = "",
-    [switch]$ToolsOnly
+    [string]$BinDir = ""
 )
 
 $ErrorActionPreference = "Stop"
 $module = "github.com/ravinsharma7/missis"
 if ([string]::IsNullOrWhiteSpace($Ref)) {
-    $Ref = if ($env:MISSIS_REF) { $env:MISSIS_REF } else { "latest" }
+    $Ref = if ($env:MISSIS_REF) { $env:MISSIS_REF } else { "" }
+}
+if ([string]::IsNullOrWhiteSpace($Ref)) {
+    throw "Ref or MISSIS_REF must be explicit; use a stable tag for release installation"
 }
 
 $goos = (& go env GOOS).Trim()
@@ -48,18 +50,14 @@ $installSource = if ($env:MISSIS_INSTALL_SOURCE) { $env:MISSIS_INSTALL_SOURCE } 
 $oldGobin = $env:GOBIN
 $env:GOBIN = $BinDir
 try {
-    if (-not $ToolsOnly -and $installSource -ne "go") {
+    if ($installSource -ne "go") {
         Write-Host "installing verified paired release $Ref to $BinDir"
         & go run "$module/tools/paired-install@$Ref" --ref $Ref --bin-dir $BinDir
         if ($LASTEXITCODE -ne 0) { throw "paired release install failed with exit code $LASTEXITCODE" }
-    } elseif (-not $ToolsOnly) {
+    } else {
         Write-Host "installing $module/cmd/missis@$Ref to $BinDir"
         & go install "$module/cmd/missis@$Ref"
         if ($LASTEXITCODE -ne 0) { throw "go install missis failed with exit code $LASTEXITCODE" }
-        Write-Host "installing $module/tools/missis-tools@$Ref to $BinDir"
-        & go install "$module/tools/missis-tools@$Ref"
-        if ($LASTEXITCODE -ne 0) { throw "go install missis-tools failed with exit code $LASTEXITCODE" }
-    } else {
         Write-Host "installing $module/tools/missis-tools@$Ref to $BinDir"
         & go install "$module/tools/missis-tools@$Ref"
         if ($LASTEXITCODE -ne 0) { throw "go install missis-tools failed with exit code $LASTEXITCODE" }
@@ -83,11 +81,11 @@ function Assert-NativeWindowsBinary([string]$Name) {
     }
 }
 
-if (-not $ToolsOnly) { Assert-NativeWindowsBinary "missis" }
+Assert-NativeWindowsBinary "missis"
 Assert-NativeWindowsBinary "missis-tools"
 
-if (-not $ToolsOnly -and $installSource -eq "go") {
-    Write-Warning "source/module installation is not eligible for verified self-update; use the release installer for v0.2.2 or newer"
+if ($installSource -eq "go") {
+    Write-Warning "source/module installation is not eligible for verified self-update; use a stable paired release"
 }
 
 # All native commands have been checked at this point. Publish an explicit
@@ -95,6 +93,6 @@ if (-not $ToolsOnly -and $installSource -eq "go") {
 $global:LASTEXITCODE = 0
 
 Write-Host "installed native Windows Missis binaries in $BinDir"
-if (-not $ToolsOnly) { Write-Host "missis: $((Get-Command missis -CommandType Application | Select-Object -First 1).Source)" }
+Write-Host "missis: $((Get-Command missis -CommandType Application | Select-Object -First 1).Source)"
 Write-Host "missis-tools: $((Get-Command missis-tools -CommandType Application | Select-Object -First 1).Source)"
 Write-Host "ref: $Ref"

@@ -4,232 +4,229 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
+func setupEnv() []string {
+	return []string{"MISSIS_STORE=", "PATH=" + filepath.Dir(missisBin) + string(os.PathListSeparator) + os.Getenv("PATH")}
+}
+
+func setupJSON(t *testing.T, result cmdResult) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(result.stdout), &body); err != nil {
+		t.Fatalf("setup JSON: %v\nstdout=%s\nstderr=%s", err, result.stdout, result.stderr)
+	}
+	return body
+}
+
+func TestSetupFreshAndRepeat(t *testing.T) {
+	// covers PH1-SETUP-001 N122
+	project := t.TempDir()
+	args := []string{"--setup", "--project", project, "--allow-development", "--json"}
+	first := runMissisWithEnv(t, "", project, setupEnv(), args...)
+	if first.code != 0 || setupJSON(t, first)["status"] != "ready_development" {
+		t.Fatalf("first setup failed: exit=%d stdout=%s stderr=%s", first.code, first.stdout, first.stderr)
+	}
+	marker := filepath.Join(project, ".missis")
+	store := filepath.Join(project, ".missis-store", "missis.db")
+	for _, path := range []string{marker, store} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("setup artifact %s: %v", path, err)
+		}
+	}
+	markerBefore, _ := os.ReadFile(marker)
+	second := runMissisWithEnv(t, "", project, setupEnv(), args...)
+	if second.code != 0 {
+		t.Fatalf("repeat setup failed: %d %s", second.code, second.stderr)
+	}
+	markerAfter, _ := os.ReadFile(marker)
+	if string(markerAfter) != string(markerBefore) {
+		t.Fatalf("repeat setup changed marker: before=%q after=%q", markerBefore, markerAfter)
+	}
+}
+
+func TestSetupCheckIsReadOnly(t *testing.T) {
+	// covers PH1-SETUP-002 N123
+	project := t.TempDir()
+	env := setupEnv()
+	apply := runMissisWithEnv(t, "", project, env, "--setup", "--project", project, "--allow-development", "--json")
+	if apply.code != 0 {
+		t.Fatalf("apply setup failed: %d %s", apply.code, apply.stderr)
+	}
+	marker := filepath.Join(project, ".missis")
+	store := filepath.Join(project, ".missis-store", "missis.db")
+	markerBefore, _ := os.ReadFile(marker)
+	storeBefore, _ := os.ReadFile(store)
+	sidecarsBefore := map[string][]byte{}
+	for _, suffix := range []string{"-wal", "-journal"} {
+		if data, err := os.ReadFile(store + suffix); err == nil {
+			sidecarsBefore[suffix] = data
+		}
+	}
+	check := runMissisWithEnv(t, "", project, env, "--setup", "--project", project, "--check", "--allow-development", "--json")
+	if check.code != 0 {
+		t.Fatalf("check setup failed: %d %s", check.code, check.stderr)
+	}
+	markerAfter, _ := os.ReadFile(marker)
+	storeAfter, _ := os.ReadFile(store)
+	if string(markerBefore) != string(markerAfter) || string(storeBefore) != string(storeAfter) {
+		t.Fatal("read-only setup check changed marker or database bytes")
+	}
+	for _, suffix := range []string{"-wal", "-journal"} {
+		after, err := os.ReadFile(store + suffix)
+		before, existed := sidecarsBefore[suffix]
+		if existed && (err != nil || string(after) != string(before)) {
+			t.Fatalf("read-only setup changed %s", store+suffix)
+		}
+		if !existed && err == nil {
+			t.Fatalf("read-only setup created %s", store+suffix)
+		}
+	}
+}
+
+func TestSetupRequiresExplicitDevelopment(t *testing.T) {
+	// covers PH1-SETUP-003 N124
+	project := t.TempDir()
+	result := runMissisWithEnv(t, "", project, setupEnv(), "--setup", "--project", project, "--json")
+	if result.code != 8 || setupJSON(t, result)["status"] != "failed" {
+		t.Fatalf("development setup: exit=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".missis")); !os.IsNotExist(err) {
+		t.Fatalf("failed setup created marker: %v", err)
+	}
+}
+
+func TestSetupRejectsUnsafeState(t *testing.T) {
+	project := t.TempDir()
+	env := append(setupEnv(), "MISSIS_STORE="+filepath.Join(t.TempDir(), "outside.db"))
+	result := runMissisWithEnv(t, "", project, env, "--setup", "--project", project, "--allow-development", "--json")
+	if result.code != 2 || !strings.Contains(result.stdout, "unset MISSIS_STORE") {
+		t.Fatalf("MISSIS_STORE conflict: exit=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+}
+
+func TestSetupPathAndStateMatrix(t *testing.T) {
+	t.Run("path with spaces and custom marker", func(t *testing.T) {
+		project := filepath.Join(t.TempDir(), "project with spaces")
+		if err := os.MkdirAll(project, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(project, ".missis")
+		if err := os.WriteFile(marker, []byte("data/custom.db\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		legacy := filepath.Join(project, ".missis.d", "context.md")
+		if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(legacy, []byte("preserve me\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		result := runMissisWithEnv(t, "", project, setupEnv(), "--setup", "--project", project, "--allow-development", "--json")
+		if result.code != 0 {
+			t.Fatalf("custom setup failed: %d %s", result.code, result.stderr)
+		}
+		if _, err := os.Stat(filepath.Join(project, "data", "custom.db")); err != nil {
+			t.Fatalf("custom store missing: %v", err)
+		}
+		data, _ := os.ReadFile(legacy)
+		if string(data) != "preserve me\n" {
+			t.Fatalf("legacy metadata changed: %q", data)
+		}
+	})
+
+	t.Run("escaping store", func(t *testing.T) {
+		project := t.TempDir()
+		result := runMissisWithEnv(t, "", project, setupEnv(), "--setup", "--project", project, "--store", "../outside.db", "--allow-development", "--json")
+		if result.code != 8 || !strings.Contains(result.stdout, "escapes") {
+			t.Fatalf("escaping store accepted: exit=%d stdout=%s", result.code, result.stdout)
+		}
+	})
+
+	if runtime.GOOS != "windows" {
+		t.Run("symlinked store escape", func(t *testing.T) {
+			project, outside := t.TempDir(), t.TempDir()
+			if err := os.Symlink(outside, filepath.Join(project, ".missis-store")); err != nil {
+				t.Fatal(err)
+			}
+			result := runMissisWithEnv(t, "", project, setupEnv(), "--setup", "--project", project, "--allow-development", "--json")
+			if result.code != 8 || !strings.Contains(result.stdout, "outside") {
+				t.Fatalf("symlink escape accepted: exit=%d stdout=%s", result.code, result.stdout)
+			}
+		})
+	}
+
+	t.Run("missing explicit scope", func(t *testing.T) {
+		project := t.TempDir()
+		env := append(setupEnv(), "MISSIS_PROJECT=missing-project")
+		result := runMissisWithEnv(t, "", project, env, "--setup", "--project", project, "--allow-development", "--json")
+		if result.code != 8 || !strings.Contains(result.stdout, "explicit project scope does not exist") {
+			t.Fatalf("missing scope accepted: exit=%d stdout=%s", result.code, result.stdout)
+		}
+		if _, err := os.Stat(filepath.Join(project, ".missis")); !os.IsNotExist(err) {
+			t.Fatalf("scope failure published marker: %v", err)
+		}
+	})
+
+	t.Run("check missing marker", func(t *testing.T) {
+		project := t.TempDir()
+		result := runMissisWithEnv(t, "", project, setupEnv(), "--setup", "--project", project, "--check", "--allow-development", "--json")
+		if result.code != 8 || setupJSON(t, result)["status"] != "not_ready" {
+			t.Fatalf("missing marker check: exit=%d stdout=%s", result.code, result.stdout)
+		}
+		if _, err := os.Stat(filepath.Join(project, ".missis-store")); !os.IsNotExist(err) {
+			t.Fatalf("check created store directory: %v", err)
+		}
+	})
+}
+
+func TestRemovedSetupFlagsAreRejected(t *testing.T) {
+	for _, old := range []string{"--init", "--start", "--get-started"} {
+		result := runMissis(t, "", old)
+		if result.code != 2 || !strings.Contains(result.stderr, "unknown command") {
+			t.Fatalf("%s was not rejected: exit=%d stdout=%s stderr=%s", old, result.code, result.stdout, result.stderr)
+		}
+	}
+	help := runMissis(t, "", "--help")
+	if help.code != 0 || !strings.Contains(help.stdout, "--setup --project DIR") {
+		t.Fatalf("setup help missing: %s %s", help.stdout, help.stderr)
+	}
+	setupHelp := runMissis(t, "", "--setup", "--help")
+	if setupHelp.code != 0 || !strings.Contains(setupHelp.stderr, "allow-development") {
+		t.Fatalf("setup flag help failed: exit=%d stdout=%s stderr=%s", setupHelp.code, setupHelp.stdout, setupHelp.stderr)
+	}
+}
+
 func TestAgentSetupGuideContract(t *testing.T) {
-	guidePath := filepath.Join("..", "..", "docs", "agent-setup.md")
-	data, err := os.ReadFile(guidePath)
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "agent-setup.md"))
 	if err != nil {
-		t.Fatalf("read setup guide %s: %v", guidePath, err)
+		t.Fatal(err)
 	}
 	guide := string(data)
-	for _, want := range []string{
-		"# Local-first Missis setup",
-		"standalone: it contains the complete external-project setup",
-		"must not need Missis's repository-specific `README.md`",
-		"Do not perform a web search",
-		"You are setting up Missis in the current project directory.",
-		"https://github.com/ravinsharma7/missis/blob/<ref>/docs/agent-setup.md",
-		"https://raw.githubusercontent.com/ravinsharma7/missis/<ref>/docs/agent-setup.md",
-		"## Prerequisites",
-		"## Requirements",
-		"export MISSIS_REF=v0.2.2",
-		"go run \"github.com/ravinsharma7/missis/tools/paired-install@$MISSIS_REF\"",
-		"command -v missis-tools",
-		"missis-tools --help",
-		"go install ./tools/missis-tools",
-		"missis --init --json",
-		"missis show --health",
-		"missis show --context",
-		"missis --ag-brief",
-		"Do not create or require `.missis.d/context.md` or an active ticket pointer",
-		"already initialized",
-		"Never use destructive cleanup",
-		"Optional reviewed project handoff",
-		"AGENTS.md",
-		"If a future agent cannot resolve",
-		"Optional provider integrations",
-	} {
+	for _, want := range []string{"tools/paired-install@<stable-tag>", "--project . --json", "missis --setup --project . --check --json", "https://raw.githubusercontent.com/ravinsharma7/missis/<stable-tag>/docs/agent-setup.md", "missis --ag-brief", "missis-migration-prompt.md", "storage-compatibility.md"} {
 		if !strings.Contains(guide, want) {
-			t.Errorf("setup guide missing %q", want)
+			t.Errorf("guide missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"# URL-first Missis setup", "Read this guide from the supplied GitHub URL"} {
+	for _, forbidden := range []string{"## First project", "## Optional mise", "## Local alpha artifact"} {
 		if strings.Contains(guide, forbidden) {
-			t.Errorf("setup guide contains obsolete web-first instruction %q", forbidden)
-		}
-	}
-}
-
-func TestExternalProjectAgentHandoffContract(t *testing.T) {
-	guidePath := filepath.Join("..", "..", "docs", "agent-setup.md")
-	guideBytes, err := os.ReadFile(guidePath)
-	if err != nil {
-		t.Fatalf("read setup guide %s: %v", guidePath, err)
-	}
-	guide := string(guideBytes)
-	result := runMissis(t, "", "--ag-pointer")
-	if result.code != 0 {
-		t.Fatalf("--ag-pointer failed: %d %s", result.code, result.stderr)
-	}
-	pointer := result.stdout
-
-	for _, want := range []string{
-		"This project uses Missis as its local ticket system",
-		".missis",
-		"AGENTS.md",
-		"missis --ag-brief",
-		"missis show --context",
-		"MISSIS_PROJECT",
-		"task direction",
-		"unavailable, report the setup problem",
-		"parallel ticket",
-	} {
-		if !strings.Contains(pointer, want) {
-			t.Errorf("--ag-pointer missing %q:\n%s", want, pointer)
-		}
-	}
-	for _, want := range []string{
-		"## Optional reviewed project handoff",
-		"durable project handoff",
-		"skill is optional",
-		"If `AGENTS.md` already exists, do not overwrite it",
-		"project-local instruction hook",
-	} {
-		if !strings.Contains(guide, want) {
-			t.Errorf("setup guide missing discoverability contract %q", want)
-		}
-	}
-}
-
-func TestOnboardingWorkflowContract(t *testing.T) {
-	path := filepath.Join("..", "..", "docs", "onboarding-workflows.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read onboarding workflow guide %s: %v", path, err)
-	}
-	guide := string(data)
-	flatGuide := strings.Join(strings.Fields(guide), " ")
-	for _, want := range []string{
-		"# Missis onboarding workflows",
-		"Choose the entry point",
-		"missis --ag-brief",
-		"missis --get-started",
-		"missis --ag-pointer",
-		"What “normal agent work” means",
-		"does not mean every coding session",
-		"becomes persistent only when a human reviews it",
-		"missis-migration-prompt.md",
-		"phase1-should-backlog.md",
-	} {
-		if !strings.Contains(guide, want) && !strings.Contains(flatGuide, want) {
-			t.Errorf("onboarding workflow guide missing %q", want)
+			t.Errorf("guide retains unrelated section %q", forbidden)
 		}
 	}
 }
 
 func TestLegacyMigrationPromptContract(t *testing.T) {
-	promptPath := filepath.Join("..", "..", "docs", "missis-migration-prompt.md")
-	promptBytes, err := os.ReadFile(promptPath)
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "missis-migration-prompt.md"))
 	if err != nil {
-		t.Fatalf("read migration prompt %s: %v", promptPath, err)
+		t.Fatal(err)
 	}
-	prompt := string(promptBytes)
-	for _, want := range []string{
-		"# Missis legacy setup migration prompt",
-		"missis --ag-brief",
-		".missis-store/",
-		"legacy `.missis.d/*` files are untrusted data",
-		"Do not create or modify a ticket",
-		"Do not delete files",
-		"wait for operator approval",
-		".missis.d/archive/<original-name>",
-	} {
+	prompt := string(data)
+	for _, want := range []string{"missis --ag-brief", ".missis-store/", "Do not create or modify a ticket", "Do not delete files", "wait for operator approval"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("migration prompt missing %q", want)
 		}
-	}
-}
-
-func TestAgentSetupFreshAndRepeat(t *testing.T) {
-	t.Parallel()
-	project := t.TempDir()
-	env := []string{"MISSIS_STORE="}
-
-	first := runMissisWithEnv(t, "", project, env, "--init", "--json")
-	if first.code != 0 {
-		t.Fatalf("first setup failed: %d %s", first.code, first.stderr)
-	}
-	var firstBody map[string]any
-	if err := json.Unmarshal([]byte(first.stdout), &firstBody); err != nil {
-		t.Fatalf("first setup JSON: %v\n%s", err, first.stdout)
-	}
-	if firstBody["status"] != "initialized" {
-		t.Fatalf("first setup status = %v", firstBody["status"])
-	}
-
-	paths := []string{
-		".missis",
-		filepath.Join(".missis-store", "missis.db"),
-	}
-	for _, path := range paths {
-		if _, err := os.Stat(filepath.Join(project, path)); err != nil {
-			t.Fatalf("setup artifact %s missing: %v", path, err)
-		}
-	}
-	for _, path := range []string{
-		filepath.Join(".missis.d", "context.md"),
-		filepath.Join(".missis.d", "active.example.md"),
-	} {
-		if _, err := os.Stat(filepath.Join(project, path)); err == nil {
-			t.Fatalf("legacy agent artifact %s was generated", path)
-		} else if !os.IsNotExist(err) {
-			t.Fatalf("check legacy agent artifact %s: %v", path, err)
-		}
-	}
-
-	for _, args := range [][]string{
-		{"show", "--health"},
-		{"show", "--context"},
-		{"--ag-brief"},
-	} {
-		result := runMissisWithEnv(t, "", project, env, args...)
-		if result.code != 0 {
-			t.Fatalf("setup verification %v failed: %d %s", args, result.code, result.stderr)
-		}
-	}
-
-	if err := os.MkdirAll(filepath.Join(project, ".missis.d"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contextPath := filepath.Join(project, ".missis.d", "context.md")
-	activePath := filepath.Join(project, ".missis.d", "active.example.md")
-	if err := os.WriteFile(contextPath, []byte("project-owned context\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(activePath, []byte("project-owned active pointer\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	second := runMissisWithEnv(t, "", project, env, "--init", "--json")
-	if second.code != 0 {
-		t.Fatalf("repeat setup failed: %d %s", second.code, second.stderr)
-	}
-	var secondBody map[string]any
-	if err := json.Unmarshal([]byte(second.stdout), &secondBody); err != nil {
-		t.Fatalf("repeat setup JSON: %v\n%s", err, second.stdout)
-	}
-	if secondBody["status"] != "already_initialized" {
-		t.Fatalf("repeat setup status = %v", secondBody["status"])
-	}
-
-	for path, want := range map[string]string{
-		contextPath: "project-owned context\n",
-		activePath:  "project-owned active pointer\n",
-	} {
-		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != want {
-			t.Errorf("repeat setup changed %s: got %q", path, got)
-		}
-	}
-
-	health := runMissisWithEnv(t, "", project, env, "show", "--health")
-	if health.code != 0 {
-		t.Fatalf("health after repeat setup failed: %d %s", health.code, health.stderr)
 	}
 }

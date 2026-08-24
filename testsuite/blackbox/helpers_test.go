@@ -17,13 +17,11 @@ import (
 )
 
 var missisBin string
-var repairBin string
 var missisToolsBin string
 
 func TestMain(m *testing.M) {
 	if env := os.Getenv("MISSIS_BIN"); env != "" {
 		missisBin = env
-		repairBin = os.Getenv("MISSIS_REPAIR_BIN")
 		missisToolsBin = os.Getenv("MISSIS_TOOLS_BIN")
 		if missisToolsBin == "" {
 			tmpTools, err := os.MkdirTemp("", "missis-tools-bin-*")
@@ -64,22 +62,6 @@ func TestMain(m *testing.M) {
 	if err := build.Run(); err != nil {
 		os.RemoveAll(tmp)
 		panic(err)
-	}
-	if env := os.Getenv("MISSIS_REPAIR_BIN"); env != "" {
-		repairBin = env
-	} else {
-		repairName := "repair-store"
-		if runtime.GOOS == "windows" {
-			repairName += ".exe"
-		}
-		repairBin = filepath.Join(tmp, repairName)
-		buildRepair := exec.Command("go", "build", "-o", repairBin, "github.com/ravinsharma7/missis/tools/repair-store")
-		buildRepair.Stdout = os.Stdout
-		buildRepair.Stderr = os.Stderr
-		if err := buildRepair.Run(); err != nil {
-			os.RemoveAll(tmp)
-			panic(err)
-		}
 	}
 	toolsName := "missis-tools"
 	if runtime.GOOS == "windows" {

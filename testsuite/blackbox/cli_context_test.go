@@ -29,37 +29,6 @@ func TestShowContext(t *testing.T) {
 	}
 }
 
-func TestInitHermetic(t *testing.T) {
-	t.Parallel()
-	tmp := t.TempDir()
-	project := filepath.Join(tmp, "project")
-	if err := os.MkdirAll(project, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	first := runMissisWithEnv(t, "", project, nil, "--init", "--store", ".missis-store/missis.db", "--json")
-	if first.code != 0 {
-		t.Fatalf("init failed: %d %s", first.code, first.stderr)
-	}
-	body := mustJSON(t, first)
-	if body["status"] != "initialized" {
-		t.Fatalf("unexpected init result: %v", body)
-	}
-	if _, err := os.Stat(filepath.Join(project, ".missis")); err != nil {
-		t.Fatalf(".missis marker missing: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(project, ".missis-store", "missis.db")); err != nil {
-		t.Fatalf("store missing: %v", err)
-	}
-	second := runMissisWithEnv(t, "", project, nil, "--init", "--store", ".missis-store/missis.db", "--json")
-	if second.code != 0 {
-		t.Fatalf("second init failed: %d %s", second.code, second.stderr)
-	}
-	secondBody := mustJSON(t, second)
-	if secondBody["status"] != "already_initialized" {
-		t.Fatalf("unexpected second init result: %v", secondBody)
-	}
-}
-
 func TestTitleEditPreservesHistory(t *testing.T) {
 	t.Parallel()
 	store := filepath.Join(t.TempDir(), "missis.db")

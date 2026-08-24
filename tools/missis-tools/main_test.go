@@ -221,6 +221,97 @@ func TestBackupVerifyAndCleanupRecognizeCompletionMarker(t *testing.T) {
 	}
 }
 
+func TestBackupDefaultsAreProjectAwareIdempotentAndVerifiable(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "project with spaces")
+	storePath := filepath.Join(root, ".missis-store", "missis.db")
+	if err := os.MkdirAll(filepath.Dir(storePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := application.OpenPath(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := missis.NewClient(svc)
+	staleManifest, err := client.Manifest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.NewTicket(context.Background(), missis.RequestContext{Actor: "test"}, missis.NewTicketOptions{Title: "fresh manifest"}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := client.Manifest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staleManifest.HeadHash == manifest.HeadHash {
+		t.Fatal("fixture did not advance the live manifest")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("MISSIS_STORE", storePath)
+	t.Setenv("MISSIS_BACKUP_DIR", "")
+	t.Setenv("MISSIS_MANIFEST_PATH", filepath.Join(t.TempDir(), "stale-manifest.json"))
+	want := filepath.Join(root, ".missis-backups", strings.ReplaceAll(manifest.StoreID, ":", "_")+"-"+manifest.HeadHash+".db")
+	code, stdout, stderr := runCommand(t, "backup")
+	if code != 0 || stdout != want+"\n" || stderr != "" {
+		t.Fatalf("default backup: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, path := range []string{want, want + ".manifest.json", want + ".complete.json", want + ".artifacts"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("backup path %q: %v", path, err)
+		}
+	}
+	code, stdout, stderr = runCommand(t, "backup")
+	if code != 0 || !strings.Contains(stdout, "backup already exists:") || !strings.Contains(stdout, "verified current store") || stderr != "" {
+		t.Fatalf("repeat backup: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runCommand(t, "backup", "verify")
+	if code != 0 || stdout != "state=complete: backup verified against current store\n" || stderr != "" {
+		t.Fatalf("implicit verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	relativeDir := "custom backups"
+	t.Setenv("MISSIS_BACKUP_DIR", relativeDir)
+	code, stdout, stderr = runCommand(t, "backup")
+	relativeWant := filepath.Join(root, relativeDir, filepath.Base(want))
+	if code != 0 || stdout != relativeWant+"\n" || stderr != "" {
+		t.Fatalf("relative override: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	absDir := filepath.Join(t.TempDir(), "absolute backups")
+	t.Setenv("MISSIS_BACKUP_DIR", absDir)
+	code, stdout, stderr = runCommand(t, "backup")
+	if code != 0 || stdout != filepath.Join(absDir, filepath.Base(want))+"\n" || stderr != "" {
+		t.Fatalf("absolute override: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	t.Setenv("MISSIS_BACKUP_DIR", "")
+	if err := os.WriteFile(want, []byte("conflicting backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, stdout, stderr := runCommand(t, "backup"); code == 0 || stdout != "" || !strings.Contains(stderr, "existing backup does not match current store") {
+		t.Fatalf("conflicting default backup: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestBackupAgainstCurrentRejectsDifferentStore(t *testing.T) {
+	first := newTestStore(t)
+	second := newTestStore(t)
+	backup := filepath.Join(t.TempDir(), "explicit.db")
+	t.Setenv("MISSIS_STORE", first)
+	if code, stdout, stderr := runCommand(t, "backup", backup); code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("explicit backup: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if code, _, stderr := runCommand(t, "backup", "verify", backup); code != 0 || stderr != "" {
+		t.Fatalf("independent verify: code=%d stderr=%q", code, stderr)
+	}
+	t.Setenv("MISSIS_STORE", second)
+	if code, stdout, stderr := runCommand(t, "backup", "verify", backup, "--against-current"); code == 0 || stdout != "" || stderr == "" {
+		t.Fatalf("mismatched current verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func runCommand(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
@@ -254,8 +345,7 @@ func TestRunArgumentErrorsUseUmbrellaNames(t *testing.T) {
 		{name: "repair missing", args: []string{"repair"}, wantOutput: "usage: missis-tools repair <missis.db>"},
 		{name: "repair extra", args: []string{"repair", "one.db", "two.db"}, wantOutput: "usage: missis-tools repair <missis.db>"},
 		{name: "gaps missing", args: []string{"gaps"}, wantOutput: "usage: missis-tools gaps <missis.db>"},
-		{name: "backup missing", args: []string{"backup"}, wantOutput: "usage: missis-tools backup <destination>"},
-		{name: "backup extra", args: []string{"backup", "one.db", "two.db"}, wantOutput: "usage: missis-tools backup <destination>"},
+		{name: "backup extra", args: []string{"backup", "one.db", "two.db"}, wantOutput: "usage: missis-tools backup [destination]"},
 		{name: "manifest extra", args: []string{"manifest", "one.db", "two.db"}, wantOutput: "usage: missis-tools manifest [missis.db]"},
 		{name: "remote missing", args: []string{"remote"}, wantOutput: "usage: missis-tools remote <upload|download> [args]"},
 		{name: "remote unknown", args: []string{"remote", "mirror"}, wantOutput: "unknown command: mirror"},

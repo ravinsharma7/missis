@@ -1,5 +1,5 @@
 // Package media contains the small, renderer-neutral media descriptor
-// prototype. It deliberately does not fetch, decode, or execute media.
+// descriptor contract. It deliberately does not fetch, decode, or execute media.
 package media
 
 import (
@@ -21,7 +21,7 @@ type Descriptor struct {
 
 var iframeSource = regexp.MustCompile(`(?is)<iframe\b[^>]*\bsrc\s*=\s*["']([^"']+)["']`)
 
-// Parse accepts the prototype's explicit media kinds and structured
+// Parse accepts the revision-2 contract's explicit media kinds and structured
 // descriptors carried in Value.Data. It does not infer a media kind from a
 // filename, URL, or MIME type.
 func Parse(kind model.ValueKind, value any) (Descriptor, bool) {

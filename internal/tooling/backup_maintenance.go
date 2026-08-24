@@ -19,11 +19,53 @@ import (
 
 func runBackupVerify(args []string, stdout, stderr io.Writer, commandName string) int {
 	stdout, stderr = commandWriters(stdout, stderr)
-	if len(args) != 1 {
-		fmt.Fprintf(stderr, "usage: %s <backup.db>\n", commandName)
+	var againstCurrent bool
+	var paths []string
+	for _, arg := range args {
+		if arg == "--against-current" {
+			againstCurrent = true
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			fmt.Fprintf(stderr, "usage: %s [backup.db] [--against-current]\n", commandName)
+			return 2
+		}
+		paths = append(paths, arg)
+	}
+	if len(paths) > 1 {
+		fmt.Fprintf(stderr, "usage: %s [backup.db] [--against-current]\n", commandName)
 		return 2
 	}
-	path := filepath.Clean(args[0])
+	var current *missis.Client
+	if len(paths) == 0 || againstCurrent {
+		resolved, err := missis.ResolveStore("")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		svc, err := application.Open("")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		current = missis.NewClient(svc)
+		defer current.Close()
+		if len(paths) == 0 {
+			manifest, err := current.Manifest(context.Background())
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			path, err := defaultBackupPath(resolved, manifest)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			paths = append(paths, path)
+			againstCurrent = true
+		}
+	}
+	path := filepath.Clean(paths[0])
 	lease, err := store.AcquireSharedLease(path)
 	if err != nil {
 		fmt.Fprintf(stderr, "state=%s: %v\n", application.BackupStateCorrupt, err)
@@ -40,13 +82,18 @@ func runBackupVerify(args []string, stdout, stderr io.Writer, commandName string
 		fmt.Fprintf(stderr, "state=%s: completion marker or required sidecars are missing; inspect with %s %s --older-than DURATION\n", state, cleanupCommand, filepath.Dir(path))
 		return 1
 	}
-	svc, err := application.OpenPath(path)
-	if err != nil {
-		fmt.Fprintf(stderr, "state=%s: %v\n", application.BackupStateCorrupt, err)
-		return 1
+	var client *missis.Client
+	if againstCurrent {
+		client = current
+	} else {
+		svc, openErr := application.OpenPath(path)
+		if openErr != nil {
+			fmt.Fprintf(stderr, "state=%s: %v\n", application.BackupStateCorrupt, openErr)
+			return 1
+		}
+		client = missis.NewClient(svc)
+		defer client.Close()
 	}
-	client := missis.NewClient(svc)
-	defer client.Close()
 	manifest, err := client.Manifest(context.Background())
 	if err == nil {
 		err = client.VerifyRestore(context.Background(), path, manifest)
@@ -55,7 +102,11 @@ func runBackupVerify(args []string, stdout, stderr io.Writer, commandName string
 		fmt.Fprintf(stderr, "state=%s: %v\n", application.BackupStateCorrupt, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "state=%s: backup verified\n", state)
+	if againstCurrent {
+		fmt.Fprintf(stdout, "state=%s: backup verified against current store\n", state)
+	} else {
+		fmt.Fprintf(stdout, "state=%s: backup verified\n", state)
+	}
 	return 0
 }
 

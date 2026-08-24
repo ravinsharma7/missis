@@ -56,8 +56,7 @@ missis --version
 missis --help
 missis --self-update-check
 missis --self-update
-missis --init
-missis --start
+missis --setup
 ```
 
 The internal design is based on three lower-level primitives:
@@ -287,6 +286,7 @@ missis --version
 missis --help
 missis --self-update-check
 missis --self-update
+missis --setup
 ```
 
 Global flags are process-level maintenance or inspection operations. They do
@@ -1492,8 +1492,7 @@ declarations assign meaning to part keys; preconditions constrain when a
 write may apply. Assertions and declarations may be retracted; preconditions
 are per-request and never stored.
 
-The full guarantees and performance inventory lives in
-`docs/guarantees.md` (and the spec appendix, section 31).
+The full guarantees and performance inventory lives in section 31.
 
 ---
 
@@ -4837,48 +4836,81 @@ The result is deliberately more capable than a conventional issue tracker while 
 ## 31. Guarantees and performance
 
 Guarantees differ by layer; consumers must not assume a guarantee from one
-layer at another. The full inventory lives in `docs/guarantees.md`; this
-appendix is the normative summary.
+layer at another. This appendix is the authoritative inventory for the store,
+service, and SDK layers.
 
-### 31.1 Core and store
+### 31.1 Terminology
 
-- Events are immutable; per-stream sequences are unique and strictly
-  increasing; a gap is an integrity incident (10, ticket #41).
-- Bitemporal winner rule: latest effective time wins, recorded time breaks
-  ties (10.9, ticket #42). Canonical encoding v1 governs hashing (10.10,
-  ticket #45).
-- `AppendBatch` is atomic, including across multiple streams in one
-  transaction; failed batches write nothing; idempotency keys replay stored
-  results (ticket #63).
-- Derived tables are rebuildable with parity checks (ticket #51, #61).
-- Preconditions (9.8.2): part/entity expected-current-event and
-  link-assertion expected-current-event; mismatches are conflicts.
+| Term | Contract |
+| --- | --- |
+| Assertion | An `assert-link` event claiming that a relation holds between two refs. Visibility is derived from active evidence assertions. |
+| Declaration | A part under a reserved `schema/` subtree mapping a key prefix to a value kind. It assigns meaning and is not a relation claim. |
+| Precondition | A per-request write guard naming an expected current event. It is evaluated but never stored. |
 
-### 31.2 Workflows and SDK
+Assertions and declarations are ledger records: bitemporal, retractable, and
+provenance-bearing. Preconditions constrain a write and therefore cannot be
+retracted.
 
-- `NewTicket` with `--project P` asserts `has-home` atomically; missing
-  targets fail with guidance (14.8).
-- `SetLink` resolves targets at write time and enforces endpoint rules and
-  has-home uniqueness; last-home retraction warns.
-- `MoveLink` (9.8) is atomic, guarded, and reports the transition without a
-  zero-home warning.
-- Imports are all-or-nothing.
-- The SDK is stateless and ref-keyed; context is client-side.
+### 31.2 Core and store
 
-### 31.3 Performance
+| Guarantee | Contract |
+| --- | --- |
+| Immutable events | Accepted events are never rewritten, deleted, or repaired in place. Corruption recovery restores a verified backup. |
+| Stream sequences | Sequences are unique and strictly increasing per stream; a gap is an integrity incident. |
+| Temporal winner | Latest effective time wins; recorded time breaks ties. |
+| Canonical hashes | Event hashes use canonical encoding v1 and append order defines the SHA-256 chain. |
+| Atomic batches | `AppendBatch` and `ApplyLinkBatch` commit all events in one transaction, including multi-stream batches. Failure writes nothing. |
+| Idempotency | Repeating an append with the same idempotency key replays its stored result and events. |
+| Derived state | `tickets` and `parts_current` are rebuildable from the ledger with parity checks. |
+| Preconditions | Part/entity and link-assertion expected-current-event mismatches are conflicts. Link preconditions use evidence semantics. |
+| Retraction | Retraction is the only removal mechanism; it never erases accepted history. |
 
-`n` = ledger size. O(n) read paths (`ListEntities`, `refExists`,
-link-precondition evaluation, schema declaration resolution) are correct and
-are the targets of derived-index work (tickets #70, #75). Appends are
-amortized constant per event (ticket #61); multi-stream batches allocate
-per-stream sequences. Scope history is O(stream).
+### 31.3 Service workflows
+
+| Workflow | Guarantee |
+| --- | --- |
+| `NewTicket` | Creation is atomic. `--project P` asserts `has-home` in the same batch and a missing project fails before writing. |
+| `NewEntity` | Existing canonical IDs are rejected; matching idempotency keys replay the original result. |
+| Scope guard | Ticket creation rejects project/group tags; scope uses `--project` or explicit links. |
+| Markdown import | Ticket, content, and project home are one atomic batch. Reimport never changes membership. |
+| `SetLink` | Targets resolve at write time, endpoint and home uniqueness rules are enforced, and duplicate CLI assertions require `--allow-duplicate`. |
+| `MoveLink` | Retract and assert are one guarded batch; only membership relations move. |
+| `JoinScope` / `LeaveScope` | Membership assertion or retraction is one atomic batch and follows evidence semantics. |
+| Import/reimport | Any violation rejects the complete batch. |
+
+### 31.4 SDK
+
+- The SDK is stateless and carries no hidden current context. Scope defaults
+  are client preferences, never model state.
+- Scope filters are typed collections. Values union within a scope kind and
+  intersect between project and group kinds; unscoped selection cannot be
+  combined with explicit scopes.
+- Ticket views union and deduplicate direct and one-hop project/group
+  membership paths by ticket ID.
+- Reads and mutations use explicit, deterministically resolved refs.
+- `pkg/missis` is the public facade; `internal/*` is not an external API.
+
+### 31.5 Performance
+
+`n` is ledger size. Correctness is unchanged while derived-index work replaces
+linear reads.
+
+| Path | Complexity | Notes |
+| --- | --- | --- |
+| Append | Amortized constant per event | Sequence allocation and affected-stream validation. |
+| Multi-stream batch | One transaction | Sequences remain per-stream. |
+| Link-precondition evaluation | O(n) | Target of derived-index work. |
+| Project/group listing | O(n) | Full-ledger scan until scope indexes land. |
+| Reference existence | O(n) or O(stream) | Depends on reference kind. |
+| Scope history | O(stream) | Loads one entity stream. |
+| Schema resolution | O(n) per write | Target of declaration indexes. |
 
 ## 32. Change log
 
 - 2026-08-19: added 9.8 (atomic link workflows and link-assertion
   preconditions), 14.8 (v1 project/group membership), the `has-home` /
   `home-of` vocabulary pair (9.2), and this guarantees appendix (31).
-  Companion docs: `docs/guarantees.md`, `docs/storage-compatibility.md`.
+  Storage compatibility details remain in `docs/storage-compatibility.md`.
 
 ## 33. Artifact lifecycle and ordered containment hardening
 
@@ -4930,6 +4962,18 @@ reports complete, legacy-v1, incomplete, or corrupt state. Cleanup removes
 only stale staging paths and explicitly incomplete bundles; valid published
 backups are never removed automatically. Database-only and version-1 backups
 remain readable.
+
+`missis-tools backup [DESTINATION]` preserves an explicit destination. With no
+destination it computes the live manifest and writes the content-addressed
+bundle to `<project>/.missis-backups/<store-id>-<head-hash>.db`.
+`MISSIS_BACKUP_DIR` overrides that directory; a relative override is resolved
+against the project and an absolute override is used directly. An existing
+derived bundle is skipped only after verification against the current store.
+`missis-tools backup verify [BACKUP] --against-current` compares store ID,
+head hash, schema version, and event count with the current store. Omitting the
+backup path derives the content-addressed path and implies the comparison.
+Remote upload uses the same resolver, so local creation and upload cannot
+silently disagree about the default bundle.
 
 Markdown remains raw data. Goldmark AST parsing protects fenced code, while
 typed CodeRef, GitRef, media, and artifact child Parts provide explicit mixed
@@ -5004,3 +5048,25 @@ waits for the running executable to exit, then applies the same journaled
 replacement. Release installation writes the same paired manifest. Independent
 cryptographic signing is deferred; SHA-256 verification currently relies on
 the GitHub HTTPS release trust boundary.
+
+### 34.3 Clean project setup
+
+`missis --setup --project DIR` is the only project initialization operation.
+It is a global operational flag, not a fourth domain command. A fresh setup
+validates an in-project store before atomically publishing the `.missis`
+marker. Repeating setup is idempotent and preserves an existing marker, store,
+ledger, legacy metadata, and optional agent instructions.
+
+`--setup --check` is read-only: it does not create or migrate a store, configure
+WAL, repair projections, or write a marker. Both modes fail closed when the
+binary pair, marker path, store format, integrity, or explicit project/group
+scope cannot be confirmed. Stable builds require a verified paired installation.
+An unpaired development pair is usable only with explicit
+`--allow-development`, and the result states that release installation is not
+confirmed.
+
+The canonical clean bootstrap is a pinned invocation of
+`tools/paired-install@<stable-tag>` with `--project DIR`. The installer derives
+the same stable tag from its module identity, verifies and installs both
+binaries, and invokes the installed `missis --setup` by absolute path. It never
+selects `latest` implicitly. Setup itself performs no network lookup.

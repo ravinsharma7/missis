@@ -30,6 +30,10 @@ jobs:
           go test -race -count=1 ./...
           go run ./tools/check-done
           go run ./tools/coverage --registry specs/requirements-registry.v3.json
+          go run ./tools/generate-onboarding --check
+          bash testsuite/scripts/test-install.sh
+          bash testsuite/scripts/test-rclone-backup.sh
+          bash testsuite/benchmarks/test-benchmark-selection.sh
           git diff --check
       - name: Build paired bundles
         env:
@@ -104,17 +108,38 @@ jobs:
           export PATH="$PWD/smoke:$PATH"
           export MISSIS_ARTIFACT_STORE="$project/artifacts"
           cd "$project"
-          missis --init --json >/dev/null
+          missis --setup --project . --json >/dev/null
           ref="$(missis new --json 'release bundle smoke' | jq -r '.ref')"
           missis set --json "$ref/smoke" 'verified pair' --kind text >/dev/null
           missis show --json "$ref" >/dev/null
           missis-tools backup "$project/backup.db" >/dev/null
           missis-tools backup verify "$project/backup.db" >/dev/null
-      - name: Publish draft, then release
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           gh release create "$VERSION" dist/* --target "$GITHUB_SHA" --title "$VERSION" --notes "Automated paired Missis release from $GITHUB_SHA" --draft
+      - name: Published-module installer smoke
+        env:
+          GOPROXY: direct
+          MISSIS_REF: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          base_url="http://127.0.0.1:18080"
+          mkdir -p draft-smoke
+          cp dist/* draft-smoke/
+          jq --arg base "$base_url" '(.assets[].url) |= ($base + "/" + (split("/") | last))' dist/release-manifest.json > draft-smoke/release-manifest.json
+          python3 -m http.server 18080 --bind 127.0.0.1 --directory draft-smoke >draft-smoke/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 "$base_url/release-manifest.json" >/dev/null
+          MISSIS_MANIFEST_URL="$base_url/release-manifest.json" bash testsuite/scripts/test-published-install.sh
+      - name: Publish stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
           gh release edit "$VERSION" --draft=false --latest

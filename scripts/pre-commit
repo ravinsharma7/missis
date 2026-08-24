@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+go run ./tools/generate-onboarding --check

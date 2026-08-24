@@ -2,6 +2,39 @@
   "schema_version": "0001",
   "spec_version": "v3",
   "description": "Machine-readable requirements registry generated from specs/phase1-requirements.md and the test coverage map. Keeps the canonical spec and the black-box/model test suite unified in both directions.",
+  "phase1_should_decisions": [
+    {"id":"N002","decision":"adopt","reason":"Common JSON, actor, and effective-time options are required for a useful Phase 1 CLI.","target":"CLI and black-box tests"},
+    {"id":"N004","decision":"adopt","reason":"Coordination status is restricted to open, doing, blocked, and done.","target":"validation and CLI tests"},
+    {"id":"N005","decision":"adopt","reason":"Blocked status requires a reason.","target":"validation and CLI tests"},
+    {"id":"N006","decision":"adopt","reason":"Workflow-specific status proliferation is rejected.","target":"validation tests"},
+    {"id":"N009","decision":"adopt","reason":"Arbitrary parts and conventional names are required by the model.","target":"model projection tests"},
+    {"id":"N012","decision":"adopt","reason":"A part has one current structural parent.","target":"model and black-box tests"},
+    {"id":"N014","decision":"adopt","reason":"Status applies to tickets, not subparts.","target":"model behavior"},
+    {"id":"N015","decision":"adopt","reason":"Phase 1 stores basic text, scalar, and status value kinds.","target":"store and JSON tests"},
+    {"id":"N019","decision":"adopt","reason":"Recursive retraction is one atomic batch.","target":"store and black-box tests"},
+    {"id":"N022","decision":"adopt","reason":"Canonical IDs require collision-resistant random generation.","target":"model and store tests"},
+    {"id":"N024","decision":"adopt","reason":"Canonical part IDs remain resolvable without a current path.","target":"model tests"},
+    {"id":"N028","decision":"adopt","reason":"Stale paths fail structurally instead of retargeting.","target":"model and CLI tests"},
+    {"id":"N029","decision":"adopt","reason":"Events and provenance store canonical IDs.","target":"store tests"},
+    {"id":"N042","decision":"adopt","reason":"Effective-time and knowledge-time queries are required for the temporal kernel.","target":"CLI and temporal tests"},
+    {"id":"N044","decision":"defer","reason":"Local timezone rendering is not required by the first kernel.","target":"Phase 1 follow-up or later"},
+    {"id":"N047","decision":"adopt","reason":"Per-stream sequences are a core integrity guarantee.","target":"store tests"},
+    {"id":"N049","decision":"adopt","reason":"Removal is represented by immutable retraction events.","target":"store and model tests"},
+    {"id":"N051","decision":"adopt","reason":"Corrections identify the superseded event and reason.","target":"store and model tests"},
+    {"id":"N052","decision":"defer","reason":"Semantic temporal diff follows the history projection.","target":"later show work"},
+    {"id":"N053","decision":"adopt","reason":"Recursive and multi-event operations share a batch identity.","target":"store tests"},
+    {"id":"N055","decision":"adopt","reason":"Actor, effective time, batch, supersession, and reason fields are foundational provenance.","target":"store and model tests"},
+    {"id":"N057","decision":"adopt","reason":"Stable human and agent actor references are required for provenance.","target":"CLI tests"},
+    {"id":"N058","decision":"defer","reason":"External effect capture depends on the processor and effects layer.","target":"Phase 6 or later"},
+    {"id":"N106","decision":"adopt","reason":"Trust-boundary validation must happen before writes.","target":"CLI and model tests"},
+    {"id":"N107","decision":"adopt","reason":"Scalar updates need expected-revision checks.","target":"concurrency tests"},
+    {"id":"N108","decision":"adopt","reason":"Hierarchy mutations need expected-revision checks.","target":"concurrency tests"},
+    {"id":"N109","decision":"adopt","reason":"Subtree moves and recursive retractions must commit atomically.","target":"concurrency tests"},
+    {"id":"N110","decision":"adopt","reason":"Independent additions should commute.","target":"concurrency tests"},
+    {"id":"N111","decision":"adopt","reason":"One user operation produces one atomic batch.","target":"store tests"},
+    {"id":"N112","decision":"adopt","reason":"Creation and mutation require idempotency keys.","target":"idempotency tests"},
+    {"id":"N113","decision":"adopt","reason":"Automation requires structured JSON errors.","target":"CLI and black-box tests"}
+  ],
   "requirements": [
     {
       "id": "PH1-ACC-001",
@@ -540,6 +573,30 @@
         "TestInstallPublishesVerifiedPairAndManifest",
         "TestRecoverRollsBackInterruptedPair"
       ]
+    },
+    {
+      "id": "PH1-SETUP-001",
+      "source": "34.3",
+      "text": "Setup validates the in-project store before atomically publishing the marker and is idempotent on retry.",
+      "tests": ["TestSetupFreshAndRepeat"]
+    },
+    {
+      "id": "PH1-SETUP-002",
+      "source": "34.3",
+      "text": "Setup check mode performs read-only compatibility, consistency, and scope verification.",
+      "tests": ["TestSetupCheckIsReadOnly"]
+    },
+    {
+      "id": "PH1-SETUP-003",
+      "source": "34.3",
+      "text": "Stable setup requires a verified paired installation; development use requires an explicit exception.",
+      "tests": ["TestSetupRequiresExplicitDevelopment"]
+    },
+    {
+      "id": "PH1-SETUP-004",
+      "source": "34.3",
+      "text": "Clean bootstrap uses one explicitly pinned stable ref and invokes setup through the installed absolute binary.",
+      "tests": ["TestPairedInstallRefSelection"]
     }
   ],
   "norms": [
@@ -925,7 +982,7 @@
       "id": "N044",
       "source": "10.3",
       "strength": "SHOULD",
-      "status": "phase-1-should",
+      "status": "deferred-phase-2",
       "text": "Human output renders selected timezone.",
       "tests": []
     },
@@ -996,7 +1053,7 @@
       "id": "N052",
       "source": "10.7",
       "strength": "SHOULD",
-      "status": "phase-1-should",
+      "status": "deferred-phase-3",
       "text": "Semantic temporal diff shows domain changes, not only raw events.",
       "tests": []
     },
@@ -1050,7 +1107,7 @@
       "id": "N058",
       "source": "11.6",
       "strength": "SHOULD",
-      "status": "phase-1-should",
+      "status": "deferred-phase-6",
       "text": "Expected external effects are recorded when policy requires.",
       "tests": []
     },
@@ -1578,6 +1635,38 @@
       "status": "deferred-phase-8",
       "text": "Search candidate generation and reranking apply authorization filters.",
       "tests": []
+    },
+    {
+      "id": "N122",
+      "source": "34.3",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Setup validates the in-project store before atomically publishing the marker and is idempotent on retry.",
+      "tests": ["TestSetupFreshAndRepeat"]
+    },
+    {
+      "id": "N123",
+      "source": "34.3",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Setup check mode performs read-only compatibility, consistency, and scope verification.",
+      "tests": ["TestSetupCheckIsReadOnly"]
+    },
+    {
+      "id": "N124",
+      "source": "34.3",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Stable setup requires a verified paired installation; development use requires an explicit exception.",
+      "tests": ["TestSetupRequiresExplicitDevelopment"]
+    },
+    {
+      "id": "N125",
+      "source": "34.3",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "Clean bootstrap uses one explicitly pinned stable ref and invokes setup through the installed absolute binary.",
+      "tests": ["TestPairedInstallRefSelection"]
     }
   ]
 }

@@ -379,94 +379,6 @@ func runAgentBrief(args []string) int {
 	return exitSuccess
 }
 
-func runGetStarted() int {
-	fmt.Print(getStartedText)
-	return exitSuccess
-}
-
-const getStartedText = `missis getting started
-
-For an existing initialized project, the canonical agent bootstrap is:
-     missis --ag-brief
-
-This command is only the human-oriented local-first setup wrapper for a new
-project. It is not needed before each ticket session and does not define a
-second agent workflow:
-     Read docs/agent-setup.md from the current Missis checkout when available.
-     Read docs/onboarding-workflows.md when choosing an entry point from a checkout.
-     No web search is required for setup or ticket work.
-     If no checkout is available, use an operator-supplied published ref.
-
-1. Install both CLIs from one verified stable release:
-     export MISSIS_REF=v0.2.2
-     export MISSIS_BIN_DIR="$(go env GOPATH)/bin"
-     go run "github.com/ravinsharma7/missis/tools/paired-install@$MISSIS_REF" --ref "$MISSIS_REF" --bin-dir "$MISSIS_BIN_DIR"
-     # local checkout alternative:
-     # go install ./cmd/missis
-     # go install ./tools/missis-tools
-     export PATH="$(go env GOPATH)/bin:$PATH"
-
-2. Initialize or verify the project:
-     cd /path/to/your/project
-     if [ -f .missis ]; then
-       echo "Missis is already initialized; preserving existing state"
-     else
-       missis --init --json
-     fi
-     missis show --health
-     missis show --context
-     missis --ag-brief
-
-3. Optionally make Missis discoverable to future agents (review before modifying files):
-     if [ -f AGENTS.md ]; then
-       missis --ag-pointer
-       # Add the reviewed block under a Missis section; do not overwrite AGENTS.md.
-     else
-       missis --ag-pointer > AGENTS.md
-     fi
-     # Review and commit the block to make it a project handoff; it does not
-     # select a ticket, focus, or task by itself.
-     # Use the provider's equivalent instruction file when it does not read AGENTS.md.
-
-4. First project, group, ticket, and everyday workflow (when requested):
-     missis show project:proj --json
-     missis new --kind project --id proj "Project title" --idempotency-key setup-project-proj --json
-     missis show group:kb --json
-     missis new --kind group --id kb "Knowledge base" --idempotency-key setup-group-kb --json
-     missis new --project proj "First ticket" --idempotency-key first-ticket --json
-     missis set group:kb/links --add contains:#N --idempotency-key first-ticket-group --json
-     # If output is uncertain, reuse the same key; do not run a fresh new command.
-     missis show --project proj --group kb --json
-
-5. First unscoped ticket and everyday workflow:
-     missis new "First ticket" --idempotency-key first-ticket --json
-     missis show '#1' --format markdown
-     missis set 1/status doing
-     missis set '#1/notes' "some context"
-
-6. Correct and remove (append-only; no destructive delete):
-     missis set '#1/notes' "revised text"            # overwrites current value
-     missis set '#1/notes' --retract --reason "moved elsewhere"
-
-7. Backup, manifest, health, repair, and remote sync:
-     MISSIS_STORE="$PWD/.missis-store/missis.db" \
-       missis-tools backup "$PWD/.missis-backups/missis.db"
-     missis-tools manifest
-     missis-tools gaps .missis-store/missis.db
-     missis-tools repair .missis-store/missis.db
-     missis-tools remote upload
-     missis-tools remote download "$PWD/.missis-backups/restored.db"
-
-8. Optional: consume via the Go SDK:
-     import "github.com/ravinsharma7/missis/pkg/missis"
-
-For fresh-project, existing-project, PowerShell, and project-local agent
-handoff details, read docs/agent-setup.md. When using a checkout, read
-docs/onboarding-workflows.md for the entry-point decision table. This output
-and the setup guide are standalone; no Missis README or repository checkout is
-required.
-`
-
 func runPointer() int {
 	fmt.Println(agentPointerSnippet)
 	return exitSuccess
@@ -575,76 +487,6 @@ func copyDir(src, dst string) error {
 	})
 }
 
-func runInit(args []string) int {
-	storeFlag := ""
-	jsonMode := false
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--store":
-			if i+1 < len(args) {
-				storeFlag = args[i+1]
-				i++
-			}
-		case "--json":
-			jsonMode = true
-		}
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		printError(err, exitStorage, jsonMode, nil)
-		return exitStorage
-	}
-	target := storeFlag
-	if target == "" {
-		target = filepath.Join(cwd, ".missis-store", "missis.db")
-	}
-	absTarget, err := filepath.Abs(target)
-	if err != nil {
-		printError(err, exitStorage, jsonMode, nil)
-		return exitStorage
-	}
-	markerPath := filepath.Join(cwd, ".missis")
-	if _, statErr := os.Stat(markerPath); statErr == nil {
-		if jsonMode {
-			writeJSON(map[string]string{"status": "already_initialized", "store_path": absTarget})
-		} else {
-			fmt.Printf("already initialized: %s\n", absTarget)
-		}
-		return exitSuccess
-	}
-	if err := os.MkdirAll(filepath.Dir(absTarget), 0o700); err != nil {
-		printError(err, exitStorage, jsonMode, nil)
-		return exitStorage
-	}
-	rel, err := filepath.Rel(cwd, absTarget)
-	if err != nil {
-		printError(err, exitStorage, jsonMode, nil)
-		return exitStorage
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		printError(fmt.Errorf("external store %s cannot be initialized with a repo marker; use MISSIS_STORE or --store", absTarget), exitInvalid, jsonMode, nil)
-		return exitInvalid
-	}
-	if err := os.WriteFile(markerPath, []byte(rel+"\n"), 0o644); err != nil {
-		printError(err, exitStorage, jsonMode, nil)
-		return exitStorage
-	}
-	svc, err := application.OpenPath(absTarget)
-	if err != nil {
-		printError(err, exitStorage, jsonMode, nil)
-		return exitStorage
-	}
-	warnArtifactRoot(svc)
-	client := missis.NewClient(svc)
-	defer client.Close()
-	if jsonMode {
-		writeJSON(map[string]string{"status": "initialized", "store_path": absTarget})
-	} else {
-		fmt.Printf("initialized %s\n", absTarget)
-	}
-	return exitSuccess
-}
-
 func main() {
 	if err := update.RecoverCurrentInstallation(); err != nil {
 		if errors.Is(err, update.ErrRecoveryStaged) {
@@ -688,14 +530,11 @@ func main() {
 		writeJSON(installation)
 		os.Exit(exitSuccess)
 	}
-	if os.Args[1] == "--init" || os.Args[1] == "--start" {
-		os.Exit(runInit(os.Args[2:]))
+	if os.Args[1] == "--setup" {
+		os.Exit(runSetup(os.Args[2:]))
 	}
 	if os.Args[1] == "--ag-brief" {
 		os.Exit(runAgentBrief(os.Args[2:]))
-	}
-	if os.Args[1] == "--get-started" {
-		os.Exit(runGetStarted())
 	}
 	if os.Args[1] == "--ag-pointer" {
 		os.Exit(runPointer())
@@ -737,7 +576,7 @@ func usage() {
 
 func usageText() string {
 	return "usage:\n" +
-		"  missis [--version|--help] [--init|--start] [--self-update-check|--self-update] [--ag-brief [--json]] [--get-started] [--ag-pointer] [--ag-install-skill [--from DIR] [--dest DIR] [--force]]\n" +
+		"  missis [--version|--help] [--setup --project DIR [--check] [--store RELATIVE_PATH] [--allow-development] [--json]] [--self-update-check|--self-update] [--ag-brief [--json]] [--ag-pointer] [--ag-install-skill [--from DIR] [--dest DIR] [--force]]\n" +
 		"  missis new|show|set ...\n"
 }
 

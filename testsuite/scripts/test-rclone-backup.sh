@@ -6,9 +6,7 @@ real_go="$(command -v go)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir -p "$tmp/scripts" "$tmp/backups" "$tmp/bin"
-cp "$repo_root/scripts/upload-backup.sh" "$tmp/scripts/upload-backup.sh"
-cp "$repo_root/scripts/download-backup.sh" "$tmp/scripts/download-backup.sh"
+mkdir -p "$tmp/backups" "$tmp/bin"
 
 store_path="$tmp/store.db"
 backup_path=""
@@ -16,8 +14,7 @@ backup_path=""
 (
   cd "$repo_root"
   "$real_go" run ./cmd/missis new --store "$store_path" "rclone backup fixture" >/dev/null
-  backup_path="$tmp/backups/fixture.db"
-  MISSIS_STORE="$store_path" "$real_go" run ./tools/missis-tools backup "$backup_path"
+  backup_path="$(MISSIS_STORE="$store_path" MISSIS_BACKUP_DIR="$tmp/backups" "$real_go" run ./tools/missis-tools backup)"
   printf '%s\n' "$backup_path" > "$tmp/backup-path"
 )
 backup_path="$(<"$tmp/backup-path")"
@@ -33,8 +30,10 @@ if [ -z "$store_id" ] || [ -z "$head_hash" ]; then
   exit 1
 fi
 expected_backup="$tmp/backups/${store_id//:/_}-${head_hash}.db"
-mv "$backup_path" "$expected_backup"
-backup_path="$expected_backup"
+if [ "$backup_path" != "$expected_backup" ]; then
+  echo "default backup path mismatch: got $backup_path, want $expected_backup" >&2
+  exit 1
+fi
 "$real_go" -C "$repo_root" build -o "$tmp/bin/missis-tools" ./tools/missis-tools
 
 cat > "$tmp/bin/rclone" <<'EOF'
@@ -76,30 +75,9 @@ fi
 EOF
 chmod +x "$tmp/bin/rclone"
 
-cat > "$tmp/bin/go" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "\${1:-}" != run ] || [ "\${2:-}" != ./tools/missis-tools ]; then
-  echo "unexpected go invocation: \$*" >&2
-  exit 1
-fi
-shift 2
-if [ "\${1:-}" != remote ]; then
-  echo "unexpected missis-tools invocation: \$*" >&2
-  exit 1
-fi
-shift
-if [ "\${1:-}" = upload ]; then
-  set -- remote upload "$backup_path"
-else
-  set -- remote "\$@"
-fi
-exec "$tmp/bin/missis-tools" "\$@"
-EOF
-chmod +x "$tmp/bin/go"
-
 export PATH="$tmp/bin:$PATH"
 export MISSIS_STORE="$store_path"
+export MISSIS_BACKUP_DIR="$tmp/backups"
 export MISSIS_RCLONE_REMOTE="missis:"
 export RCLONE_CONFIG_MISSIS_TYPE="s3"
 export RCLONE_CONFIG_MISSIS_PROVIDER="Cloudflare"
@@ -114,7 +92,7 @@ run_upload_case() {
   export RCLONE_TEST_LOG="$log"
   (
     cd "$tmp"
-    bash scripts/upload-backup.sh >/dev/null
+    "$tmp/bin/missis-tools" remote upload >/dev/null
   )
   echo "upload_case=$name" >> "$log"
   grep -q 'no_check=1' "$log"
@@ -135,7 +113,7 @@ run_download_case() {
   export RCLONE_TEST_LOG="$log"
   output="$(
     cd "$tmp"
-    bash scripts/download-backup.sh "$tmp/restored.db"
+    "$tmp/bin/missis-tools" remote download "$tmp/restored.db"
   )"
   echo "download_case=$name" >> "$log"
   grep -q 'no_check=1' "$log"
@@ -156,13 +134,13 @@ run_upload_case "required_bucket_variable" "$tmp/upload.log"
 run_download_case "required_bucket_variable" "$tmp/download.log"
 
 unset MISSIS_RCLONE_BUCKET
-if (cd "$tmp" && bash scripts/upload-backup.sh >/dev/null 2>&1); then
+if (cd "$tmp" && "$tmp/bin/missis-tools" remote upload >/dev/null 2>&1); then
   echo "expected upload to fail without MISSIS_RCLONE_BUCKET" >&2
   exit 1
 fi
-if (cd "$tmp" && bash scripts/download-backup.sh >/dev/null 2>&1); then
+if (cd "$tmp" && "$tmp/bin/missis-tools" remote download "$tmp/restored.db" >/dev/null 2>&1); then
   echo "expected download to fail without MISSIS_RCLONE_BUCKET" >&2
   exit 1
 fi
 
-echo "rclone backup script tests passed"
+echo "rclone backup tests passed"

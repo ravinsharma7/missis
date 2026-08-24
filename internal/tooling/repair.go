@@ -7,10 +7,6 @@ import (
 	"github.com/ravinsharma7/missis/internal/store"
 )
 
-func RunRepair(args []string, stdout, stderr io.Writer) int {
-	return RunRepairWithName(args, stdout, stderr, "repair-store")
-}
-
 func RunRepairWithName(args []string, stdout, stderr io.Writer, commandName string) int {
 	stdout, stderr = commandWriters(stdout, stderr)
 	if len(args) != 1 {

@@ -203,8 +203,15 @@ func TestResolveRemoteRequiresConfig(t *testing.T) {
 }
 
 func TestDefaultBackupPath(t *testing.T) {
-	path := defaultBackupPath(missis.ManifestInfo{StoreID: "store:01ABC", HeadHash: "hash123"})
-	if path != filepath.Join("backups", "store_01ABC-hash123.db") {
+	project := t.TempDir()
+	path, err := defaultBackupPath(
+		missis.ResolvedStore{Path: filepath.Join(project, ".missis-store", "missis.db")},
+		missis.ManifestInfo{StoreID: "store:01ABC", HeadHash: "hash123"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(project, ".missis-backups", "store_01ABC-hash123.db") {
 		t.Fatalf("path = %q", path)
 	}
 	if !strings.Contains(path, "-") {

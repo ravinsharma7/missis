@@ -65,16 +65,16 @@ and before/after store projections. Each row is keyed by
 `scenario/config#iteration` and links to its relative log path, so every number
 can be traced back to its exact model run.
 
-To publish the best run instead of sharing a machine-local path, pass
-`--keep`, which copies `results.md`, `logs/`, and the catalog patch into
-`testsuite/benchmarks/results/run-<timestamp>/`. Commit that folder and anyone
-can open the same table and raw transcripts without access to this machine.
+Pass `--keep` to copy `results.md`, `logs/`, and the catalog patch into the
+ignored `testsuite/benchmarks/results/run-<timestamp>/` directory for local
+inspection. These raw transcripts are disposable artifacts and must not be
+committed.
 
-To record the same table in a missis ticket, use the committed file as the
-source of truth:
+Record the summary in the owning Missis ticket before deleting the local run:
 
 ```bash
-missis set '#32/notes' "$(< testsuite/benchmarks/results/<run-id>/results.md)"
+missis set '#32/onboarding-benchmark-<date>' \
+  "$(< testsuite/benchmarks/results/<run-id>/results.md)" --kind markdown
 ```
 
 Provider selection is automatic by default: the harness reads `model`,
@@ -221,3 +221,18 @@ testsuite/benchmarks/benchmark-agent-brief.sh --scenario target-ref --iterations
 testsuite/benchmarks/benchmark-agent-brief.sh \
   --suite workflow --iterations 3 --baseline-ref <pre-change-commit> --keep
 ```
+
+For clean external-project onboarding, compare the pre-change guide, the exact
+new setup command, and the generated new guide:
+
+```bash
+testsuite/benchmarks/benchmark-agent-brief.sh \
+  --suite onboarding --iterations 3 --baseline-ref <pre-change-commit> --keep
+```
+
+The onboarding suite starts without a marker or store and requires every run
+to produce one healthy store and exactly one requested ticket without legacy
+metadata. It fails unless all three configurations pass semantically and the
+new guide's median input-token count is at most 110% of the pre-change guide.
+Wall time, tool calls, turns, cached/output tokens, and transcript bytes remain
+reported rather than gated.

@@ -7,10 +7,6 @@ import (
 	"github.com/ravinsharma7/missis/internal/store"
 )
 
-func RunGaps(args []string, stdout, stderr io.Writer) int {
-	return RunGapsWithName(args, stdout, stderr, "store-gaps")
-}
-
 func RunGapsWithName(args []string, stdout, stderr io.Writer, commandName string) int {
 	stdout, stderr = commandWriters(stdout, stderr)
 	if len(args) != 1 {

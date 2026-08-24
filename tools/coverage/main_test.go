@@ -34,6 +34,26 @@ func TestScanAllIncludesInternalTests(t *testing.T) {
 	}
 }
 
+func TestScanAllIgnoresTransientEvidenceDirectories(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"temp", ".missis-backups"} {
+		path := filepath.Join(root, directory, "copied_test.go")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("package copied\nfunc TestCopied(t *testing.T) { // covers UNKNOWN-ID\n}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines, err := scanAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 0 {
+		t.Fatalf("transient evidence leaked into coverage: %v", lines)
+	}
+}
+
 func TestScanFileReportsOpenError(t *testing.T) {
 	_, err := scanFile(filepath.Join(t.TempDir(), "missing_test.go"), "missing_test.go")
 	if err == nil {

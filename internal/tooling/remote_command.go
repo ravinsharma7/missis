@@ -5,46 +5,44 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/ravinsharma7/missis/internal/application"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
-func RunRemote(args []string, stdout, stderr io.Writer) int {
-	return runRemote(args, stdout, stderr, "store-remote", false)
-}
-
 func RunRemoteWithName(args []string, stdout, stderr io.Writer, commandName string) int {
-	return runRemote(args, stdout, stderr, commandName, true)
+	return runRemote(args, stdout, stderr, commandName)
 }
 
-func runRemote(args []string, stdout, stderr io.Writer, commandName string, strictArgs bool) int {
+func runRemote(args []string, stdout, stderr io.Writer, commandName string) int {
 	stdout, stderr = commandWriters(stdout, stderr)
 	if len(args) < 1 {
 		fmt.Fprintf(stderr, "usage: %s <upload|download> [args]\n", commandName)
 		return 2
 	}
-	if strictArgs {
-		switch args[0] {
-		case "upload":
-			if len(args) > 2 {
-				fmt.Fprintf(stderr, "usage: %s upload [source]\n", commandName)
-				return 2
-			}
-		case "download":
-			if len(args) != 2 {
-				fmt.Fprintf(stderr, "usage: %s download <destination>\n", commandName)
-				return 2
-			}
-		default:
-			fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
+	switch args[0] {
+	case "upload":
+		if len(args) > 2 {
+			fmt.Fprintf(stderr, "usage: %s upload [source]\n", commandName)
 			return 2
 		}
+	case "download":
+		if len(args) != 2 {
+			fmt.Fprintf(stderr, "usage: %s download <destination>\n", commandName)
+			return 2
+		}
+	default:
+		fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
+		return 2
 	}
 	loadEnvFile(".env.local")
 	ctx := context.Background()
+	resolved, err := missis.ResolveStore("")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 
 	svc, err := application.Open("")
 	if err != nil {
@@ -71,7 +69,11 @@ func runRemote(args []string, stdout, stderr io.Writer, commandName string, stri
 			src = args[1]
 		}
 		if src == "" {
-			src = defaultBackupPath(manifest)
+			src, err = defaultBackupPath(resolved, manifest)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
 		}
 		if _, err := os.Stat(src); err != nil {
 			fmt.Fprintf(stderr, "backup not found: %s\n", src)
@@ -84,10 +86,6 @@ func runRemote(args []string, stdout, stderr io.Writer, commandName string, stri
 		}
 		fmt.Fprintf(stdout, "uploaded %s\n", key)
 	case "download":
-		if !strictArgs && len(args) < 2 {
-			fmt.Fprintf(stderr, "usage: %s download <destination>\n", commandName)
-			return 2
-		}
 		if err := downloadAndVerify(ctx, remote, manifest, args[1]); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -118,9 +116,4 @@ func loadEnvFile(path string) {
 			_ = os.Setenv(key, value)
 		}
 	}
-}
-
-func defaultBackupPath(manifest missis.ManifestInfo) string {
-	name := strings.ReplaceAll(manifest.StoreID, ":", "_") + "-" + manifest.HeadHash + ".db"
-	return filepath.Join("backups", name)
 }

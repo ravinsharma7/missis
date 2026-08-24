@@ -387,6 +387,48 @@ func (c *Client) pairedBinDir(current buildinfo.Info) (string, error) {
 	return binDir, nil
 }
 
+// VerifyCurrentInstallation verifies the registered release pair containing
+// the running missis executable without contacting the update service.
+func VerifyCurrentInstallation(current buildinfo.Info) (string, Installation, error) {
+	c := DefaultClient()
+	binDir, err := c.pairedBinDir(current)
+	if err != nil {
+		return "", Installation{}, err
+	}
+	installation, err := ReadInstallation(filepath.Join(binDir, InstallManifest))
+	if err != nil {
+		return "", Installation{}, err
+	}
+	return binDir, installation, nil
+}
+
+// VerifyDevelopmentPair verifies the companion binary beside the running
+// executable. It deliberately does not create an installation manifest or
+// make a development build eligible for self-update.
+func VerifyDevelopmentPair(current buildinfo.Info) (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return "", err
+	}
+	binDir := filepath.Dir(executable)
+	toolName := "missis-tools"
+	if runtime.GOOS == "windows" {
+		toolName += ".exe"
+	}
+	toolInfo, err := readBinaryInfo(filepath.Join(binDir, toolName))
+	if err != nil {
+		return "", fmt.Errorf("verify development companion: %w", err)
+	}
+	if toolInfo.Version != current.Version || toolInfo.Commit != current.Commit || toolInfo.StoreFormatRevision != current.StoreFormatRevision || toolInfo.Dirty != current.Dirty {
+		return "", fmt.Errorf("%w: development companion identity differs from running missis", ErrUnpairedInstallation)
+	}
+	return binDir, nil
+}
+
 func RegisterInstallation(binDir string, info buildinfo.Info, goos string) (Installation, error) {
 	installation := Installation{Version: info.Version, Commit: info.Commit, StoreFormatRevision: info.StoreFormatRevision, Binaries: map[string]string{}}
 	for _, filename := range binaryNames(goos) {

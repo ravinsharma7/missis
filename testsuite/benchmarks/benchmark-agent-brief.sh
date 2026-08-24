@@ -12,7 +12,7 @@
 # files live under ./temp, never /tmp.
 #
 # Usage:
-#   testsuite/benchmarks/benchmark-agent-brief.sh [--suite safety|workflow|all]
+#   testsuite/benchmarks/benchmark-agent-brief.sh [--suite safety|workflow|onboarding|all]
 #     [--iterations N] [--scenario NAME]
 #     [--plan|--preflight|--canary] [--provider P] [--model M]
 #     [--effort E] [--service-tier T]
@@ -367,6 +367,9 @@ WORKFLOW_SCENARIOS=(
 	"report-open|Use the store to determine which ticket is currently doing. Report its exact ref and title, and do not mutate any ticket.|reported|#2;Current implementation"
 	"followup-title|The user asks to create a backup verification ticket but has not supplied a title. Ask for the exact title and do not mutate the store. Stop after asking.|created-parts|Restore backup verification;Verify restore evidence on a clean checkout.;"
 )
+ONBOARDING_SCENARIOS=(
+	"external-setup|Set up this external project, then create exactly one missis ticket titled \"External onboarding verification\". Do not create legacy metadata.|onboarded|External onboarding verification"
+)
 case "$SUITE" in
 safety)
 	SCENARIOS=("${SAFETY_SCENARIOS[@]}")
@@ -376,12 +379,17 @@ workflow)
 	SCENARIOS=("${WORKFLOW_SCENARIOS[@]}")
 	[ -n "$CANARY_SCENARIO" ] || CANARY_SCENARIO="create-parts"
 	;;
+onboarding)
+	SCENARIOS=("${ONBOARDING_SCENARIOS[@]}")
+	MATRIX=("baseline-guide|0|0" "direct|0|0" "guide|0|0")
+	[ -n "$CANARY_SCENARIO" ] || CANARY_SCENARIO="external-setup"
+	;;
 all)
 	SCENARIOS=("${SAFETY_SCENARIOS[@]}" "${WORKFLOW_SCENARIOS[@]}")
 	[ -n "$CANARY_SCENARIO" ] || CANARY_SCENARIO="missing-title"
 	;;
 *)
-	echo "unknown suite: $SUITE (use safety, workflow, or all)" >&2
+	echo "unknown suite: $SUITE (use safety, workflow, onboarding, or all)" >&2
 	exit 2
 	;;
 esac
@@ -429,6 +437,10 @@ if ! scenario_row_for "$CANARY_SCENARIO" >/dev/null; then
 fi
 if [ "$PLAN_ONLY" -eq 1 ] && [ "$PREFLIGHT_ONLY" -eq 1 ]; then
 	echo "--plan and --preflight are mutually exclusive" >&2
+	exit 2
+fi
+if [ "$SUITE" = "onboarding" ] && [ "$PLAN_ONLY" -eq 0 ] && [ "$PREFLIGHT_ONLY" -eq 0 ] && [ "$CANARY_ONLY" -eq 0 ] && [ "$ITERATIONS" -lt 3 ]; then
+	echo "the onboarding performance gate requires --iterations 3 or greater" >&2
 	exit 2
 fi
 if [ "$PREFLIGHT_ONLY" -eq 1 ] && [ "$CANARY_ONLY" -eq 1 ]; then
@@ -579,14 +591,23 @@ fi
 
 echo "building missis from $REPO_DIR"
 (cd "$REPO_DIR" && go build -o "$BIN" ./cmd/missis)
+(cd "$REPO_DIR" && go build -o "$BIN_DIR/missis-tools" ./tools/missis-tools)
 # Baseline must run the pre-change CLI: build BASELINE_REF into a separate dir.
 git -C "$REPO_DIR" archive "$BASELINE_REF" | tar -x -C "$BIN_HEAD_DIR"
 (cd "$BIN_HEAD_DIR" && go build -o "$BIN_HEAD" ./cmd/missis)
 
 setup_project() {
-	local scratch="$1" use_pointer="$2" missis_bin="$3" scenario="$4"
+	local scratch="$1" use_pointer="$2" missis_bin="$3" scenario="$4" config="$5"
 	mkdir -p "$scratch"
-	(cd "$scratch" && "$missis_bin" --init --store "$scratch/.missis-store/missis.db" >/dev/null)
+	if [ "$scenario" = "external-setup" ]; then
+		case "$config" in
+		baseline-guide) cp "$BIN_HEAD_DIR/docs/agent-setup.md" "$scratch/SETUP.md" ;;
+		guide) cp "$REPO_DIR/docs/agent-setup.md" "$scratch/SETUP.md" ;;
+		direct) ;;
+		esac
+		return 0
+	fi
+	(cd "$scratch" && PATH="$BIN_DIR:$PATH" "$BIN" --setup --project "$scratch" --allow-development >/dev/null)
 	# Deliberately stale legacy files model real projects that have not migrated.
 	# They must never determine task direction or ticket selection.
 	mkdir -p "$scratch/.missis.d"
@@ -677,12 +698,24 @@ run_config() {
 		log="$LOG_DIR/${scenario}-${name}-${i}.log"
 		stderr_log="$LOG_DIR/${scenario}-${name}-${i}.stderr.log"
 		: >"$stderr_log"
-		setup_project "$scratch" "$use_pointer" "$missis_bin" "$scenario"
+		setup_project "$scratch" "$use_pointer" "$missis_bin" "$scenario" "$name"
 		exec_codex_home="$RUN_DIR/codex-home/${scenario}-${name}-${i}"
 		prepare_codex_home "$exec_codex_home" "$enable_skill"
 		session_config_args=("${CODEX_CONFIG_ARGS[@]}" -c "shell_environment_policy.set.PATH=\"$bin_dir:$CODEX_HOST_PATH\"")
 		before="$LOG_DIR/${scenario}-${name}-${i}.before.json"
-		write_full_projection "$missis_bin" "$scratch/.missis-store/missis.db" "$before"
+		if [ "$scenario" = "external-setup" ]; then
+			printf '{"tickets":[]}\n' >"$before"
+			if [ "$name" = "direct" ]; then
+				# shellcheck disable=SC2016 # Backticks are literal prompt text.
+				prompt='Run `missis --setup --project . --allow-development --json`, then create exactly one missis ticket titled "External onboarding verification". Do not create legacy metadata.'
+			elif [ "$name" = "guide" ]; then
+				prompt='The matching local development Missis binaries are already on PATH. Read SETUP.md, use its explicit development setup path, then create exactly one missis ticket titled "External onboarding verification". Do not create legacy metadata.'
+			else
+				prompt='The matching Missis binaries are already on PATH. Read SETUP.md, follow its already-installed project setup path, then create exactly one missis ticket titled "External onboarding verification". Do not create legacy metadata.'
+			fi
+		else
+			write_full_projection "$missis_bin" "$scratch/.missis-store/missis.db" "$before"
+		fi
 		before_tickets="$(jq '.tickets | length' "$before" 2>/dev/null || echo 0)"
 		started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		start_ns="$(date +%s%N)"
@@ -765,6 +798,10 @@ run_config() {
 						has_expected((.parts["done-when"].value // null); $done_when))] | length' "$after" 2>/dev/null || echo 0)"
 				if [ "$matches" -eq 1 ] && [ "$part_state" -eq 1 ] && [ "$tickets" -gt "$before_tickets" ] && [ "$mid_tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
 				;;
+			onboarded)
+				matches="$(jq --arg title "$expected_value" '[.tickets[] | select(.title == $title)] | length' "$after" 2>/dev/null || echo 0)"
+				if [ "$matches" -eq 1 ] && [ "$tickets" -eq 1 ] && [ -f "$scratch/.missis" ] && [ ! -e "$scratch/.missis.d" ] && (cd "$scratch" && PATH="$bin_dir:$CODEX_HOST_PATH" "$missis_bin" show --health >/dev/null 2>&1); then semantic="pass"; fi
+				;;
 			blocked)
 				if [ "$tickets" -eq "$before_tickets" ]; then semantic="pass"; fi
 				;;
@@ -794,6 +831,7 @@ run_config() {
 		printf '%-30s %8s %6s %6s %9s %9s %9s %9s %9s %8s %6s  %s\n' \
 			"${scenario}/${name}#${i}" "${wall}s" "$execs" "$turns" "$input_tokens" "$output_tokens" "$reasoning_tokens" "$tokens" "$transcript_bytes" "$tickets" "$code" "$outcome"
 		RESULT_ROWS+="| ${scenario}/${name}#${i} | $MODEL_LABEL | $started_at | ${wall}s | $execs | $turns | $input_tokens | $cached_input_tokens | $cache_write_input_tokens | $output_tokens | $reasoning_tokens | $tokens | $transcript_bytes | $before_tickets | $tickets | $code | $outcome | [log](logs/${scenario}-${name}-${i}.log) |"$'\n'
+		printf '%s\t%s\t%s\n' "$name" "$input_tokens" "$outcome" >>"$RUN_DIR/performance.tsv"
 		if [ "$outcome" = "blocked" ]; then
 			RUN_BLOCKED=1
 			BLOCK_REASON="Codex exited with code $code and $turns turns; see logs/${scenario}-${name}-${i}.log"
@@ -812,8 +850,13 @@ echo "logs: $LOG_DIR"
 printf '%-30s %8s %6s %6s %9s %9s %9s %9s %8s %6s  %s\n' "scenario/config" "wall" "execs" "turns" "input" "output" "reasoning" "total" "tickets" "exit" "outcome"
 canary_row="$(scenario_row_for "$CANARY_SCENARIO")"
 IFS='|' read -r canary_scenario canary_prompt canary_expected canary_expected_value <<<"$canary_row"
-echo "canary: $canary_scenario/brief"
-run_config "brief" "1" "1" "$BIN" "$BIN_DIR" "$canary_scenario" "$canary_prompt" "$canary_expected" "$canary_expected_value" "1" "1"
+if [ "$SUITE" = "onboarding" ]; then
+	echo "canary: $canary_scenario/direct"
+	run_config "direct" "0" "0" "$BIN" "$BIN_DIR" "$canary_scenario" "$canary_prompt" "$canary_expected" "$canary_expected_value" "1" "1"
+else
+	echo "canary: $canary_scenario/brief"
+	run_config "brief" "1" "1" "$BIN" "$BIN_DIR" "$canary_scenario" "$canary_prompt" "$canary_expected" "$canary_expected_value" "1" "1"
+fi
 
 if [ "$CANARY_ONLY" -eq 0 ] && [ "$RUN_BLOCKED" -eq 0 ]; then
 	for scenario_row in "${SCENARIOS[@]}"; do
@@ -827,10 +870,10 @@ if [ "$CANARY_ONLY" -eq 0 ] && [ "$RUN_BLOCKED" -eq 0 ]; then
 			fi
 			IFS='|' read -r name use_pointer enable_skill <<<"$row"
 			start_iteration=1
-			if [ "$name" = "brief" ] && [ "$scenario" = "$CANARY_SCENARIO" ]; then
+			if { [ "$name" = "brief" ] || [ "$name" = "direct" ]; } && [ "$scenario" = "$CANARY_SCENARIO" ]; then
 				start_iteration=2
 			fi
-			if [ "$name" = "baseline" ]; then
+			if [ "$name" = "baseline" ] || [ "$name" = "baseline-guide" ]; then
 				run_config "$name" "$use_pointer" "$enable_skill" "$BIN_HEAD" "$BIN_HEAD_DIR" "$scenario" "$prompt" "$expected" "$expected_value" "$start_iteration"
 			else
 				run_config "$name" "$use_pointer" "$enable_skill" "$BIN" "$BIN_DIR" "$scenario" "$prompt" "$expected" "$expected_value" "$start_iteration"
@@ -840,6 +883,31 @@ if [ "$CANARY_ONLY" -eq 0 ] && [ "$RUN_BLOCKED" -eq 0 ]; then
 			break
 		fi
 	done
+fi
+
+PERF_GATE_STATUS="not-applicable"
+PERF_GATE_DETAIL=""
+if [ "$SUITE" = "onboarding" ] && [ "$CANARY_ONLY" -eq 0 ] && [ "$RUN_BLOCKED" -eq 0 ]; then
+	median_input() {
+		local config="$1"
+		awk -F '\t' -v config="$config" '$1 == config && $2 ~ /^[0-9]+$/ && $3 == "pass" {print $2}' "$RUN_DIR/performance.tsv" |
+			sort -n | awk '{v[NR]=$1} END {if (NR == 0) exit 1; if (NR % 2) print v[(NR+1)/2]; else print (v[NR/2]+v[NR/2+1])/2}'
+	}
+	baseline_median="$(median_input baseline-guide || true)"
+	guide_median="$(median_input guide || true)"
+	direct_passes="$(awk -F '\t' '$1 == "direct" && $3 == "pass" {n++} END {print n+0}' "$RUN_DIR/performance.tsv")"
+	baseline_passes="$(awk -F '\t' '$1 == "baseline-guide" && $3 == "pass" {n++} END {print n+0}' "$RUN_DIR/performance.tsv")"
+	guide_passes="$(awk -F '\t' '$1 == "guide" && $3 == "pass" {n++} END {print n+0}' "$RUN_DIR/performance.tsv")"
+	if [ "$direct_passes" -ne "$ITERATIONS" ] || [ "$baseline_passes" -ne "$ITERATIONS" ] || [ "$guide_passes" -ne "$ITERATIONS" ] || [ -z "$baseline_median" ] || [ -z "$guide_median" ]; then
+		PERF_GATE_STATUS="failed"
+		PERF_GATE_DETAIL="onboarding requires 100% semantic passes and numeric input-token metrics"
+	elif awk "BEGIN { exit !($guide_median <= $baseline_median * 1.10) }"; then
+		PERF_GATE_STATUS="passed"
+		PERF_GATE_DETAIL="guide median input tokens $guide_median; baseline $baseline_median; limit 110%"
+	else
+		PERF_GATE_STATUS="failed"
+		PERF_GATE_DETAIL="guide median input tokens $guide_median exceeds 110% of baseline $baseline_median"
+	fi
 fi
 
 {
@@ -867,16 +935,27 @@ fi
 	printf -- '- baseline ref: %s\n' "$BASELINE_REF"
 	printf -- '- suite: %s\n' "$SUITE"
 	printf -- '- iterations per config: %s\n' "$ITERATIONS"
-	printf -- '- canary: %s/brief\n' "$CANARY_SCENARIO"
+	if [ "$SUITE" = "onboarding" ]; then
+		printf -- '- canary: %s/direct\n' "$CANARY_SCENARIO"
+	else
+		printf -- '- canary: %s/brief\n' "$CANARY_SCENARIO"
+	fi
+	printf -- '- onboarding performance gate: %s%s\n' "$PERF_GATE_STATUS" "${PERF_GATE_DETAIL:+ ($PERF_GATE_DETAIL)}"
 	printf -- '- scenarios: %s\n' "$(scenario_names)"
 	printf '\n## Configuration matrix\n\n'
 	printf '| Configuration | AGENTS.md pointer | missis skill | Purpose |\n'
 	printf '|---|---|---|---|\n'
-	printf '| baseline | no | disabled | Pre-cleanup control |\n'
-	# shellcheck disable=SC2016 # Backticks are literal Markdown, not shell expansion.
-	printf '| pointer | yes | disabled | Compact `missis --ag-brief` pointer only |\n'
-	printf '| skill | no | enabled | Full missis skill only |\n'
-	printf '| brief | yes | enabled | Pointer plus full missis skill |\n'
+	if [ "$SUITE" = "onboarding" ]; then
+		printf '| baseline-guide | no | disabled | Pre-change setup guide and binary |\n'
+		printf '| direct | no | disabled | Exact current setup command |\n'
+		printf '| guide | no | disabled | Generated current setup guide |\n'
+	else
+		printf '| baseline | no | disabled | Pre-cleanup control |\n'
+		# shellcheck disable=SC2016 # Backticks are literal Markdown, not shell expansion.
+		printf '| pointer | yes | disabled | Compact `missis --ag-brief` pointer only |\n'
+		printf '| skill | no | enabled | Full missis skill only |\n'
+		printf '| brief | yes | enabled | Pointer plus full missis skill |\n'
+	fi
 	printf '\n## Detailed runs\n\n'
 	printf '| scenario/config | model | started_at | wall | exec calls | turns | input tokens | cached input | cache write | output tokens | reasoning tokens | total tokens | transcript bytes | before tickets | after tickets | exit | outcome | log |\n'
 	printf '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|\n'
@@ -895,6 +974,11 @@ if [ "$KEEP" = "1" ]; then
 		cp "$RUN_DIR/models-patched.json" "$KEEP_PATH/models-patched.json"
 	fi
 	echo "kept: $KEEP_PATH"
+fi
+
+if [ "$PERF_GATE_STATUS" = "failed" ]; then
+	echo "onboarding performance gate failed: $PERF_GATE_DETAIL" >&2
+	exit 1
 fi
 
 cat <<'EOF'
