@@ -13,7 +13,18 @@ const testStoreID = "store:v1:sha256:120311f35ac84b69682c5b5be1dbe7ab96994ef4a8d
 
 func TestParseStrictPeerSet(t *testing.T) {
 	t.Parallel()
-	raw := []byte(`{"version":"missis-local-peer-set-v1","peers":[{"handle":"spy-local","adapter":"sqlite-live-readonly-v1","expected_store_id":"` + testStoreID + `","sqlite_path":"/tmp/spy.db"}]}`)
+	raw, err := json.Marshal(SetV1{
+		Version: VersionV1,
+		Peers: []BindingV1{{
+			Handle:          "spy-local",
+			Adapter:         AdapterLiveV1,
+			ExpectedStoreID: testStoreID,
+			SQLitePath:      filepath.Join(t.TempDir(), "spy.db"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	set, err := Parse(raw)
 	if err != nil {
 		t.Fatal(err)

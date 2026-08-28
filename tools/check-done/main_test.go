@@ -51,8 +51,16 @@ func TestResolveLifecycleStoreAcceptsExistingMarkerStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != storePath {
-		t.Fatalf("path = %q, want %q", got, storePath)
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInfo, err := os.Stat(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("path = %q, want same file as %q", got, storePath)
 	}
 }
 
