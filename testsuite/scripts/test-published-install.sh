@@ -29,8 +29,8 @@ go run "$module/tools/paired-install@$module_ref" "${install_args[@]}" >/dev/nul
 cd "$tmp/project"
 test -x "$GOBIN/missis"
 test -x "$GOBIN/missis-tools"
-missis --version | grep -Eq "missis version=${ref}\\+g[0-9a-f]{12} commit=[0-9a-f]{40} store_format=6"
-missis-tools --version | grep -Eq "missis-tools version=${ref}\\+g[0-9a-f]{12} commit=[0-9a-f]{40} store_format=6"
+missis --version | grep -Eq "missis version=${ref}\\+g[0-9a-f]{12} commit=[0-9a-f]{40} store_format=7"
+missis-tools --version | grep -Eq "missis-tools version=${ref}\\+g[0-9a-f]{12} commit=[0-9a-f]{40} store_format=7"
 missis --version --json | jq -e '.normal_open_format == 7 and .migratable_from_formats == [1,2,3,4,5,6,7] and (.migration_set_digest | test("^[0-9a-f]{64}$"))' >/dev/null
 missis-tools --version --json | jq -e '.normal_open_format == 7 and .migratable_from_formats == [1,2,3,4,5,6,7] and (.migration_set_digest | test("^[0-9a-f]{64}$"))' >/dev/null
 missis-tools --help | grep -q "backup verify"
