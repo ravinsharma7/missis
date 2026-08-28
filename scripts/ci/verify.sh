@@ -15,8 +15,14 @@ go test -count=1 ./...
 go run ./tools/generate-onboarding --check
 go run ./tools/coverage --registry specs/requirements-registry.v3.json
 go build ./tools/missis-tools
-bash scripts/check-workflows.sh
 bash scripts/check-event-tooling-lock.sh
+
+# Workflow syntax is platform-independent and is linted once by Linux and
+# release verification. actionlint's Go runner exits without diagnostics under
+# hosted Windows Git Bash, so it is not part of the native Windows surface.
+if [ "$mode" != windows ]; then
+  bash scripts/check-workflows.sh
+fi
 
 case "$mode" in
   linux)
