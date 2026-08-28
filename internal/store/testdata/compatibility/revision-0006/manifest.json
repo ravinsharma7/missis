@@ -1,0 +1,178 @@
+{
+  "store_format_revision": 6,
+  "schema_version": "0011_artifact_namespace_fork_v1",
+  "event_count": 75,
+  "head_hash": "befb6c1fc393a06b654941768b1494b101203c9f0b98ff5ab02822e5ec3a4e7b",
+  "projection_sha256": "b5e8b222f96b004d25b2c4bb5843bee07619f5650fe75bd08a9a51d31d876f77",
+  "operations": [
+    "add-value",
+    "assert-link",
+    "assign-ontology",
+    "attach-child",
+    "attach-evidence",
+    "create-entity",
+    "create-part",
+    "detach-child",
+    "join-scope",
+    "leave-scope",
+    "move-part",
+    "observe-effect",
+    "record-verification",
+    "remove-ontology",
+    "rename-part",
+    "restore-part",
+    "retract-link",
+    "retract-subtree",
+    "retract-value",
+    "set-value",
+    "supersede-event"
+  ],
+  "operation_versions": [
+    "add-value/v1",
+    "assert-link/v1",
+    "assign-ontology/v1",
+    "attach-child/v1",
+    "attach-evidence/v1",
+    "create-entity/v1",
+    "create-part/v1",
+    "detach-child/v1",
+    "join-scope/v1",
+    "leave-scope/v1",
+    "move-part/v1",
+    "observe-effect/v1",
+    "record-verification/v1",
+    "remove-ontology/v1",
+    "rename-part/v1",
+    "restore-part/v1",
+    "retract-link/v1",
+    "retract-subtree/v1",
+    "retract-value/v1",
+    "set-value/v1",
+    "supersede-event/v1"
+  ],
+  "value_kinds": [
+    "annotation",
+    "artifact",
+    "audio",
+    "code-ref",
+    "embed",
+    "evidence",
+    "external-ref",
+    "git-ref",
+    "image",
+    "inline-sequence",
+    "json",
+    "list",
+    "map",
+    "markdown",
+    "plugin/card",
+    "priority",
+    "ref",
+    "scalar",
+    "status",
+    "text",
+    "verification",
+    "video"
+  ],
+  "inline_kinds": [
+    "artifact",
+    "audio",
+    "code-ref",
+    "git-ref",
+    "image",
+    "markdown-text",
+    "raw-markdown",
+    "video"
+  ],
+  "ref_kinds": [
+    "artifact",
+    "code",
+    "event",
+    "git",
+    "group",
+    "part",
+    "project",
+    "run",
+    "ticket"
+  ],
+  "relations": [
+    "blocked-by",
+    "blocks",
+    "caused-by",
+    "causes",
+    "contained-by",
+    "contains",
+    "contradicted-by",
+    "contradicts",
+    "documented-by",
+    "documents",
+    "duplicated-by",
+    "duplicates",
+    "governed-by",
+    "governs",
+    "has-home",
+    "has-member",
+    "home-of",
+    "implemented-by",
+    "implements",
+    "member-of",
+    "related",
+    "supported-by",
+    "supports",
+    "tracked-by",
+    "tracks"
+  ],
+  "plugins": [
+    "fixture/custom-kind",
+    "missis/artifact-attach",
+    "missis/markdown-import"
+  ],
+  "plugin_contracts": [
+    "fixture/custom-kind@1.0.0#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "missis/artifact-attach@1.0.0#b6f839f3029c0e155ed514ed4f32260c41633a2e812c127749681ca1848b9c54",
+    "missis/markdown-import@1.0.0#3a2ecb9debc8500102800e60eea572d03e8012f794116276a24a2c553c960f4c"
+  ],
+  "schema_declarations": [
+    "schema/plugin-card=plugin/card"
+  ],
+  "ordered_containment": true,
+  "legacy_unordered_containment": true,
+  "idempotency_keys": [
+    "fixture/base",
+    "fixture/schema",
+    "fixture/plugin-markdown",
+    "fixture/plugin-artifact"
+  ],
+  "artifacts": [
+    {
+      "ref": "artifact:sha256:037258615005e7a2e2d8bc775d835145f7fe656b9fac8a153cddbc0faaad350f",
+      "digest": "037258615005e7a2e2d8bc775d835145f7fe656b9fac8a153cddbc0faaad350f",
+      "media_type": "audio/mpeg",
+      "size": 19
+    },
+    {
+      "ref": "artifact:sha256:39e37cbc06823dac6d98be1e2f05da46eefb85b13fe18f9219c7404e57bab8bf",
+      "digest": "39e37cbc06823dac6d98be1e2f05da46eefb85b13fe18f9219c7404e57bab8bf",
+      "media_type": "text/markdown",
+      "size": 72
+    },
+    {
+      "ref": "artifact:sha256:52143c1adc509dc364626e36d0c2cd944b44c17283cfe1d90780a960a69ad795",
+      "digest": "52143c1adc509dc364626e36d0c2cd944b44c17283cfe1d90780a960a69ad795",
+      "media_type": "image/png",
+      "size": 19
+    },
+    {
+      "ref": "artifact:sha256:a12a1b56b8e22af9bcf186f03289dd1e669d01c25f1dce409511e4509962a909",
+      "digest": "a12a1b56b8e22af9bcf186f03289dd1e669d01c25f1dce409511e4509962a909",
+      "media_type": "application/octet-stream",
+      "size": 21
+    },
+    {
+      "ref": "artifact:sha256:fef970131a70d412a011d8b7c7401bd2d8efdcd39779cfc735b4cc66ceda2cc8",
+      "digest": "fef970131a70d412a011d8b7c7401bd2d8efdcd39779cfc735b4cc66ceda2cc8",
+      "media_type": "video/mp4",
+      "size": 19
+    }
+  ]
+}

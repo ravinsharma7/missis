@@ -1,6 +1,10 @@
 package model
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/ravinsharma7/missis/internal/externalref"
+)
 
 // UnmarshalJSON restores the core structured payload types after an event is
 // read from SQLite. Without this, Data would become map[string]any and callers
@@ -47,6 +51,12 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 	case ValueKindArtifact:
 		var value ArtifactDescriptor
 		if err := json.Unmarshal(wire.Data, &value); err != nil {
+			return err
+		}
+		v.Data = value
+	case ValueKindExternalRef:
+		value, err := externalref.ParseV1(wire.Data)
+		if err != nil {
 			return err
 		}
 		v.Data = value

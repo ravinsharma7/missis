@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/ravinsharma7/missis/internal/artifact"
+	"github.com/ravinsharma7/missis/internal/model"
 )
 
 var ErrArtifactConflict = errors.New("artifact metadata conflict")
@@ -24,6 +26,49 @@ type ArtifactRecord struct {
 	Size       int64
 	Backend    string
 	RecordedAt time.Time
+}
+
+type ArtifactReferenceUsage struct {
+	Ref       string   `json:"ref"`
+	Managed   bool     `json:"managed"`
+	EventIDs  []string `json:"event_ids"`
+	Locations []string `json:"locations"`
+}
+
+// ListAcceptedArtifactReferences replays the typed event model and reports
+// exactly which accepted events/fields reference each local artifact.
+func (s *Store) ListAcceptedArtifactReferences(ctx context.Context) ([]ArtifactReferenceUsage, error) {
+	events, err := s.LoadEventsContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byRef := make(map[string]*ArtifactReferenceUsage)
+	for _, event := range events {
+		occurrences, err := model.AcceptedArtifactReferences(event)
+		if err != nil {
+			return nil, err
+		}
+		for _, occurrence := range occurrences {
+			key := fmt.Sprintf("%t:%s", occurrence.Managed, occurrence.Ref)
+			usage := byRef[key]
+			if usage == nil {
+				usage = &ArtifactReferenceUsage{Ref: occurrence.Ref, Managed: occurrence.Managed}
+				byRef[key] = usage
+			}
+			usage.EventIDs = append(usage.EventIDs, string(occurrence.EventID))
+			usage.Locations = append(usage.Locations, occurrence.Location)
+		}
+	}
+	refs := make([]string, 0, len(byRef))
+	for key := range byRef {
+		refs = append(refs, key)
+	}
+	sort.Strings(refs)
+	result := make([]ArtifactReferenceUsage, 0, len(refs))
+	for _, ref := range refs {
+		result = append(result, *byRef[ref])
+	}
+	return result, nil
 }
 
 // RecordArtifact indexes metadata after the artifact backend has durably
@@ -152,6 +197,29 @@ func (s *Store) ListArtifacts(ctx context.Context) ([]ArtifactRecord, error) {
 		return nil, err
 	}
 	return records, nil
+}
+
+// RebuildArtifactIndexContext replaces only the rebuildable artifact metadata
+// index. Callers must derive records by replaying accepted event semantics and
+// verifying immutable object bytes first. Accepted events are never changed.
+func (s *Store) RebuildArtifactIndexContext(ctx context.Context, records []ArtifactRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM artifacts`); err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := insertArtifactTxContext(ctx, tx, record); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 type artifactScanner interface {

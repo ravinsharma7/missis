@@ -19,6 +19,11 @@ import (
 // ----- creation workflows -----
 
 func (s *Service) NewTicket(ctx context.Context, req missis.RequestContext, opts missis.NewTicketOptions) (missis.NewTicketResult, error) {
+	var err error
+	ctx, err = s.withIdempotencyRequest(ctx, req, "new-ticket", opts)
+	if err != nil {
+		return missis.NewTicketResult{}, err
+	}
 	return s.createTicket(ctx, req, opts.Title, opts.Project, func(stream model.Ref, actor model.ActorRef, now, effectiveAt time.Time, batchID model.BatchID) []model.Event {
 		var events []model.Event
 		if opts.Priority != "" {
@@ -35,6 +40,11 @@ func (s *Service) NewTicket(ctx context.Context, req missis.RequestContext, opts
 }
 
 func (s *Service) NewEntity(ctx context.Context, req missis.RequestContext, opts missis.EntityOptions) (missis.EntityResult, error) {
+	var err error
+	ctx, err = s.withIdempotencyRequest(ctx, req, "new-entity", opts)
+	if err != nil {
+		return missis.EntityResult{}, err
+	}
 	req, now := s.normalize(req)
 	if opts.Kind != "project" && opts.Kind != "group" {
 		return missis.EntityResult{}, invalidInput("invalid kind: %s", opts.Kind)
@@ -105,6 +115,11 @@ func (s *Service) NewEntity(ctx context.Context, req missis.RequestContext, opts
 }
 
 func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext, opts missis.ImportOptions) (missis.NewTicketResult, error) {
+	var err error
+	ctx, err = s.withIdempotencyRequest(ctx, req, "import-markdown", opts)
+	if err != nil {
+		return missis.NewTicketResult{}, err
+	}
 	req, _ = s.normalize(req)
 	if req.IdempotencyKey != "" {
 		var replay missis.NewTicketResult
@@ -187,6 +202,11 @@ func (s *Service) ImportMarkdown(ctx context.Context, req missis.RequestContext,
 }
 
 func (s *Service) ReimportMarkdown(ctx context.Context, req missis.RequestContext, opts missis.ImportOptions) (missis.ImportResult, error) {
+	var err error
+	ctx, err = s.withIdempotencyRequest(ctx, req, "reimport-markdown", opts)
+	if err != nil {
+		return missis.ImportResult{}, err
+	}
 	req, now := s.normalize(req)
 	parsed, err := model.ParseMarkdownPartsWithDiagnostics(opts.Content)
 	if err != nil {
@@ -846,6 +866,14 @@ type setSpec struct {
 }
 
 func (s *Service) Set(ctx context.Context, req missis.RequestContext, mutation missis.Mutation) (missis.SetResult, error) {
+	fingerprint, err := mutationFingerprint(mutation)
+	if err != nil {
+		return missis.SetResult{}, invalidInput("%v", err)
+	}
+	ctx, err = s.withIdempotencyRequest(ctx, req, "set", fingerprint)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
 	req, now := s.normalize(req)
 	var spec setSpec
 	switch m := mutation.(type) {
@@ -1148,6 +1176,11 @@ func specValue(spec setSpec) model.Value {
 }
 
 func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts missis.LinkOptions) (missis.SetResult, error) {
+	var err error
+	ctx, err = s.withIdempotencyRequest(ctx, req, "set-link", opts)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
 	req, now := s.normalize(req)
 	if !opts.Add && !opts.Retract {
 		return missis.SetResult{}, invalidInput("link mutation requires --add or --retract")
@@ -1159,7 +1192,6 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 	baseRef := strings.TrimSuffix(opts.Ref, "/links")
 	var fromRef, toRef model.Ref
 	var stream model.Ref
-	var err error
 	if scope {
 		fromRef, err = s.resolveAnyRef(ctx, baseRef, req.EffectiveAt)
 		if err != nil {
@@ -1288,6 +1320,11 @@ func (s *Service) SetLink(ctx context.Context, req missis.RequestContext, opts m
 }
 
 func (s *Service) MoveLink(ctx context.Context, req missis.RequestContext, opts missis.MoveLinkOptions) (missis.SetResult, error) {
+	var err error
+	ctx, err = s.withIdempotencyRequest(ctx, req, "move-link", opts)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
 	req, now := s.normalize(req)
 	if opts.Relation != model.RelationHasHome && opts.Relation != model.RelationContains && opts.Relation != model.RelationGoverns {
 		return missis.SetResult{}, validation("move-link supports membership relations only: has-home, contains, governs")
@@ -1396,6 +1433,11 @@ func isScopeRef(ref model.Ref) bool {
 }
 
 func (s *Service) JoinScope(ctx context.Context, req missis.RequestContext, opts missis.ScopeOptions) (missis.SetResult, error) {
+	var err error
+	ctx, err = s.withIdempotencyRequest(ctx, req, "join-scope", opts)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
 	req, now := s.normalize(req)
 	entityRef, scopeRef, err := s.resolveScopeTransition(ctx, opts.Entity, opts.Scope, req.EffectiveAt)
 	if err != nil {
@@ -1419,6 +1461,11 @@ func (s *Service) JoinScope(ctx context.Context, req missis.RequestContext, opts
 }
 
 func (s *Service) LeaveScope(ctx context.Context, req missis.RequestContext, opts missis.ScopeOptions) (missis.SetResult, error) {
+	var err error
+	ctx, err = s.withIdempotencyRequest(ctx, req, "leave-scope", opts)
+	if err != nil {
+		return missis.SetResult{}, err
+	}
 	req, now := s.normalize(req)
 	entityRef, scopeRef, err := s.resolveScopeTransition(ctx, opts.Entity, opts.Scope, req.EffectiveAt)
 	if err != nil {

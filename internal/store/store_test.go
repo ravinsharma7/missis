@@ -141,6 +141,59 @@ func TestStoreIdentityAndHeadHash(t *testing.T) {
 	}
 }
 
+func TestIdempotencyRequestHashRejectsDifferentRequest(t *testing.T) {
+	t.Parallel()
+	s, err := Open(filepath.Join(t.TempDir(), "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Date(2026, 8, 27, 1, 2, 3, 0, time.UTC)
+	stream := model.Ref{Kind: model.KindTicket, Entity: "ticket:idempotency-hash"}
+	event := model.Event{
+		ID: "event:idempotency-hash", Stream: stream, Operation: model.OpCreateEntity, Target: stream,
+		RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"},
+	}
+	requestA, err := ComputeIdempotencyRequestHashV1(map[string]any{"operation": "new", "title": "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestB, err := ComputeIdempotencyRequestHashV1(map[string]any{"operation": "new", "title": "B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxA := WithIdempotencyRequestHash(context.Background(), requestA)
+	first, err := s.AppendBatchContext(ctxA, []model.Event{event}, "same-key", nil, nil)
+	if err != nil || first.Replayed {
+		t.Fatalf("first append = %+v, err=%v", first, err)
+	}
+	replay, err := s.AppendBatchContext(ctxA, []model.Event{event}, "same-key", nil, nil)
+	if err != nil || !replay.Replayed {
+		t.Fatalf("same request replay = %+v, err=%v", replay, err)
+	}
+	ctxB := WithIdempotencyRequestHash(context.Background(), requestB)
+	if _, err := s.AppendBatchContext(ctxB, []model.Event{{
+		ID: "event:different", Stream: stream, Operation: model.OpCreateEntity, Target: stream,
+		RecordedAt: now, EffectiveAt: now, Actor: model.ActorRef{Kind: "test", ID: "test"},
+	}}, "same-key", nil, nil); !errors.Is(err, ErrIdempotencyMismatch) {
+		t.Fatalf("different request error = %v, want ErrIdempotencyMismatch", err)
+	}
+	if count, err := s.EventCount(); err != nil || count != 1 {
+		t.Fatalf("event count = %d, err=%v, want 1", count, err)
+	}
+	var storedHash string
+	if err := s.reader.QueryRow(`SELECT request_hash FROM idempotency WHERE key = 'same-key'`).Scan(&storedHash); err != nil {
+		t.Fatal(err)
+	}
+	if storedHash != requestA {
+		t.Fatalf("stored request hash = %q, want %q", storedHash, requestA)
+	}
+	if _, err := s.writer.Exec(`INSERT INTO idempotency(key, event_ids_json, result_json, created_at) VALUES ('unbound-new-row','[]','{}','2026-08-27T00:00:00Z')`); err == nil {
+		t.Fatal("revision-3 schema accepted a new idempotency row without request_hash")
+	}
+}
+
 func TestOpenCreatesPrivateStore(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -231,6 +284,27 @@ func BenchmarkEventHash(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = computeEventHash(event, "previous")
+	}
+}
+
+func TestDurabilityProfileReportsActiveWriteSettings(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "missis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	profile, err := s.DurabilityProfileContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Name != "wal-normal" || profile.JournalMode != "wal" || profile.Synchronous != "NORMAL" {
+		t.Fatalf("profile = %#v", profile)
+	}
+	if !profile.ProcessCrashRecovery {
+		t.Fatal("WAL + NORMAL should report process crash recovery")
+	}
+	if profile.AcknowledgedCommitPowerLossDurable {
+		t.Fatal("WAL + NORMAL must not claim acknowledged-commit power-loss durability")
 	}
 }
 

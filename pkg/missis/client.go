@@ -227,6 +227,20 @@ func (c *Client) ResolveAnyRef(ctx context.Context, ref string, effectiveAt time
 	return c.service.ResolveAnyRef(ctx, ref, effectiveAt)
 }
 
+// OpenExternalResolutionSnapshot exposes the wrapped service as one coherent
+// authority snapshot when supported.
+func (c *Client) OpenExternalResolutionSnapshot(ctx context.Context) (ExternalAuthoritySnapshot, error) {
+	authority, ok := c.service.(ExternalAuthority)
+	if !ok {
+		return nil, ErrExternalReferenceUnsupported
+	}
+	return authority.OpenExternalResolutionSnapshot(ctx)
+}
+
+func (c *Client) ResolveExternalReference(ctx context.Context, ref ExternalReferenceV1, query ExternalResolutionQuery) (ExternalResolutionV1, error) {
+	return NewPeerResolver(c).Resolve(ctx, ref, query)
+}
+
 func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]TicketSummary, error) {
 	return c.service.Search(ctx, opts)
 }

@@ -17,13 +17,14 @@ import (
 	"time"
 
 	"github.com/ravinsharma7/missis/internal/artifact"
+	"github.com/ravinsharma7/missis/internal/externalref"
 	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/internal/plugin"
 	"github.com/ravinsharma7/missis/internal/plugin/builtin"
 	"github.com/ravinsharma7/missis/internal/store"
 )
 
-const RevisionDirectory = "revision-0002"
+const RevisionDirectory = "revision-0006"
 
 type ArtifactExpectation struct {
 	Ref       string `json:"ref"`
@@ -63,7 +64,7 @@ func (f *fixedIDs) New(prefix string) string {
 	return fmt.Sprintf("%s:plugin-fixture-%04d", prefix, f.counts[prefix])
 }
 
-// Build creates a complete revision-2 store and artifact CAS under root.
+// Build creates a complete current-revision store and artifact CAS under root.
 // root must not already contain a fixture database.
 func Build(ctx context.Context, root string) (Manifest, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -314,20 +315,25 @@ func valueSamples(metadata map[string]artifact.Metadata) map[model.ValueKind]mod
 		{ID: "inline-raw", Kind: model.InlineRawMarkdown, Text: "![inert](https://example.invalid/raw.png)"},
 	}}
 	return map[model.ValueKind]model.Value{
-		model.ValueKindText:           {Kind: model.ValueKindText, Text: "plain text"},
-		model.ValueKindMarkdown:       {Kind: model.ValueKindMarkdown, Text: "**Markdown** with [inert URL](https://example.invalid/)"},
-		model.ValueKindScalar:         {Kind: model.ValueKindScalar, Text: "42"},
-		model.ValueKindStatus:         {Kind: model.ValueKindStatus, Text: "open"},
-		model.ValueKindPriority:       {Kind: model.ValueKindPriority, Text: "high"},
-		model.ValueKindMap:            {Kind: model.ValueKindMap, Data: map[string]any{"alpha": "one", "count": float64(2)}},
-		model.ValueKindList:           {Kind: model.ValueKindList, List: []string{"one", "two"}},
-		model.ValueKindRef:            {Kind: model.ValueKindRef, Ref: &model.Ref{Kind: model.KindPart, Entity: "part:fixture-root", Path: []string{"fixture"}}},
-		model.ValueKindCodeRef:        {Kind: model.ValueKindCodeRef, Data: model.CodeRef{Repository: "https://example.invalid/repo.git", Commit: commit, Path: "fixture.go", StartLine: &lineStart, EndLine: &lineEnd, StartByte: &byteStart, EndByte: &byteEnd, Symbol: &symbol}},
-		model.ValueKindGitRef:         {Kind: model.ValueKindGitRef, Data: model.GitRef{Repository: "https://example.invalid/repo.git", Branch: &branch}},
-		model.ValueKindEvidence:       {Kind: model.ValueKindEvidence, Text: "evidence", Ref: &model.Ref{Kind: model.KindArtifact, Entity: metadata["generic"].Ref.String()}},
-		model.ValueKindVerification:   {Kind: model.ValueKindVerification, Text: "passed"},
-		model.ValueKindJSON:           {Kind: model.ValueKindJSON, Data: map[string]any{"safe": true, "url": "https://example.invalid/inert"}},
-		model.ValueKindArtifact:       {Kind: model.ValueKindArtifact, Data: model.ArtifactDescriptor{Ref: artifactRef("generic"), MediaType: metadata["generic"].MediaType, Size: metadata["generic"].Size}},
+		model.ValueKindText:         {Kind: model.ValueKindText, Text: "plain text"},
+		model.ValueKindMarkdown:     {Kind: model.ValueKindMarkdown, Text: "**Markdown** with [inert URL](https://example.invalid/)"},
+		model.ValueKindScalar:       {Kind: model.ValueKindScalar, Text: "42"},
+		model.ValueKindStatus:       {Kind: model.ValueKindStatus, Text: "open"},
+		model.ValueKindPriority:     {Kind: model.ValueKindPriority, Text: "high"},
+		model.ValueKindMap:          {Kind: model.ValueKindMap, Data: map[string]any{"alpha": "one", "count": float64(2)}},
+		model.ValueKindList:         {Kind: model.ValueKindList, List: []string{"one", "two"}},
+		model.ValueKindRef:          {Kind: model.ValueKindRef, Ref: &model.Ref{Kind: model.KindPart, Entity: "part:fixture-root", Path: []string{"fixture"}}},
+		model.ValueKindCodeRef:      {Kind: model.ValueKindCodeRef, Data: model.CodeRef{Repository: "https://example.invalid/repo.git", Commit: commit, Path: "fixture.go", StartLine: &lineStart, EndLine: &lineEnd, StartByte: &byteStart, EndByte: &byteEnd, Symbol: &symbol}},
+		model.ValueKindGitRef:       {Kind: model.ValueKindGitRef, Data: model.GitRef{Repository: "https://example.invalid/repo.git", Branch: &branch}},
+		model.ValueKindEvidence:     {Kind: model.ValueKindEvidence, Text: "evidence", Ref: &model.Ref{Kind: model.KindArtifact, Entity: metadata["generic"].Ref.String()}},
+		model.ValueKindVerification: {Kind: model.ValueKindVerification, Text: "passed"},
+		model.ValueKindJSON:         {Kind: model.ValueKindJSON, Data: map[string]any{"safe": true, "url": "https://example.invalid/inert"}},
+		model.ValueKindArtifact:     {Kind: model.ValueKindArtifact, Data: model.ArtifactDescriptor{Ref: artifactRef("generic"), MediaType: metadata["generic"].MediaType, Size: metadata["generic"].Size}},
+		model.ValueKindExternalRef: {Kind: model.ValueKindExternalRef, Data: externalref.ReferenceV1{
+			Version: externalref.VersionV1, StoreID: "store:v1:sha256:120311f35ac84b69682c5b5be1dbe7ab96994ef4a8db9d43473d8d0f1f379867",
+			Namespace: "missis", Kind: "ticket", EntityID: "ticket:external-fixture", SubentityID: "part:problem",
+			Observation: &externalref.ObservedV1{CurrentEventID: "event:external-observed"}, DisplayHint: "external fixture",
+		}},
 		model.ValueKindAnnotation:     {Kind: model.ValueKindAnnotation, Text: "generated annotation"},
 		model.ValueKindImage:          {Kind: model.ValueKindImage, Data: media(model.ValueKindImage, "image")},
 		model.ValueKindVideo:          {Kind: model.ValueKindVideo, Data: media(model.ValueKindVideo, "video")},

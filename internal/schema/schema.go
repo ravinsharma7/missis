@@ -82,6 +82,7 @@ var baseKinds = map[string]model.ValueKind{
 	"verification":    model.ValueKindVerification,
 	"json":            model.ValueKindJSON,
 	"artifact":        model.ValueKindArtifact,
+	"external-ref":    model.ValueKindExternalRef,
 	"annotation":      model.ValueKindAnnotation,
 	"image":           model.ValueKindImage,
 	"video":           model.ValueKindVideo,

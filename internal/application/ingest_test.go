@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -168,14 +169,12 @@ func TestIngestMarkdownStoresArtifactAndProvenance(t *testing.T) {
 		t.Fatalf("imported sources = %+v", imported.Sources)
 	}
 
-	replayed, err := svc.Ingest(ctx, missis.RequestContext{IdempotencyKey: "ingest-markdown"}, missis.IngestOptions{
+	_, err = svc.Ingest(ctx, missis.RequestContext{IdempotencyKey: "ingest-markdown"}, missis.IngestOptions{
 		Operation: "import-markdown", Target: created.ID, MediaType: "text/markdown", Content: strings.NewReader("different content"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replayed.Artifact != result.Artifact || replayed.Event != result.Event {
-		t.Fatalf("replayed = %+v, first = %+v", replayed, result)
+	var domainErr *missis.DomainError
+	if !errors.As(err, &domainErr) || domainErr.Kind != missis.ErrIdempotencyMismatch {
+		t.Fatalf("different ingest request error = %v, want idempotency mismatch", err)
 	}
 }
 

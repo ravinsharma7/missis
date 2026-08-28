@@ -20,6 +20,7 @@ import (
 	"github.com/ravinsharma7/missis/internal/application"
 	"github.com/ravinsharma7/missis/internal/buildinfo"
 	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/peerconfig"
 	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/internal/update"
 	"github.com/ravinsharma7/missis/pkg/missis"
@@ -661,7 +662,7 @@ func runNew(args []string) int {
 	warnArtifactRoot(svc)
 	client := missis.NewClient(svc)
 	defer client.Close()
-	effectiveTime := time.Now().UTC()
+	var effectiveTime time.Time
 	if effectiveAt != "" {
 		effectiveTime, err = parseTime(effectiveAt)
 		if err != nil {
@@ -745,36 +746,39 @@ func runShow(args []string) int {
 		"direction": true, "depth": true, "relations": true, "format": true,
 		"project": true, "group": true,
 		"search": true, "status": true, "type": true, "tag": true,
-		"kind": true,
+		"kind": true, "peer-config": true, "peer-timeout": true,
 	})
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var (
-		jsonMode    bool
-		at          string
-		effectiveAt string
-		knownAt     string
-		history     bool
-		since       string
-		between     string
-		storeFlag   string
-		health      bool
-		references  bool
-		lineage     bool
-		direction   string
-		depth       int
-		relations   stringList
-		format      string
-		project     stringList
-		group       stringList
-		unscoped    bool
-		search      string
-		status      stringList
-		typeFilter  stringList
-		tagFilter   stringList
-		version     bool
-		context     bool
-		kind        string
+		jsonMode        bool
+		at              string
+		effectiveAt     string
+		knownAt         string
+		history         bool
+		since           string
+		between         string
+		storeFlag       string
+		health          bool
+		references      bool
+		lineage         bool
+		direction       string
+		depth           int
+		relations       stringList
+		format          string
+		project         stringList
+		group           stringList
+		unscoped        bool
+		search          string
+		status          stringList
+		typeFilter      stringList
+		tagFilter       stringList
+		version         bool
+		context         bool
+		kind            string
+		peerConfig      string
+		peerTimeout     time.Duration
+		resolveExternal bool
 	)
 	fs.BoolVar(&jsonMode, "json", false, "JSON output")
 	fs.StringVar(&at, "at", "", "set both effective and known time")
@@ -801,11 +805,22 @@ func runShow(args []string) int {
 	fs.BoolVar(&version, "version", false, "show version")
 	fs.BoolVar(&context, "context", false, "show active project/group context")
 	fs.StringVar(&kind, "kind", "", "entity kind: project or group")
+	fs.BoolVar(&resolveExternal, "resolve-external", false, "resolve an accepted external-ref Part through explicit local peers")
+	fs.StringVar(&peerConfig, "peer-config", "", "strict local peer-set configuration")
+	fs.DurationVar(&peerTimeout, "peer-timeout", 30*time.Second, "external peer resolution timeout")
 	if err := fs.Parse(args); err != nil {
 		return exitInvalid
 	}
 	if format == "json" {
 		jsonMode = true
+	}
+	if resolveExternal && (peerConfig == "" || peerTimeout <= 0) {
+		printError(fmt.Errorf("--resolve-external requires --peer-config and a positive --peer-timeout"), exitInvalid, jsonMode, nil)
+		return exitInvalid
+	}
+	if !resolveExternal && peerConfig != "" {
+		printError(fmt.Errorf("--peer-config requires --resolve-external"), exitInvalid, jsonMode, nil)
+		return exitInvalid
 	}
 	if version {
 		printVersion(jsonMode)
@@ -866,22 +881,32 @@ func runShow(args []string) int {
 		headHash, _ := client.HeadHash()
 		eventCount, _ := client.EventCount()
 		formatRevision, _ := client.FormatRevision()
+		durability, err := client.Store().DurabilityProfileContext(ctx)
+		if err != nil {
+			printError(err, exitStorage, jsonMode, nil)
+			return exitStorage
+		}
 		version, commit, _ := buildVersion()
 		if jsonMode {
 			writeJSON(map[string]any{
-				"status":                "ok",
-				"store_id":              storeID,
-				"head_hash":             headHash,
-				"event_count":           eventCount,
-				"store_format_revision": formatRevision,
-				"version":               version,
-				"commit":                commit,
-				"store_path":            storePath,
-				"discovery_source":      source,
-				"warnings":              warnings,
+				"status":                                 "ok",
+				"store_id":                               storeID,
+				"head_hash":                              headHash,
+				"event_count":                            eventCount,
+				"store_format_revision":                  formatRevision,
+				"durability_profile":                     durability.Name,
+				"sqlite_journal_mode":                    durability.JournalMode,
+				"sqlite_synchronous":                     durability.Synchronous,
+				"process_crash_recovery":                 durability.ProcessCrashRecovery,
+				"acknowledged_commit_power_loss_durable": durability.AcknowledgedCommitPowerLossDurable,
+				"version":                                version,
+				"commit":                                 commit,
+				"store_path":                             storePath,
+				"discovery_source":                       source,
+				"warnings":                               warnings,
 			})
 		} else {
-			fmt.Printf("ok store=%s head=%s events=%d format=%d version=%s commit=%s\n", storeID, headHash, eventCount, formatRevision, version, commit)
+			fmt.Printf("ok store=%s head=%s events=%d format=%d durability=%s power_loss_ack=%t version=%s commit=%s\n", storeID, headHash, eventCount, formatRevision, durability.Name, durability.AcknowledgedCommitPowerLossDurable, version, commit)
 			for _, warning := range warnings {
 				fmt.Printf("warning: %s\n", warning)
 			}
@@ -1058,6 +1083,47 @@ func runShow(args []string) int {
 			return exitNotFound
 		}
 	}
+	if resolveExternal {
+		if len(partPath) == 0 {
+			printError(fmt.Errorf("--resolve-external requires a Part reference containing external-ref-v1"), exitInvalid, jsonMode, &ref)
+			return exitInvalid
+		}
+		part := proj.Parts[strings.Join(partPath, "/")]
+		if part.ValueKind != string(model.ValueKindExternalRef) {
+			printError(fmt.Errorf("Part %s has value kind %q, want external-ref", strings.Join(partPath, "/"), part.ValueKind), exitValidation, jsonMode, &ref)
+			return exitValidation
+		}
+		external, ok := part.Value.(missis.ExternalReferenceV1)
+		if !ok {
+			printError(fmt.Errorf("Part %s did not decode as external-ref-v1", strings.Join(partPath, "/")), exitStorage, jsonMode, &ref)
+			return exitStorage
+		}
+		set, err := peerconfig.Load(peerConfig)
+		if err != nil {
+			printError(err, exitInvalid, jsonMode, &ref)
+			return exitInvalid
+		}
+		peers := make([]missis.ExternalAuthority, 0, len(set.Peers))
+		for _, binding := range set.Peers {
+			peers = append(peers, application.NewLocalPeer(binding, nil))
+		}
+		peerCtx, cancel := stdctx.WithTimeout(ctx, peerTimeout)
+		defer cancel()
+		resolved, err := missis.NewPeerResolver(peers...).Resolve(peerCtx, external, missis.ExternalResolutionQuery{EffectiveAt: effectiveTime, KnownAt: knownTime})
+		if err != nil {
+			printError(err, mapError(err), jsonMode, &ref)
+			return mapError(err)
+		}
+		if jsonMode {
+			writeJSON(resolved)
+		} else {
+			fmt.Printf("external store=%s namespace=%s kind=%s entity=%s subentity=%s authority=%s identity=%s lifecycle=%s freshness=%s revision=%d current_event=%s\n", external.StoreID, external.Namespace, external.Kind, external.EntityID, external.SubentityID, resolved.AuthorityState, resolved.IdentityState, resolved.Lifecycle, resolved.Freshness, resolved.StreamRevision, resolved.CurrentEventID)
+			for _, warning := range resolved.Warnings {
+				fmt.Printf("warning: %s\n", warning)
+			}
+		}
+		return exitSuccess
+	}
 	if format == "markdown" {
 		links, err := client.ShowReferences(ctx, ref, missis.ShowOptions{EffectiveAt: effectiveTime, KnownAt: knownTime})
 		if err != nil {
@@ -1127,7 +1193,7 @@ func runSet(args []string) int {
 	fs.StringVar(&mediaType, "media-type", "", "attached artifact media type")
 	fs.StringVar(&sourceName, "source-name", "", "attached artifact source name")
 	fs.StringVar(&kind, "kind", "", "explicit value kind (required when no schema declaration matches)")
-	fs.StringVar(&dataJSON, "data-json", "", "structured JSON value for CodeRef, GitRef, media, artifact, or plugin kinds")
+	fs.StringVar(&dataJSON, "data-json", "", "structured JSON value for CodeRef, GitRef, external-ref, media, artifact, or plugin kinds")
 	fs.StringVar(&assertion, "assertion", "", "assertion event alias to retract (optional; without it, all active assertions are retracted)")
 	fs.BoolVar(&allowDuplicate, "allow-duplicate", false, "allow another active assertion of an identical link")
 	if err := fs.Parse(args); err != nil {
@@ -1150,7 +1216,7 @@ func runSet(args []string) int {
 	client := missis.NewClient(svc)
 	defer client.Close()
 	ctx := stdctx.Background()
-	effectiveTime := time.Now().UTC()
+	var effectiveTime time.Time
 	if effectiveAt != "" {
 		effectiveTime, err = parseTime(effectiveAt)
 		if err != nil {
@@ -1426,6 +1492,10 @@ func printError(err error, code int, jsonMode bool, target *string) {
 			result.SupportedFormatMin = &formatErr.Min
 			result.SupportedFormatMax = &formatErr.Max
 		}
+		var domainErr *missis.DomainError
+		if errors.As(err, &domainErr) && domainErr.Kind == missis.ErrIdempotencyMismatch {
+			result.Error = string(missis.ErrIdempotencyMismatch)
+		}
 		writeJSON(result)
 		return
 	}
@@ -1499,6 +1569,8 @@ func mapError(err error) int {
 		case missis.ErrNotFound:
 			return exitNotFound
 		case missis.ErrConflict:
+			return exitConflict
+		case missis.ErrIdempotencyMismatch:
 			return exitConflict
 		case missis.ErrStorage:
 			return exitStorage

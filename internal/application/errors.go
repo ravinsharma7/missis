@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/pkg/missis"
 )
 
@@ -23,6 +24,10 @@ func conflict(err error) error {
 	return &missis.DomainError{Kind: missis.ErrConflict, Message: err.Error()}
 }
 
+func idempotencyMismatch(err error) error {
+	return &missis.DomainError{Kind: missis.ErrIdempotencyMismatch, Message: err.Error()}
+}
+
 func storage(err error) error {
 	return &missis.DomainError{Kind: missis.ErrStorage, Message: err.Error()}
 }
@@ -32,6 +37,9 @@ func storage(err error) error {
 func keepStorage(err error) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, store.ErrIdempotencyMismatch) {
+		return idempotencyMismatch(err)
 	}
 	var de *missis.DomainError
 	if errors.As(err, &de) {

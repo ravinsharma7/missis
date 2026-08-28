@@ -178,7 +178,7 @@ func inspectLocalBackupBundle(src string) (localBackupBundle, error) {
 	if closeErr != nil {
 		return localBackupBundle{}, closeErr
 	}
-	if manifest.Version >= missis.BackupManifestVersion {
+	if manifest.Version >= missis.BackupManifestVersionV2 {
 		if completionErr != nil {
 			return localBackupBundle{}, fmt.Errorf("incomplete backup bundle: completion marker %s: %w", completionPath, completionErr)
 		}
@@ -293,11 +293,11 @@ func downloadBundleSidecars(ctx context.Context, r Remote, key, dst string, hasC
 	if closeErr != nil {
 		return closeErr
 	}
-	if (manifest.Version != missis.BackupManifestVersion && manifest.Version != missis.BackupManifestVersionV1) || manifest.ArtifactMode != missis.BackupArtifactEmbedded {
+	if (manifest.Version != missis.BackupManifestVersion && manifest.Version != missis.BackupManifestVersionV2 && manifest.Version != missis.BackupManifestVersionV1) || manifest.ArtifactMode != missis.BackupArtifactEmbedded {
 		return fmt.Errorf("unsupported downloaded backup manifest")
 	}
 	var completionTempPath string
-	if manifest.Version >= missis.BackupManifestVersion {
+	if manifest.Version >= missis.BackupManifestVersionV2 {
 		if !hasCompletion {
 			return fmt.Errorf("downloaded backup bundle is incomplete: completion marker is missing")
 		}

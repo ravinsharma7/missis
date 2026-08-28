@@ -26,10 +26,14 @@ import (
 func RunArtifactsWithName(args []string, stdout, stderr io.Writer, commandName string) int {
 	stdout, stderr = commandWriters(stdout, stderr)
 	if len(args) == 0 {
-		fmt.Fprintf(stderr, "usage: %s <migrate|gc> [args] (offline; stop all missis clients first)\n", commandName)
+		fmt.Fprintf(stderr, "usage: %s <verify|rebuild-index-copy|migrate|gc> [args] (offline; stop all missis clients first)\n", commandName)
 		return 2
 	}
 	switch args[0] {
+	case "verify":
+		return runArtifactVerify(args[1:], stdout, stderr, commandName+" verify")
+	case "rebuild-index-copy":
+		return runArtifactIndexRebuildCopy(args[1:], stdout, stderr, commandName+" rebuild-index-copy")
 	case "migrate":
 		return runArtifactMigration(args[1:], stdout, stderr, commandName+" migrate")
 	case "gc":
@@ -38,6 +42,381 @@ func RunArtifactsWithName(args []string, stdout, stderr io.Writer, commandName s
 		fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
 		return 2
 	}
+}
+
+type artifactVerificationEntry struct {
+	Ref           string   `json:"ref"`
+	Status        string   `json:"status"`
+	EventIDs      []string `json:"event_ids,omitempty"`
+	Locations     []string `json:"locations,omitempty"`
+	Indexed       bool     `json:"indexed"`
+	ObjectPresent bool     `json:"object_present"`
+	ObjectValid   bool     `json:"object_valid"`
+	Issues        []string `json:"issues,omitempty"`
+	Error         string   `json:"error,omitempty"`
+}
+
+type artifactVerificationReport struct {
+	Status          string                      `json:"status"`
+	Root            string                      `json:"root"`
+	ReplayComplete  bool                        `json:"replay_complete"`
+	ReferencedCount int                         `json:"referenced_count"`
+	UnmanagedCount  int                         `json:"unmanaged_reference_count"`
+	IndexedCount    int                         `json:"indexed_count"`
+	ObjectCount     int                         `json:"object_count"`
+	Entries         []artifactVerificationEntry `json:"entries"`
+	InvalidPaths    []string                    `json:"invalid_paths,omitempty"`
+	StagingPaths    []string                    `json:"staging_paths,omitempty"`
+}
+
+func runArtifactVerify(args []string, stdout, stderr io.Writer, commandName string) int {
+	options, code, err := parseArtifactMaintenanceFlags(args, commandName)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return code
+	}
+	ctx := context.Background()
+	resolved, err := missis.ResolveStore(options.storePath)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	lease, err := store.AcquireExclusiveLease(resolved.Path)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	db, err := store.OpenWithLease(resolved.Path, lease, nil)
+	if err != nil {
+		_ = lease.Close()
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	defer db.Close()
+	usages, err := db.ListAcceptedArtifactReferences(ctx)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, fmt.Errorf("replay accepted artifact references: %w", err))
+	}
+	records, err := db.ListArtifacts(ctx)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	artifactNamespace, err := db.ArtifactNamespaceContext(ctx)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	override := options.artifactRoot
+	if strings.TrimSpace(override) == "" {
+		override = os.Getenv("MISSIS_ARTIFACT_STORE")
+	}
+	root, err := application.ArtifactRootForMaintenance(artifactNamespace, override)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	artifactLease, err := store.AcquireExclusiveLease(root)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	defer artifactLease.Close()
+
+	usageByRef := make(map[string]store.ArtifactReferenceUsage, len(usages))
+	allRefs := make(map[string]struct{})
+	var unmanagedCount int
+	for _, usage := range usages {
+		usageByRef[usage.Ref] = usage
+		allRefs[usage.Ref] = struct{}{}
+		if !usage.Managed {
+			unmanagedCount++
+		}
+	}
+	recordByRef := make(map[string]store.ArtifactRecord, len(records))
+	for _, record := range records {
+		recordByRef[record.Ref] = record
+		allRefs[record.Ref] = struct{}{}
+	}
+	objectByRef := make(map[string]artifact.Object)
+	var invalidPaths []string
+	if local, openErr := artifact.OpenLocalStore(root); openErr == nil {
+		objects, scanErr := local.Scan(ctx)
+		if scanErr != nil {
+			return printMaintenanceError(stderr, options.jsonOutput, scanErr)
+		}
+		for _, object := range objects {
+			if object.Ref == "" {
+				invalidPaths = append(invalidPaths, object.DataPath+": "+object.Err.Error())
+				continue
+			}
+			objectByRef[object.Ref.String()] = object
+			allRefs[object.Ref.String()] = struct{}{}
+		}
+	} else if !errors.Is(openErr, os.ErrNotExist) {
+		return printMaintenanceError(stderr, options.jsonOutput, openErr)
+	}
+
+	refs := make([]string, 0, len(allRefs))
+	for ref := range allRefs {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	report := artifactVerificationReport{
+		Status: "verified", Root: root, ReplayComplete: true,
+		ReferencedCount: len(usages), UnmanagedCount: unmanagedCount, IndexedCount: len(records), ObjectCount: len(objectByRef), InvalidPaths: invalidPaths,
+	}
+	if _, statErr := os.Stat(root); statErr == nil {
+		report.StagingPaths, err = staleArtifactTemps(root, time.Now(), 0)
+		if err != nil {
+			return printMaintenanceError(stderr, options.jsonOutput, err)
+		}
+	}
+	hasIntegrityFailure := len(invalidPaths) > 0
+	for _, ref := range refs {
+		usage, referenced := usageByRef[ref]
+		record, indexed := recordByRef[ref]
+		object, knownObject := objectByRef[ref]
+		dataPresent := knownObject && object.DataPath != ""
+		entry := artifactVerificationEntry{Ref: ref, Status: "healthy", Indexed: indexed, ObjectPresent: dataPresent, ObjectValid: knownObject && object.Valid}
+		if referenced {
+			entry.EventIDs, entry.Locations = usage.EventIDs, usage.Locations
+		}
+		if referenced && !usage.Managed {
+			entry.Status = "unmanaged-reference"
+			entry.Issues = append(entry.Issues, "unmanaged-non-cas-reference")
+			report.Entries = append(report.Entries, entry)
+			continue
+		}
+		if referenced && !indexed {
+			entry.Issues = append(entry.Issues, "missing-index")
+		}
+		if referenced && !dataPresent {
+			entry.Issues = append(entry.Issues, "missing-object")
+		}
+		if knownObject && !object.Valid {
+			if object.DataPath == "" {
+				// missing-object was already named above when accepted history
+				// references it; indexed-only rows need the same exact diagnosis.
+				if !referenced {
+					entry.Issues = append(entry.Issues, "missing-object")
+				}
+			} else if object.MetadataPath == "" {
+				entry.Issues = append(entry.Issues, "missing-metadata")
+			} else {
+				entry.Issues = append(entry.Issues, "corrupt-object")
+			}
+			entry.Error = object.Err.Error()
+		}
+		if indexed && !referenced {
+			entry.Issues = append(entry.Issues, "indexed-without-accepted-reference")
+		}
+		if knownObject && object.Valid && indexed && (record.Algorithm != object.Metadata.Algorithm || record.Digest != object.Metadata.Digest || record.Size != object.Metadata.Size) {
+			entry.Issues = append(entry.Issues, "index-object-metadata-mismatch")
+		}
+		if knownObject && object.Valid && !referenced && !indexed {
+			entry.Status = "unreferenced-object"
+		} else if len(entry.Issues) > 0 {
+			entry.Status = "inconsistent"
+			hasIntegrityFailure = true
+		}
+		report.Entries = append(report.Entries, entry)
+	}
+	if hasIntegrityFailure {
+		report.Status = "inconsistent"
+	} else if report.UnmanagedCount > 0 {
+		report.Status = "verified-with-unmanaged-references"
+	} else if len(report.StagingPaths) > 0 {
+		report.Status = "verified-with-recoverable-staging"
+	}
+	if options.jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	} else {
+		fmt.Fprintf(stdout, "status=%s referenced=%d unmanaged=%d indexed=%d objects=%d staging=%d root=%s\n", report.Status, report.ReferencedCount, report.UnmanagedCount, report.IndexedCount, report.ObjectCount, len(report.StagingPaths), report.Root)
+		for _, entry := range report.Entries {
+			if entry.Status != "healthy" {
+				fmt.Fprintf(stdout, "%s %s events=%s issues=%s error=%q\n", entry.Status, entry.Ref, strings.Join(entry.EventIDs, ","), strings.Join(entry.Issues, ","), entry.Error)
+			}
+		}
+	}
+	if hasIntegrityFailure {
+		return 1
+	}
+	return 0
+}
+
+type artifactIndexRebuildReport struct {
+	Status              string `json:"status"`
+	Source              string `json:"source"`
+	Destination         string `json:"destination"`
+	StoreID             string `json:"store_id"`
+	HeadDigest          string `json:"head_digest"`
+	SourceEventCount    int64  `json:"source_event_count"`
+	ReferencedObjects   int    `json:"referenced_objects"`
+	UnmanagedReferences int    `json:"unmanaged_references"`
+	RebuiltIndexRows    int    `json:"rebuilt_index_rows"`
+	SourceIndexRows     int    `json:"source_index_rows"`
+}
+
+// runArtifactIndexRebuildCopy creates a replacement candidate while leaving
+// the source database untouched. The authoritative events are copied exactly;
+// only the destination's artifacts table is rebuilt from typed event replay
+// plus fully verified CAS bytes.
+func runArtifactIndexRebuildCopy(args []string, stdout, stderr io.Writer, commandName string) int {
+	var options artifactMaintenanceOptions
+	var destination string
+	flags := flag.NewFlagSet(commandName, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&options.storePath, "store", "", "SQLite store path")
+	flags.StringVar(&options.artifactRoot, "artifact-root", "", "artifact root override")
+	flags.StringVar(&destination, "destination", "", "new rebuilt SQLite path")
+	flags.BoolVar(&options.jsonOutput, "json", false, "emit JSON")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || strings.TrimSpace(destination) == "" {
+		fmt.Fprintf(stderr, "usage: %s [--store PATH] [--artifact-root PATH] --destination NEW.db [--json]\n", commandName)
+		return 2
+	}
+	ctx := context.Background()
+	resolved, err := missis.ResolveStore(options.storePath)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	sourceAbs, err := filepath.Abs(resolved.Path)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	destinationAbs, err := filepath.Abs(filepath.Clean(destination))
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	if sourceAbs == destinationAbs {
+		return printMaintenanceError(stderr, options.jsonOutput, fmt.Errorf("rebuild destination must differ from source database"))
+	}
+	if _, err := os.Stat(destinationAbs); err == nil {
+		return printMaintenanceError(stderr, options.jsonOutput, fmt.Errorf("rebuild destination already exists: %s", destinationAbs))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	lease, err := store.AcquireExclusiveLease(sourceAbs)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	db, err := store.OpenWithLease(sourceAbs, lease, nil)
+	if err != nil {
+		_ = lease.Close()
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	defer db.Close()
+	usages, err := db.ListAcceptedArtifactReferences(ctx)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, fmt.Errorf("replay accepted artifact references: %w", err))
+	}
+	oldRecords, err := db.ListArtifacts(ctx)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	namespace, err := db.ArtifactNamespaceContext(ctx)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	override := options.artifactRoot
+	if strings.TrimSpace(override) == "" {
+		override = os.Getenv("MISSIS_ARTIFACT_STORE")
+	}
+	root, err := application.ArtifactRootForMaintenance(namespace, override)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	artifactLease, err := store.AcquireExclusiveLease(root)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	defer artifactLease.Close()
+	local, err := artifact.OpenLocalStore(root)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	rebuilt := make([]store.ArtifactRecord, 0, len(usages))
+	var unmanagedReferences int
+	for _, usage := range usages {
+		if !usage.Managed {
+			unmanagedReferences++
+			continue
+		}
+		ref, err := artifact.ParseRef(usage.Ref)
+		if err != nil {
+			return printMaintenanceError(stderr, options.jsonOutput, err)
+		}
+		metadata, err := local.Verify(ctx, ref)
+		if err != nil {
+			return printMaintenanceError(stderr, options.jsonOutput, fmt.Errorf("cannot rebuild %s referenced by events %s: %w", usage.Ref, strings.Join(usage.EventIDs, ","), err))
+		}
+		rebuilt = append(rebuilt, store.ArtifactRecord{
+			Ref: metadata.Ref.String(), Algorithm: metadata.Algorithm, Digest: metadata.Digest,
+			MediaType: metadata.MediaType, Size: metadata.Size, Backend: "local", RecordedAt: time.Now().UTC(),
+		})
+	}
+	storeID, err := db.StoreID()
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	head, err := db.HeadHashContext(ctx)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	eventCount, err := db.EventCountContext(ctx)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destinationAbs), 0o700); err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(destinationAbs), ".artifact-index-rebuild-*.db")
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	staging := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(staging)
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	if err := os.Remove(staging); err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	defer os.Remove(staging)
+	if err := db.BackupContext(ctx, staging); err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	rebuiltDB, err := store.Open(staging)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	if err := rebuiltDB.RebuildArtifactIndexContext(ctx, rebuilt); err != nil {
+		_ = rebuiltDB.Close()
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	if err := rebuiltDB.CheckConsistency(); err != nil {
+		_ = rebuiltDB.Close()
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	if err := rebuiltDB.Close(); err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	if err := os.Rename(staging, destinationAbs); err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	if err := syncMaintenanceDir(filepath.Dir(destinationAbs)); err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, err)
+	}
+	report := artifactIndexRebuildReport{
+		Status: "rebuilt-copy", Source: sourceAbs, Destination: destinationAbs, StoreID: storeID,
+		HeadDigest: head, SourceEventCount: eventCount, ReferencedObjects: len(rebuilt), UnmanagedReferences: unmanagedReferences,
+		RebuiltIndexRows: len(rebuilt), SourceIndexRows: len(oldRecords),
+	}
+	if options.jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	} else {
+		fmt.Fprintf(stdout, "rebuilt artifact index in replacement copy %s: store_id=%s head=%s events=%d managed_references=%d unmanaged_references=%d rows=%d\n", destinationAbs, storeID, head, eventCount, len(rebuilt), unmanagedReferences, len(rebuilt))
+	}
+	return 0
 }
 
 type artifactMaintenanceOptions struct {
@@ -110,7 +489,7 @@ func runArtifactMigration(args []string, stdout, stderr io.Writer, commandName s
 		return printMaintenanceError(stderr, options.jsonOutput, err)
 	}
 	defer db.Close()
-	storeID, err := db.StoreIDContext(ctx)
+	artifactNamespace, err := db.ArtifactNamespaceContext(ctx)
 	if err != nil {
 		return printMaintenanceError(stderr, options.jsonOutput, err)
 	}
@@ -118,7 +497,7 @@ func runArtifactMigration(args []string, stdout, stderr io.Writer, commandName s
 	if strings.TrimSpace(override) == "" {
 		override = os.Getenv("MISSIS_ARTIFACT_STORE")
 	}
-	destination, err := application.ArtifactRootForMaintenance(storeID, override)
+	destination, err := application.ArtifactRootForMaintenance(artifactNamespace, override)
 	if err != nil {
 		return printMaintenanceError(stderr, options.jsonOutput, err)
 	}
@@ -286,7 +665,7 @@ func runArtifactGC(args []string, stdout, stderr io.Writer, commandName string) 
 		return printMaintenanceError(stderr, options.jsonOutput, err)
 	}
 	defer db.Close()
-	storeID, err := db.StoreIDContext(ctx)
+	artifactNamespace, err := db.ArtifactNamespaceContext(ctx)
 	if err != nil {
 		return printMaintenanceError(stderr, options.jsonOutput, err)
 	}
@@ -294,7 +673,7 @@ func runArtifactGC(args []string, stdout, stderr io.Writer, commandName string) 
 	if strings.TrimSpace(override) == "" {
 		override = os.Getenv("MISSIS_ARTIFACT_STORE")
 	}
-	root, err := application.ArtifactRootForMaintenance(storeID, override)
+	root, err := application.ArtifactRootForMaintenance(artifactNamespace, override)
 	if err != nil {
 		return printMaintenanceError(stderr, options.jsonOutput, err)
 	}
@@ -326,9 +705,19 @@ func runArtifactGC(args []string, stdout, stderr io.Writer, commandName string) 
 	if err != nil {
 		return printMaintenanceError(stderr, options.jsonOutput, err)
 	}
-	live := make(map[string]struct{}, len(records))
+	accepted, err := db.ListAcceptedArtifactReferences(ctx)
+	if err != nil {
+		return printMaintenanceError(stderr, options.jsonOutput, fmt.Errorf("replay accepted artifact references before gc: %w", err))
+	}
+	// Both accepted event semantics and the current index protect an object.
+	// A missing/stale index must be reconciled explicitly; GC never guesses
+	// that either side is disposable.
+	live := make(map[string]struct{}, len(records)+len(accepted))
 	for _, record := range records {
 		live[record.Ref] = struct{}{}
+	}
+	for _, usage := range accepted {
+		live[usage.Ref] = struct{}{}
 	}
 	now := time.Now()
 	report := gcReport{Status: "dry-run", Root: root, Grace: grace.String(), DryRun: dryRun}

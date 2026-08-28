@@ -42,6 +42,29 @@ func TestIdempotency(t *testing.T) {
 	}
 }
 
+// #116: an idempotency key names one semantic request. Reusing it for a
+// different request is a conflict and must not append anything.
+func TestIdempotencyDifferentRequestIsRejected(t *testing.T) {
+	t.Parallel()
+	store := filepath.Join(t.TempDir(), "missis.db")
+
+	first := runMissis(t, store, "new", "--json", "--idempotency-key", "reused-create", "First title")
+	second := runMissis(t, store, "new", "--json", "--idempotency-key", "reused-create", "Different title")
+	if first.code != 0 {
+		t.Fatalf("first create failed: %d %s", first.code, first.stderr)
+	}
+	if second.code != 5 {
+		t.Fatalf("different request exit=%d, want conflict 5\nstdout=%s\nstderr=%s", second.code, second.stdout, second.stderr)
+	}
+	if got := mustJSON(t, second)["error"]; got != "idempotency_mismatch" {
+		t.Fatalf("different request error=%v, want idempotency_mismatch", got)
+	}
+	listed := mustJSON(t, runMissis(t, store, "show", "--json"))["tickets"].([]any)
+	if len(listed) != 1 || listed[0].(map[string]any)["title"] != "First title" {
+		t.Fatalf("mismatched retry changed the store: %#v", listed)
+	}
+}
+
 func TestBlockedRequiresReason(t *testing.T) {
 	t.Parallel()
 	// covers PH1-CLI-006 PH1-CLI-007 PH1-CLI-008 N004 N005 N006 N113

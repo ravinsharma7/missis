@@ -94,10 +94,18 @@ func openResolved(resolved missis.ResolvedStore, clock missis.Clock, artifactRoo
 		}
 		return nil, fmt.Errorf("read store identity for artifact namespace: %w", storeIDErr)
 	}
+	artifactNamespace, namespaceErr := s.ArtifactNamespaceContext(context.Background())
+	if namespaceErr != nil {
+		_ = s.Close()
+		if diagCloser != nil {
+			_ = diagCloser.Close()
+		}
+		return nil, fmt.Errorf("read artifact namespace for store %s: %w", storeID, namespaceErr)
+	}
 	if artifactRootOverride == "" {
 		artifactRootOverride = os.Getenv("MISSIS_ARTIFACT_STORE")
 	}
-	rootResolution, rootErr := resolveArtifactRoot(resolved, storeID, artifactRootOverride)
+	rootResolution, rootErr := resolveArtifactRoot(resolved, artifactNamespace, artifactRootOverride)
 	if rootErr != nil {
 		_ = s.Close()
 		if diagCloser != nil {
@@ -406,6 +414,9 @@ func (s *Service) ListTickets(ctx context.Context, effectiveAt time.Time) ([]sto
 
 func (s *Service) AppendBatch(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []store.Precondition, result any) (store.AppendOutcome, error) {
 	outcome, err := s.store.AppendBatchContext(ctx, events, idempotencyKey, preconditions, result)
+	if errors.Is(err, store.ErrIdempotencyMismatch) {
+		return outcome, idempotencyMismatch(err)
+	}
 	if errors.Is(err, store.ErrConflict) {
 		return outcome, conflict(err)
 	}
@@ -414,6 +425,9 @@ func (s *Service) AppendBatch(ctx context.Context, events []model.Event, idempot
 
 func (s *Service) AppendTicketBatch(ctx context.Context, events []model.Event, idempotencyKey string, result any) (store.AppendOutcome, uint64, error) {
 	outcome, alias, err := s.store.AppendTicketBatchContext(ctx, events, idempotencyKey, result)
+	if errors.Is(err, store.ErrIdempotencyMismatch) {
+		return outcome, alias, idempotencyMismatch(err)
+	}
 	if errors.Is(err, store.ErrConflict) {
 		return outcome, alias, conflict(err)
 	}
@@ -422,6 +436,9 @@ func (s *Service) AppendTicketBatch(ctx context.Context, events []model.Event, i
 
 func (s *Service) AppendArtifactTicketBatch(ctx context.Context, events []model.Event, idempotencyKey string, result any, artifacts []store.ArtifactRecord) (store.AppendOutcome, uint64, error) {
 	outcome, alias, err := s.store.AppendArtifactTicketBatchContext(ctx, events, idempotencyKey, result, artifacts)
+	if errors.Is(err, store.ErrIdempotencyMismatch) {
+		return outcome, alias, idempotencyMismatch(err)
+	}
 	if errors.Is(err, store.ErrConflict) {
 		return outcome, alias, conflict(err)
 	}
@@ -430,6 +447,9 @@ func (s *Service) AppendArtifactTicketBatch(ctx context.Context, events []model.
 
 func (s *Service) AppendArtifactTicketBatchWithResult(ctx context.Context, events []model.Event, idempotencyKey string, result any, resultFactory func(uint64) any, artifacts []store.ArtifactRecord) (store.AppendOutcome, uint64, error) {
 	outcome, alias, err := s.store.AppendArtifactTicketBatchContextWithResult(ctx, events, idempotencyKey, result, resultFactory, artifacts)
+	if errors.Is(err, store.ErrIdempotencyMismatch) {
+		return outcome, alias, idempotencyMismatch(err)
+	}
 	if errors.Is(err, store.ErrConflict) {
 		return outcome, alias, conflict(err)
 	}

@@ -28,6 +28,11 @@ type linkTripleKey struct {
 // SetLink method keeps its evidence semantics and continues to allow another
 // active assertion of the same triple.
 func (s *Service) ApplyLinkBatch(ctx context.Context, req missis.RequestContext, opts missis.LinkBatchOptions) (missis.LinkBatchResult, error) {
+	var err error
+	ctx, err = s.withIdempotencyRequest(ctx, req, "apply-link-batch", opts)
+	if err != nil {
+		return missis.LinkBatchResult{}, err
+	}
 	req, now := s.normalize(req)
 	if len(opts.Items) == 0 {
 		return missis.LinkBatchResult{}, invalidInput("link batch requires at least one item")

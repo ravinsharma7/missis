@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -170,6 +172,190 @@ func TestArtifactMaintenanceRejectsActiveStoreClients(t *testing.T) {
 	}
 }
 
+func TestArtifactVerifyReplaysExactEventsAndDetectsSameSizeTampering(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "store.db")
+	root := filepath.Join(dir, "artifacts")
+	svc, err := application.OpenPathWithClockAndArtifactRoot(storePath, toolingTestClock{}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := missis.NewClient(svc)
+	created, err := client.NewTicket(context.Background(), missis.RequestContext{Actor: "test"}, missis.NewTicketOptions{Title: "verify artifact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingested, err := client.Ingest(context.Background(), missis.RequestContext{Actor: "test"}, missis.IngestOptions{
+		Target: created.ID, MediaType: "application/octet-stream", SourceName: "evidence.bin", Content: strings.NewReader("original-bytes"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runCommand(t, "artifacts", "verify", "--store", storePath, "--artifact-root", root, "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"status":"verified"`) || !strings.Contains(stdout, ingested.Artifact) || !strings.Contains(stdout, `"event_ids"`) {
+		t.Fatalf("healthy verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	digest := strings.TrimPrefix(ingested.Artifact, "artifact:sha256:")
+	dataPath := filepath.Join(root, "sha256", digest[:2], digest[2:4], digest)
+	if err := os.WriteFile(dataPath, []byte("modified-bytes"), 0o600); err != nil { // same length as original
+		t.Fatal(err)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "verify", "--store", storePath, "--artifact-root", root, "--json")
+	if code == 0 || stderr != "" || !strings.Contains(stdout, `"status":"inconsistent"`) || !strings.Contains(stdout, "corrupt-object") || !strings.Contains(stdout, "computed sha256=") {
+		t.Fatalf("tampered verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if err := os.WriteFile(dataPath, []byte("original-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "verify", "--store", storePath, "--artifact-root", root, "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"status":"verified"`) {
+		t.Fatalf("restored verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if err := os.Remove(dataPath); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "verify", "--store", storePath, "--artifact-root", root, "--json")
+	if code == 0 || stderr != "" || !strings.Contains(stdout, "missing-object") || !strings.Contains(stdout, ingested.Artifact) || !strings.Contains(stdout, `"event_ids"`) {
+		t.Fatalf("missing object verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if err := os.WriteFile(dataPath, []byte("original-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "verify", "--store", storePath, "--artifact-root", root, "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"status":"verified"`) {
+		t.Fatalf("restored missing object verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+type toolingTestClock struct{}
+
+func (toolingTestClock) Now() time.Time {
+	return time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+}
+
+func TestArtifactVerifyClassifiesUnreferencedObjectWithoutGuessing(t *testing.T) {
+	dir := t.TempDir()
+	storePath := newTestStore(t)
+	root := filepath.Join(dir, "artifacts")
+	local, err := artifact.NewLocalStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := local.Put(context.Background(), strings.NewReader("unreferenced"), "application/octet-stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runCommand(t, "artifacts", "verify", "--store", storePath, "--artifact-root", root, "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, metadata.Ref.String()) || !strings.Contains(stdout, `"status":"unreferenced-object"`) {
+		t.Fatalf("unreferenced verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestArtifactVerifyFindsMissingIndexAndGCStillPreservesAcceptedObject(t *testing.T) {
+	// covers PH1-ART-001 PH1-ART-002
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "store.db")
+	root := filepath.Join(dir, "artifacts")
+	svc, err := application.OpenPathWithClockAndArtifactRoot(storePath, toolingTestClock{}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := missis.NewClient(svc)
+	created, err := client.NewTicket(context.Background(), missis.RequestContext{Actor: "test"}, missis.NewTicketOptions{Title: "missing artifact index"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingested, err := client.Ingest(context.Background(), missis.RequestContext{Actor: "test"}, missis.IngestOptions{
+		Target: created.ID, MediaType: "application/octet-stream", SourceName: "evidence.bin", Content: strings.NewReader("accepted-object"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM artifacts WHERE ref=?`, ingested.Artifact); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runCommand(t, "artifacts", "verify", "--store", storePath, "--artifact-root", root, "--json")
+	if code == 0 || stderr != "" || !strings.Contains(stdout, "missing-index") || !strings.Contains(stdout, `"event_ids"`) {
+		t.Fatalf("missing index verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "gc", "--store", storePath, "--artifact-root", root, "--grace", "0s", "--confirm", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("gc after missing index: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	local, err := artifact.OpenLocalStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := artifact.ParseRef(ingested.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := local.Verify(context.Background(), ref); err != nil {
+		t.Fatalf("GC deleted accepted object with missing index: %v", err)
+	}
+	rebuiltPath := filepath.Join(dir, "rebuilt.db")
+	code, stdout, stderr = runCommand(t, "artifacts", "rebuild-index-copy", "--store", storePath, "--artifact-root", root, "--destination", rebuiltPath, "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"status":"rebuilt-copy"`) || !strings.Contains(stdout, `"rebuilt_index_rows":1`) {
+		t.Fatalf("rebuild copy: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "verify", "--store", rebuiltPath, "--artifact-root", root, "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"status":"verified"`) || strings.Contains(stdout, "missing-index") {
+		t.Fatalf("rebuilt copy verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	sourceDB, err := sql.Open("sqlite", storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sourceRows int
+	if err := sourceDB.QueryRow(`SELECT COUNT(*) FROM artifacts`).Scan(&sourceRows); err != nil {
+		_ = sourceDB.Close()
+		t.Fatal(err)
+	}
+	if err := sourceDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if sourceRows != 0 {
+		t.Fatalf("source index was mutated: rows=%d", sourceRows)
+	}
+}
+
+func TestArtifactCrashStagingIsReportedThenExplicitlyCollected(t *testing.T) {
+	storePath := newTestStore(t)
+	root := filepath.Join(t.TempDir(), "artifacts")
+	if _, err := artifact.NewLocalStore(root); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(root, ".artifact-injectedtmp")
+	if err := os.WriteFile(staging, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runCommand(t, "artifacts", "verify", "--store", storePath, "--artifact-root", root, "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "verified-with-recoverable-staging") || !strings.Contains(stdout, staging) {
+		t.Fatalf("staging verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runCommand(t, "artifacts", "gc", "--store", storePath, "--artifact-root", root, "--grace", "0s", "--confirm", "--json")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, staging) {
+		t.Fatalf("staging cleanup: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(staging); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging file remains: %v", err)
+	}
+}
+
 func TestBackupVerifyAndCleanupRecognizeCompletionMarker(t *testing.T) {
 	storePath := newTestStore(t)
 	t.Setenv("MISSIS_STORE", storePath)
@@ -333,6 +519,60 @@ func TestRunHelpAndUnknownCommand(t *testing.T) {
 	code, stdout, stderr = runCommand(t, "unknown")
 	if code != 2 || stdout != "" || !strings.Contains(stderr, "unknown command: unknown") {
 		t.Fatalf("unknown: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestStoreMigrationCommandRequiresExplicitActionAndTarget(t *testing.T) {
+	path := newTestStore(t)
+	code, stdout, stderr := runCommand(t, "store", "migrate", "plan", "--store", path, "--to-format", "6", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("plan: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var plan store.MigrationPlan
+	if err := json.Unmarshal([]byte(stdout), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.FromFormat != 6 || plan.ToFormat != 6 || plan.RequiresBackup || plan.ChangesStoreID {
+		t.Fatalf("plan = %#v", plan)
+	}
+	if code, _, stderr := runCommand(t, "store", "migrate", "plan", "--store", path); code != 2 || !strings.Contains(stderr, "--to-format") {
+		t.Fatalf("missing target: code=%d stderr=%q", code, stderr)
+	}
+	if code, _, stderr := runCommand(t, "store", "migrate", "apply", "--store", path, "--to-format", "6"); code != 2 || !strings.Contains(stderr, "--backup") {
+		t.Fatalf("missing backup: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestStoreForkCommandRequiresVersionSourceAndBackup(t *testing.T) {
+	path := newTestStore(t)
+	code, stdout, stderr := runCommand(t, "store", "fork", "plan", "--store", path, "--to-identity-version", "1", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("fork plan: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var plan store.WritableForkPlan
+	if err := json.Unmarshal([]byte(stdout), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Eligible || plan.FromStoreID == "" || plan.ToIdentityVersion != 1 {
+		t.Fatalf("fork plan = %#v", plan)
+	}
+	if code, _, stderr := runCommand(t, "store", "fork", "plan", "--store", path); code != 2 || !strings.Contains(stderr, "--to-identity-version") {
+		t.Fatalf("missing identity target: code=%d stderr=%q", code, stderr)
+	}
+	if code, _, stderr := runCommand(t, "store", "fork", "apply", "--store", path, "--to-identity-version", "1"); code != 2 || !strings.Contains(stderr, "--from-store-id") || !strings.Contains(stderr, "--backup") {
+		t.Fatalf("missing fork confirmations: code=%d stderr=%q", code, stderr)
+	}
+	backup := filepath.Join(t.TempDir(), "pre-fork.db")
+	code, stdout, stderr = runCommand(t, "store", "fork", "apply", "--store", path, "--to-identity-version", "1", "--from-store-id", plan.FromStoreID, "--backup", backup, "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("fork apply: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var report store.WritableForkReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "forked" || report.ToStoreID == plan.FromStoreID || report.ReceiptDigest == "" {
+		t.Fatalf("fork report = %#v", report)
 	}
 }
 

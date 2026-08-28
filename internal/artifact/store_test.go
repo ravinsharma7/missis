@@ -145,6 +145,33 @@ func TestLocalStoreScanValidatesContentAndMetadata(t *testing.T) {
 	}
 }
 
+func TestLocalStoreNeverServesOrDeduplicatesSameSizeTampering(t *testing.T) {
+	store, err := NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := store.Put(context.Background(), strings.NewReader("original-bytes"), "application/octet-stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.TrimPrefix(metadata.Ref.String(), refPrefix)
+	dataPath := filepath.Join(store.Root(), "sha256", digest[:2], digest[2:4], digest)
+	if err := os.WriteFile(dataPath, []byte("modified-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Open(context.Background(), metadata.Ref); err == nil {
+		t.Fatal("Open served same-size modified bytes")
+	} else {
+		var integrity *IntegrityError
+		if !errors.As(err, &integrity) || integrity.ExpectedDigest != metadata.Digest || integrity.ComputedDigest == "" || integrity.ExpectedSize != integrity.ComputedSize {
+			t.Fatalf("Open error = %#v", err)
+		}
+	}
+	if _, err := store.Put(context.Background(), strings.NewReader("original-bytes"), "application/octet-stream"); !errors.Is(err, ErrMetadataMismatch) {
+		t.Fatalf("deduplication error = %v", err)
+	}
+}
+
 func TestLocalStoreScanReportsIncompleteObjectAndRemoveIsComplete(t *testing.T) {
 	store, err := NewLocalStore(t.TempDir())
 	if err != nil {
@@ -165,6 +192,13 @@ func TestLocalStoreScanReportsIncompleteObjectAndRemoveIsComplete(t *testing.T) 
 	}
 	if len(objects) != 1 || objects[0].Valid || !errors.Is(objects[0].Err, ErrMetadataMissing) {
 		t.Fatalf("incomplete scan = %+v, want missing metadata", objects)
+	}
+	repaired, err := store.Put(context.Background(), strings.NewReader("remove me"), "text/plain")
+	if err != nil {
+		t.Fatalf("re-publish exact trusted bytes: %v", err)
+	}
+	if repaired != metadata {
+		t.Fatalf("repaired metadata = %+v, want %+v", repaired, metadata)
 	}
 	if err := store.Remove(context.Background(), metadata.Ref); err != nil {
 		t.Fatal(err)

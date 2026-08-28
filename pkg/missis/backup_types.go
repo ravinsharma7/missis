@@ -3,7 +3,8 @@ package missis
 import "time"
 
 const (
-	BackupManifestVersion   = 2
+	BackupManifestVersion   = 3
+	BackupManifestVersionV2 = 2
 	BackupManifestVersionV1 = 1
 	BackupArtifactEmbedded  = "embedded"
 	BackupArtifactExternal  = "external"

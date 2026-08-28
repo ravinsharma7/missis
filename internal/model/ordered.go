@@ -52,9 +52,9 @@ func parseOrderKey(value string) (int64, bool) {
 	return parsed, err == nil && parsed >= 0
 }
 
-// OrderedChildren returns current children in containment order. Legacy
-// events without a key retain deterministic stream-sequence/ID ordering via
-// CreatedSequence and CreatedBy.
+// OrderedChildren returns current children in containment order. Pre-order-key
+// events retain deterministic stream-sequence/ID ordering via CreatedSequence
+// and CreatedBy.
 func OrderedChildren(proj *Projection, parent *PartID) []*Part {
 	if proj == nil {
 		return nil

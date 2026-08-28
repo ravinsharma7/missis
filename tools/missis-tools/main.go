@@ -20,12 +20,23 @@ const usage = "usage: missis-tools <command> [args]\n\n" +
 	"  repair <missis.db>                verify consistency and report sequence gaps\n" +
 	"  gaps <missis.db>                  report sequence gaps\n" +
 	"  manifest [missis.db]              print the store manifest as JSON\n" +
+	"  store migrate plan --to-format N [--store PATH]\n" +
+	"  store migrate apply --to-format N --backup PATH [--store PATH]\n" +
+	"                                      plan or apply an explicit versioned migration\n" +
+	"  store fork plan --to-identity-version N [--store PATH]\n" +
+	"  store fork apply --to-identity-version N --from-store-id ID --backup PATH [--source-artifact-root PATH] [--destination-artifact-root PATH] [--store PATH]\n" +
+	"  store fork recover --to-identity-version N --from-store-id ID --backup PATH --destination-artifact-root PATH [--source-artifact-root PATH] [--store PATH]\n" +
+	"  store fork inspect --destination-artifact-root PATH [--store PATH]\n" +
+	"                                      give a deliberately writable copy a new identity and lineage\n" +
 	"  backup [destination]              create a consistent store backup\n" +
 	"  backup verify [backup.db] [--against-current]\n" +
 	"                                      verify and classify a backup bundle\n" +
 	"  backup cleanup <directory>        remove stale incomplete backup paths\n" +
 	"  artifacts migrate [flags]         migrate legacy project-local artifacts offline\n" +
+	"  artifacts verify [flags]          replay references and verify indexed CAS bytes\n" +
+	"  artifacts rebuild-index-copy      rebuild derived artifact index in a new database\n" +
 	"  artifacts gc [flags]              collect unindexed local artifacts offline\n" +
+	"  peers inspect --config FILE       verify configured local read-only peers\n" +
 	"  remote upload [source]           upload a backup to the configured remote\n" +
 	"  remote download <destination>    download and verify a backup\n"
 
@@ -119,10 +130,14 @@ func run(args []string, input io.Reader, stdout, stderr io.Writer) int {
 			return 2
 		}
 		return tooling.RunManifest(args[1:], stdout, stderr)
+	case "store":
+		return tooling.RunStoreWithName(args[1:], stdout, stderr, "missis-tools store")
 	case "backup":
 		return tooling.RunBackupWithName(args[1:], stdout, stderr, "missis-tools backup")
 	case "artifacts":
 		return tooling.RunArtifactsWithName(args[1:], stdout, stderr, "missis-tools artifacts")
+	case "peers":
+		return tooling.RunPeersWithName(args[1:], stdout, stderr, "missis-tools peers")
 	case "remote":
 		return tooling.RunRemoteWithName(args[1:], stdout, stderr, "missis-tools remote")
 	default:

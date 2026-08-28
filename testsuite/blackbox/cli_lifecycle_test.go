@@ -90,6 +90,15 @@ func TestShowHealth(t *testing.T) {
 	if body["status"] != "ok" {
 		t.Fatalf("health status = %v", body["status"])
 	}
+	if body["durability_profile"] != "wal-normal" || body["sqlite_journal_mode"] != "wal" || body["sqlite_synchronous"] != "NORMAL" {
+		t.Fatalf("durability profile = %#v", body)
+	}
+	if body["process_crash_recovery"] != true {
+		t.Fatalf("process crash recovery = %v", body["process_crash_recovery"])
+	}
+	if body["acknowledged_commit_power_loss_durable"] != false {
+		t.Fatalf("power-loss durability = %v", body["acknowledged_commit_power_loss_durable"])
+	}
 }
 
 func TestShowVersion(t *testing.T) {

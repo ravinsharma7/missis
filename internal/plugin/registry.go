@@ -311,6 +311,7 @@ func knownCoreKind(kind model.ValueKind) bool {
 		model.ValueKindVerification,
 		model.ValueKindJSON,
 		model.ValueKindArtifact,
+		model.ValueKindExternalRef,
 		model.ValueKindAnnotation,
 		model.ValueKindImage,
 		model.ValueKindVideo,

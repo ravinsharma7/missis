@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ravinsharma7/missis/internal/externalref"
 	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/pkg/missis"
@@ -352,6 +353,19 @@ func renderPartValue(part missis.PartView) string {
 	case "ref":
 		if ref, ok := part.Value.(*model.Ref); ok && ref != nil {
 			return string(ref.Kind) + ":" + ref.Entity
+		}
+		return fmt.Sprintf("%v", part.Value)
+	case "external-ref":
+		if ref, ok := part.Value.(externalref.ReferenceV1); ok {
+			entity := ref.EntityID
+			if ref.SubentityID != "" {
+				entity += "/" + ref.SubentityID
+			}
+			label := ref.DisplayHint
+			if label == "" {
+				label = ref.Namespace + ":" + ref.Kind + ":" + entity
+			}
+			return fmt.Sprintf("%s [external unresolved; store_id=%s entity=%s]", label, ref.StoreID, entity)
 		}
 		return fmt.Sprintf("%v", part.Value)
 	default:

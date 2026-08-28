@@ -48,6 +48,35 @@ func AcquireSharedLease(path string) (*Lease, error) {
 	return acquireLease(path, false)
 }
 
+// AcquireExistingSharedLeaseReadOnly coordinates a local peer read without
+// creating a directory or lock file. A missing lock means the store cannot be
+// proven to participate in the live-store maintenance protocol.
+func AcquireExistingSharedLeaseReadOnly(path string) (*Lease, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("%w: store path is empty", ErrMaintenanceLock)
+	}
+	absPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolve store path: %v", ErrMaintenanceLock, err)
+	}
+	lockPath := absPath + ".maintenance.lock"
+	file, err := os.Open(lockPath)
+	if err != nil {
+		return nil, wrapLeasePathError(lockPath, fmt.Errorf("%w: open existing %q read-only: %v", ErrMaintenanceLock, lockPath, err))
+	}
+	unlock, busy, err := tryLockFile(file, false)
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: %v", ErrMaintenanceLock, err)
+	}
+	if busy {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: %s", ErrMaintenanceBusy, absPath)
+	}
+	return &Lease{file: file, unlock: unlock, path: absPath, mode: LeaseShared}, nil
+}
+
 func AcquireExclusiveLease(path string) (*Lease, error) {
 	return acquireLease(path, true)
 }

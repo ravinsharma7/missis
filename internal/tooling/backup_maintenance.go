@@ -175,7 +175,7 @@ func cleanupBackupDirectory(directory string, older time.Duration, now time.Time
 			// never removed by cleanup because it remains readable.
 			continue
 		}
-		if readErr != nil || manifest.Version < missis.BackupManifestVersion {
+		if readErr != nil || manifest.Version < missis.BackupManifestVersionV2 {
 			continue
 		}
 		if _, markerErr := os.Stat(path + ".complete.json"); markerErr == nil {

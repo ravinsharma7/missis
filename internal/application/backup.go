@@ -83,7 +83,7 @@ func ClassifyBackup(path string) (BackupState, error) {
 	if manifest.Version == missis.BackupManifestVersionV1 {
 		return BackupStateLegacyV1, nil
 	}
-	if manifest.Version != missis.BackupManifestVersion {
+	if manifest.Version != missis.BackupManifestVersion && manifest.Version != missis.BackupManifestVersionV2 {
 		return BackupStateCorrupt, fmt.Errorf("unsupported backup manifest version: %d", manifest.Version)
 	}
 	if _, err := os.Stat(backupCompletionPath(path)); errors.Is(err, os.ErrNotExist) {
@@ -332,7 +332,11 @@ func (s *Service) restoreWithOptions(ctx context.Context, backupPath, dst string
 	if err != nil {
 		return fmt.Errorf("open backup artifacts: %w", err)
 	}
-	artifactRoot, err := restoreArtifactRoot(manifest.Store.StoreID, opts.ArtifactRoot)
+	artifactNamespace := manifest.Store.ArtifactNamespace
+	if artifactNamespace == "" {
+		artifactNamespace = manifest.Store.StoreID
+	}
+	artifactRoot, err := restoreArtifactRoot(artifactNamespace, opts.ArtifactRoot)
 	if err != nil {
 		return err
 	}
@@ -592,7 +596,7 @@ func manifestFromDatabase(ctx context.Context, path string) (missis.ManifestInfo
 }
 
 func manifestInfoFromStore(ctx context.Context, db *store.Store) (missis.ManifestInfo, error) {
-	storeID, err := db.StoreIDContext(ctx)
+	identity, err := db.IdentityInfoContext(ctx)
 	if err != nil {
 		return missis.ManifestInfo{}, err
 	}
@@ -608,7 +612,26 @@ func manifestInfoFromStore(ctx context.Context, db *store.Store) (missis.Manifes
 	if err != nil {
 		return missis.ManifestInfo{}, err
 	}
-	return missis.ManifestInfo{StoreID: storeID, HeadHash: head, EventCount: count, SchemaVersion: schemaVersion}, nil
+	receiptDigest, err := db.LatestIdentityMigrationReceiptDigestContext(ctx)
+	if err != nil {
+		return missis.ManifestInfo{}, err
+	}
+	lineageDigest, err := db.LatestIdentityLineageReceiptDigestContext(ctx)
+	if err != nil {
+		return missis.ManifestInfo{}, err
+	}
+	formatReceiptDigest, err := db.LatestFormatMigrationReceiptDigestContext(ctx)
+	if err != nil {
+		return missis.ManifestInfo{}, err
+	}
+	return missis.ManifestInfo{
+		StoreID: identity.StoreID, IdentityScheme: identity.Scheme,
+		IdentityDocumentDigest: identity.DocumentDigest, IdentityMigrationReceiptDigest: receiptDigest,
+		IdentityLineageReceiptDigest: lineageDigest,
+		FormatMigrationReceiptDigest: formatReceiptDigest,
+		ArtifactNamespace:            identity.ArtifactNamespace, HeadIntegrityEpoch: "global-json-chain-v1",
+		HeadHash: head, EventCount: count, SchemaVersion: schemaVersion,
+	}, nil
 }
 
 func compareManifest(actual, expected missis.ManifestInfo) error {
@@ -619,7 +642,7 @@ func compareManifest(actual, expected missis.ManifestInfo) error {
 }
 
 func validateBackupManifest(manifest missis.BackupManifest) error {
-	if manifest.Version != missis.BackupManifestVersion && manifest.Version != missis.BackupManifestVersionV1 {
+	if manifest.Version != missis.BackupManifestVersion && manifest.Version != missis.BackupManifestVersionV2 && manifest.Version != missis.BackupManifestVersionV1 {
 		return fmt.Errorf("unsupported backup manifest version: %d", manifest.Version)
 	}
 	if manifest.ArtifactMode != missis.BackupArtifactEmbedded && manifest.ArtifactMode != missis.BackupArtifactExternal {
@@ -633,6 +656,9 @@ func validateBackupManifest(manifest missis.BackupManifest) error {
 	}
 	if manifest.Store.EventCount > 0 && strings.TrimSpace(manifest.Store.HeadHash) == "" {
 		return fmt.Errorf("backup store metadata is incomplete: event head is missing")
+	}
+	if manifest.Version >= missis.BackupManifestVersion && (manifest.Store.IdentityScheme == "" || manifest.Store.IdentityDocumentDigest == "" || manifest.Store.ArtifactNamespace == "" || manifest.Store.HeadIntegrityEpoch == "") {
+		return fmt.Errorf("backup store identity metadata is incomplete")
 	}
 	seen := make(map[string]struct{}, len(manifest.Artifacts))
 	for _, entry := range manifest.Artifacts {
@@ -694,7 +720,7 @@ func backupArtifactsPath(dst string) string { return dst + ".artifacts" }
 func backupCompletionPath(dst string) string { return dst + ".complete.json" }
 
 func verifyBackupCompletion(backupPath string, manifest missis.BackupManifest) error {
-	if manifest.Version < missis.BackupManifestVersion {
+	if manifest.Version < missis.BackupManifestVersionV2 {
 		return nil
 	}
 	file, err := os.Open(backupCompletionPath(backupPath))

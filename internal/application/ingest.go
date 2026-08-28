@@ -161,11 +161,27 @@ func (s *Service) assignIngestOrderKeys(ctx context.Context, stream model.Ref, e
 }
 
 func (s *Service) Ingest(ctx context.Context, req missis.RequestContext, opts missis.IngestOptions) (missis.IngestResult, error) {
+	rawReq := req
 	req, now := s.normalize(req)
 	if strings.TrimSpace(opts.Target) == "" {
 		return missis.IngestResult{}, invalidInput("ingest target is required")
 	}
 	if req.IdempotencyKey != "" {
+		if opts.Content == nil {
+			return missis.IngestResult{}, invalidInput("ingest content is required")
+		}
+		mediaType := strings.TrimSpace(opts.MediaType)
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		metadata, err := s.artifacts.Put(ctx, opts.Content, mediaType)
+		if err != nil {
+			return missis.IngestResult{}, keepStorage(err)
+		}
+		ctx, err = s.withIdempotencyRequest(ctx, rawReq, "ingest", ingestFingerprint(opts, metadata.Ref.String()))
+		if err != nil {
+			return missis.IngestResult{}, err
+		}
 		var replay missis.IngestResult
 		replayed, err := s.LookupIdempotencyContext(ctx, req.IdempotencyKey, &replay)
 		if err != nil {
@@ -177,6 +193,12 @@ func (s *Service) Ingest(ctx context.Context, req missis.RequestContext, opts mi
 			}
 			return replay, nil
 		}
+		content, err := s.artifacts.Open(ctx, metadata.Ref)
+		if err != nil {
+			return missis.IngestResult{}, keepStorage(err)
+		}
+		defer content.Close()
+		opts.Content = content
 	}
 	stream, basePath, err := s.resolveStreamRef(ctx, opts.Target, req.EffectiveAt)
 	if err != nil {
@@ -209,6 +231,9 @@ func (s *Service) Ingest(ctx context.Context, req missis.RequestContext, opts mi
 		result.Diagnostics = append(result.Diagnostics, diagnostic.Message)
 	}
 	outcome, err := s.store.AppendArtifactBatchContext(ctx, prepared.proposal.Events, req.IdempotencyKey, nil, &result, []store.ArtifactRecord{prepared.record})
+	if errors.Is(err, store.ErrIdempotencyMismatch) {
+		return missis.IngestResult{}, idempotencyMismatch(err)
+	}
 	if errors.Is(err, store.ErrConflict) {
 		return missis.IngestResult{}, conflict(err)
 	}

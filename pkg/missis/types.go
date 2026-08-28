@@ -28,11 +28,12 @@ type Clock interface {
 type ErrorKind string
 
 const (
-	ErrInvalidInput ErrorKind = "invalid_input"
-	ErrNotFound     ErrorKind = "not_found"
-	ErrValidation   ErrorKind = "validation_failed"
-	ErrConflict     ErrorKind = "concurrency_conflict"
-	ErrStorage      ErrorKind = "storage_failure"
+	ErrInvalidInput        ErrorKind = "invalid_input"
+	ErrNotFound            ErrorKind = "not_found"
+	ErrValidation          ErrorKind = "validation_failed"
+	ErrConflict            ErrorKind = "concurrency_conflict"
+	ErrIdempotencyMismatch ErrorKind = "idempotency_mismatch"
+	ErrStorage             ErrorKind = "storage_failure"
 )
 
 // DomainError is the stable, typed error contract returned by the service.
@@ -392,10 +393,17 @@ type ListFilter struct {
 // ManifestInfo is the portable store fingerprint used for backup naming and
 // restore verification.
 type ManifestInfo struct {
-	SchemaVersion string `json:"schema_version"`
-	StoreID       string `json:"store_id"`
-	HeadHash      string `json:"head_hash"`
-	EventCount    int64  `json:"event_count"`
+	SchemaVersion                  string `json:"schema_version"`
+	StoreID                        string `json:"store_id"`
+	IdentityScheme                 string `json:"identity_scheme,omitempty"`
+	IdentityDocumentDigest         string `json:"identity_document_digest,omitempty"`
+	IdentityMigrationReceiptDigest string `json:"identity_migration_receipt_digest,omitempty"`
+	IdentityLineageReceiptDigest   string `json:"identity_lineage_receipt_digest,omitempty"`
+	FormatMigrationReceiptDigest   string `json:"format_migration_receipt_digest,omitempty"`
+	ArtifactNamespace              string `json:"artifact_namespace,omitempty"`
+	HeadIntegrityEpoch             string `json:"head_integrity_epoch,omitempty"`
+	HeadHash                       string `json:"head_hash"`
+	EventCount                     int64  `json:"event_count"`
 }
 
 // ----- creation workflows -----

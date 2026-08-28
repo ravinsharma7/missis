@@ -85,6 +85,7 @@ const (
 	ValueKindVerification ValueKind = "verification"
 	ValueKindJSON         ValueKind = "json"
 	ValueKindArtifact     ValueKind = "artifact"
+	ValueKindExternalRef  ValueKind = "external-ref"
 	ValueKindAnnotation   ValueKind = "annotation"
 	// Media kinds are durable revision-2 value kinds. They carry a URI or a
 	// MediaDescriptor in Value.Data; they do not imply that every consumer can
@@ -100,7 +101,7 @@ var builtInValueKinds = []ValueKind{
 	ValueKindText, ValueKindMarkdown, ValueKindScalar, ValueKindStatus,
 	ValueKindPriority, ValueKindMap, ValueKindList, ValueKindRef,
 	ValueKindCodeRef, ValueKindGitRef, ValueKindEvidence, ValueKindVerification,
-	ValueKindJSON, ValueKindArtifact, ValueKindAnnotation, ValueKindImage,
+	ValueKindJSON, ValueKindArtifact, ValueKindExternalRef, ValueKindAnnotation, ValueKindImage,
 	ValueKindVideo, ValueKindAudio, ValueKindEmbed, ValueKindInlineSequence,
 }
 
@@ -129,7 +130,7 @@ type Value struct {
 	List      []string
 	Ref       *Ref
 	Retracted bool
-	// OrderKey is optional containment metadata. It is omitted from legacy
+	// OrderKey is optional containment metadata. It is omitted from pre-order-key
 	// event JSON and does not change hashes for events that do not use ordered
 	// children.
 	OrderKey string `json:"OrderKey,omitempty"`

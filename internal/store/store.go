@@ -21,9 +21,11 @@ import (
 
 	"github.com/ravinsharma7/missis/internal/idgen"
 	"github.com/ravinsharma7/missis/internal/model"
+	"github.com/ravinsharma7/missis/internal/storeidentity"
 )
 
 var ErrConflict = errors.New("optimistic concurrency conflict")
+var ErrIdempotencyMismatch = errors.New("idempotency request mismatch")
 
 type Precondition struct {
 	TargetEntity         string
@@ -140,8 +142,17 @@ func open(path string, diag Diagnostics, lease *Lease) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := inspectStoreFormat(path); err != nil {
+	_, statErr := os.Stat(path)
+	isNew := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !isNew {
+		return nil, statErr
+	}
+	revision, err := inspectStoreFormat(path)
+	if err != nil {
 		return nil, err
+	}
+	if !isNew && revision < CurrentStoreFormatRevision {
+		return nil, &StoreMigrationRequiredError{Found: revision, Target: CurrentStoreFormatRevision, Path: filepath.Clean(path)}
 	}
 	writer, err := sql.Open("sqlite", path+"?_txlock=immediate")
 	if err != nil {
@@ -224,6 +235,67 @@ func (s *Store) StoreIDContext(ctx context.Context) (string, error) {
 	return storeID, err
 }
 
+type IdentityInfo struct {
+	StoreID           string
+	Scheme            string
+	DocumentBytes     []byte
+	DocumentDigest    string
+	ArtifactNamespace string
+}
+
+func (s *Store) IdentityInfoContext(ctx context.Context) (IdentityInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return IdentityInfo{}, err
+	}
+	var info IdentityInfo
+	err := s.reader.QueryRowContext(ctx, `
+		SELECT store_id, identity_scheme, document_bytes, document_digest, artifact_namespace
+		FROM store_identity_v1 WHERE singleton = 1
+	`).Scan(&info.StoreID, &info.Scheme, &info.DocumentBytes, &info.DocumentDigest, &info.ArtifactNamespace)
+	if err != nil {
+		return IdentityInfo{}, err
+	}
+	if err := validateIdentityInfo(info); err != nil {
+		return IdentityInfo{}, err
+	}
+	return info, nil
+}
+
+func (s *Store) ArtifactNamespaceContext(ctx context.Context) (string, error) {
+	info, err := s.IdentityInfoContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return info.ArtifactNamespace, nil
+}
+
+func (s *Store) LatestIdentityMigrationReceiptDigestContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var digest string
+	err := s.reader.QueryRowContext(ctx, `SELECT COALESCE((SELECT receipt_digest FROM store_identity_migration_receipts ORDER BY migrated_at DESC LIMIT 1), '')`).Scan(&digest)
+	return digest, err
+}
+
+func (s *Store) LatestIdentityLineageReceiptDigestContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var digest string
+	err := s.reader.QueryRowContext(ctx, `SELECT COALESCE((SELECT receipt_digest FROM store_identity_migration_receipts WHERE receipt_id LIKE 'identity-fork:%' ORDER BY migrated_at DESC LIMIT 1), '')`).Scan(&digest)
+	return digest, err
+}
+
+func (s *Store) LatestFormatMigrationReceiptDigestContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var digest string
+	err := s.reader.QueryRowContext(ctx, `SELECT COALESCE((SELECT receipt_digest FROM store_format_migration_receipts ORDER BY migrated_at DESC LIMIT 1), '')`).Scan(&digest)
+	return digest, err
+}
+
 func (s *Store) HeadHash() (string, error) {
 	return s.HeadHashContext(context.Background())
 }
@@ -235,6 +307,26 @@ func (s *Store) HeadHashContext(ctx context.Context) (string, error) {
 	var headHash string
 	err := s.reader.QueryRowContext(ctx, `SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&headHash)
 	return headHash, err
+}
+
+// GenesisHashContext returns the first accepted event hash. It is immutable
+// for a store and lets peer resolvers distinguish a replica from a same-ID
+// database containing different history.
+func (s *Store) GenesisHashContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var genesisHash string
+	err := s.reader.QueryRowContext(ctx, `
+		SELECT COALESCE((
+			SELECT h.hash
+			FROM events e
+			JOIN event_hashes h ON h.event_id = e.id
+			ORDER BY e.alias_seq ASC
+			LIMIT 1
+		), '')
+	`).Scan(&genesisHash)
+	return genesisHash, err
 }
 
 func (s *Store) EventCount() (int64, error) {
@@ -325,12 +417,30 @@ func (s *Store) LookupIdempotencyContext(ctx context.Context, key string, result
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	var resultJSON string
-	err := s.reader.QueryRowContext(ctx, `SELECT result_json FROM idempotency WHERE key = ?`, key).Scan(&resultJSON)
+	var resultJSON, storedRequestHash string
+	err := s.reader.QueryRowContext(ctx, `SELECT result_json, request_hash FROM idempotency WHERE key = ?`, key).Scan(&resultJSON, &storedRequestHash)
 	if err == sql.ErrNoRows {
-		return false, nil
+		err = s.reader.QueryRowContext(ctx, `SELECT result_json FROM idempotency_key_tombstones WHERE key = ?`, key).Scan(&resultJSON)
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if idempotencyRequestHashFromContext(ctx) != "" {
+			return false, retiredIdempotencyKeyError(key)
+		}
+		if result != nil && resultJSON != "" {
+			if err := json.Unmarshal([]byte(resultJSON), result); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
 	}
 	if err != nil {
+		return false, err
+	}
+	if err := requireMatchingIdempotencyRequest(key, storedRequestHash, idempotencyRequestHashFromContext(ctx)); err != nil {
 		return false, err
 	}
 	if result != nil && resultJSON != "" {
@@ -448,15 +558,43 @@ func ensureStoreIdentityAndHashes(db *sql.DB) error {
 	var storeID string
 	err = tx.QueryRow(`SELECT store_id FROM store_meta WHERE singleton = 1`).Scan(&storeID)
 	if err == sql.ErrNoRows {
-		storeID = idgen.New("store")
+		document, err := storeidentity.NewDocumentV1()
+		if err != nil {
+			return err
+		}
+		documentBytes := document.CanonicalBytes()
+		storeID = document.StoreID()
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.Exec(`
+			INSERT INTO store_identity_v1(
+				singleton, store_id, identity_scheme, document_bytes, document_digest,
+				artifact_namespace, created_at, creator_protocol, creator_contract_digest
+			) VALUES (1, ?, ?, ?, ?, ?, ?, ?, NULL)
+		`, storeID, storeidentity.Scheme, documentBytes, storeidentity.DocumentDigest(documentBytes), storeID, now, "eventstore-v3-alpha.3"); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(
-			`INSERT INTO store_meta (singleton, store_id, head_hash, updated_at) VALUES (1, ?, '', ?)`,
-			storeID, time.Now().UTC().Format(time.RFC3339Nano),
+			`INSERT INTO store_meta (singleton, store_id, head_hash, updated_at, format_revision) VALUES (1, ?, '', ?, ?)`,
+			storeID, now, CurrentStoreFormatRevision,
 		); err != nil {
 			return err
 		}
 	} else if err != nil {
 		return err
+	} else {
+		var info IdentityInfo
+		if err := tx.QueryRow(`
+			SELECT store_id, identity_scheme, document_bytes, document_digest, artifact_namespace
+			FROM store_identity_v1 WHERE singleton = 1
+		`).Scan(&info.StoreID, &info.Scheme, &info.DocumentBytes, &info.DocumentDigest, &info.ArtifactNamespace); err != nil {
+			return fmt.Errorf("read store identity document: %w", err)
+		}
+		if info.StoreID != storeID {
+			return fmt.Errorf("store identity mismatch: store_meta=%q identity_document=%q", storeID, info.StoreID)
+		}
+		if err := validateIdentityInfo(info); err != nil {
+			return err
+		}
 	}
 
 	// Read the snapshot and verify the existing chain inside one transaction
@@ -466,6 +604,22 @@ func ensureStoreIdentityAndHashes(db *sql.DB) error {
 		return fmt.Errorf("integrity verification failed: %w", err)
 	}
 	return tx.Commit()
+}
+
+func validateIdentityInfo(info IdentityInfo) error {
+	if info.Scheme != storeidentity.Scheme {
+		return fmt.Errorf("unsupported store identity scheme %q", info.Scheme)
+	}
+	if err := storeidentity.ValidateBinding(info.StoreID, info.DocumentBytes); err != nil {
+		return fmt.Errorf("invalid store identity: %w", err)
+	}
+	if got := storeidentity.DocumentDigest(info.DocumentBytes); got != info.DocumentDigest {
+		return fmt.Errorf("store identity document digest mismatch: stored=%q computed=%q", info.DocumentDigest, got)
+	}
+	if strings.TrimSpace(info.ArtifactNamespace) == "" {
+		return fmt.Errorf("store artifact namespace is empty")
+	}
+	return nil
 }
 
 func verifyHashesTx(tx *sql.Tx) error {
@@ -524,6 +678,203 @@ func (s *Store) CheckConsistencyContext(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
+	var identity IdentityInfo
+	if err := tx.QueryRowContext(ctx, `SELECT store_id,identity_scheme,document_bytes,document_digest,artifact_namespace FROM store_identity_v1 WHERE singleton=1`).Scan(
+		&identity.StoreID, &identity.Scheme, &identity.DocumentBytes, &identity.DocumentDigest, &identity.ArtifactNamespace,
+	); err != nil {
+		return fmt.Errorf("store identity consistency: %w", err)
+	}
+	if err := validateIdentityInfo(identity); err != nil {
+		return err
+	}
+	var metaStoreID string
+	if err := tx.QueryRowContext(ctx, `SELECT store_id FROM store_meta WHERE singleton=1`).Scan(&metaStoreID); err != nil {
+		return err
+	}
+	if metaStoreID != identity.StoreID {
+		return fmt.Errorf("store identity consistency: store_meta=%q document=%q", metaStoreID, identity.StoreID)
+	}
+	ancestorIDs := map[string]bool{identity.StoreID: true}
+	lineageParents := make(map[string]string)
+	identityDocumentDigests := map[string]string{identity.StoreID: identity.DocumentDigest}
+	lineageChildDigests := make(map[string]string)
+	lineageRows, err := tx.QueryContext(ctx, `SELECT receipt_id,from_store_id,to_store_id,receipt_bytes,receipt_digest FROM store_identity_migration_receipts WHERE receipt_id LIKE 'identity-fork:%'`)
+	if err != nil {
+		return err
+	}
+	for lineageRows.Next() {
+		var receiptID, fromStoreID, toStoreID, digest string
+		var raw []byte
+		if err := lineageRows.Scan(&receiptID, &fromStoreID, &toStoreID, &raw, &digest); err != nil {
+			lineageRows.Close()
+			return err
+		}
+		sum := sha256.Sum256(raw)
+		receiptHex := hex.EncodeToString(sum[:])
+		if digest != "sha256:"+receiptHex || receiptID != "identity-fork:"+receiptHex {
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage receipt %q digest mismatch", receiptID)
+		}
+		var header struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(raw, &header); err != nil {
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage receipt %q cannot be decoded", receiptID)
+		}
+		var receipt writableForkReceiptV1
+		var receiptV2 writableForkReceiptV2
+		switch header.Version {
+		case "store-identity-fork-v1":
+			if err := json.Unmarshal(raw, &receipt); err != nil {
+				lineageRows.Close()
+				return fmt.Errorf("identity lineage receipt %q cannot be decoded", receiptID)
+			}
+		case "store-identity-fork-v2":
+			if err := json.Unmarshal(raw, &receiptV2); err != nil {
+				lineageRows.Close()
+				return fmt.Errorf("identity lineage receipt %q cannot be decoded", receiptID)
+			}
+			receipt = receiptV2.writableForkReceiptV1
+		default:
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage receipt %q has unknown version %q", receiptID, header.Version)
+		}
+		if receipt.FromStoreID != fromStoreID || receipt.ToStoreID != toStoreID {
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage receipt %q fields do not match indexed values", receiptID)
+		}
+		if err := storeidentity.ValidateBinding(fromStoreID, receipt.FromIdentityDocument); err != nil {
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage receipt %q parent binding: %w", receiptID, err)
+		}
+		if storeidentity.DocumentDigest(receipt.FromIdentityDocument) != receipt.FromIdentityDocumentDigest {
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage receipt %q parent document digest mismatch", receiptID)
+		}
+		if prior, exists := identityDocumentDigests[fromStoreID]; exists && prior != receipt.FromIdentityDocumentDigest {
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage receipt %q conflicts with parent document digest", receiptID)
+		}
+		identityDocumentDigests[fromStoreID] = receipt.FromIdentityDocumentDigest
+		if err := storeidentity.ValidateStoreID(toStoreID); err != nil {
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage receipt %q child identity: %w", receiptID, err)
+		}
+		validDisposition := receipt.ArtifactDisposition == "new-empty-namespace"
+		if header.Version == "store-identity-fork-v2" {
+			validDisposition = receipt.ArtifactDisposition == "copied-independent-namespace-v1" &&
+				receiptV2.UnmanagedDisposition == "provenance-only-unmanaged-v1" &&
+				receiptV2.ExcludedObjectDisposition == "excluded-unreferenced-v1" &&
+				receiptV2.ArtifactForkProtocol == "artifact-namespace-fork-v1" &&
+				receiptV2.FromArtifactNamespace != "" && receiptV2.ArtifactManifestDigest != "" && receiptV2.CompletionMarkerDigest != ""
+			var manifestDigest, markerDigest string
+			var copiedObjects, copiedBytes, unmanagedCount, excludedCount int64
+			if err := tx.QueryRowContext(ctx, `SELECT manifest_digest,completion_marker_digest,copied_object_count,copied_byte_count,unmanaged_reference_count,excluded_object_count FROM artifact_namespace_forks WHERE receipt_id=?`, receiptID).Scan(
+				&manifestDigest, &markerDigest, &copiedObjects, &copiedBytes, &unmanagedCount, &excludedCount,
+			); err != nil || manifestDigest != receiptV2.ArtifactManifestDigest || markerDigest != receiptV2.CompletionMarkerDigest ||
+				copiedObjects != int64(receiptV2.CopiedObjectCount) || copiedBytes != receiptV2.CopiedByteCount ||
+				unmanagedCount != int64(receiptV2.UnmanagedReferenceCount) || excludedCount != int64(receiptV2.ExcludedUnreferencedObjCount) {
+				lineageRows.Close()
+				return fmt.Errorf("identity lineage receipt %q artifact namespace index mismatch", receiptID)
+			}
+		}
+		if receipt.ToIdentityScheme != storeidentity.Scheme || !validDisposition || receipt.ArtifactNamespace != toStoreID {
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage receipt %q has invalid child scheme or artifact disposition", receiptID)
+		}
+		lineageChildDigests[toStoreID] = receipt.ToIdentityDocumentDigest
+		if _, duplicate := lineageParents[toStoreID]; duplicate {
+			lineageRows.Close()
+			return fmt.Errorf("identity lineage has multiple parents for %q", toStoreID)
+		}
+		lineageParents[toStoreID] = fromStoreID
+	}
+	if err := lineageRows.Err(); err != nil {
+		lineageRows.Close()
+		return err
+	}
+	if err := lineageRows.Close(); err != nil {
+		return err
+	}
+	for child := identity.StoreID; ; {
+		parent, ok := lineageParents[child]
+		if !ok {
+			break
+		}
+		if ancestorIDs[parent] {
+			return fmt.Errorf("identity lineage cycle reaches %q", parent)
+		}
+		ancestorIDs[parent] = true
+		child = parent
+	}
+	if len(lineageParents) != len(ancestorIDs)-1 {
+		return fmt.Errorf("identity lineage contains a branch disconnected from current store %q", identity.StoreID)
+	}
+	for storeID, childDigest := range lineageChildDigests {
+		if knownDigest := identityDocumentDigests[storeID]; childDigest != knownDigest {
+			return fmt.Errorf("identity lineage child %q document digest mismatch: receipt=%q known=%q", storeID, childDigest, knownDigest)
+		}
+	}
+	receiptRows, err := tx.QueryContext(ctx, `SELECT receipt_id,to_store_id,receipt_bytes,receipt_digest FROM store_identity_migration_receipts WHERE receipt_id LIKE 'identity-migration:%'`)
+	if err != nil {
+		return err
+	}
+	for receiptRows.Next() {
+		var receiptID, toStoreID, digest string
+		var raw []byte
+		if err := receiptRows.Scan(&receiptID, &toStoreID, &raw, &digest); err != nil {
+			receiptRows.Close()
+			return err
+		}
+		sum := sha256.Sum256(raw)
+		computed := "sha256:" + hex.EncodeToString(sum[:])
+		if computed != digest || receiptID != "identity-migration:"+hex.EncodeToString(sum[:]) {
+			receiptRows.Close()
+			return fmt.Errorf("identity migration receipt %q digest mismatch", receiptID)
+		}
+		if !ancestorIDs[toStoreID] {
+			receiptRows.Close()
+			return fmt.Errorf("identity migration receipt %q targets %q, which is not an ancestor of current store %q", receiptID, toStoreID, identity.StoreID)
+		}
+	}
+	if err := receiptRows.Err(); err != nil {
+		receiptRows.Close()
+		return err
+	}
+	if err := receiptRows.Close(); err != nil {
+		return err
+	}
+	formatRows, err := tx.QueryContext(ctx, `SELECT receipt_id,store_id,target_format_revision,receipt_bytes,receipt_digest FROM store_format_migration_receipts`)
+	if err != nil {
+		return err
+	}
+	for formatRows.Next() {
+		var receiptID, receiptStoreID, digest string
+		var targetRevision int
+		var raw []byte
+		if err := formatRows.Scan(&receiptID, &receiptStoreID, &targetRevision, &raw, &digest); err != nil {
+			formatRows.Close()
+			return err
+		}
+		sum := sha256.Sum256(raw)
+		hexSum := hex.EncodeToString(sum[:])
+		if receiptID != "format-migration:"+hexSum || digest != "sha256:"+hexSum {
+			formatRows.Close()
+			return fmt.Errorf("format migration receipt %q digest mismatch", receiptID)
+		}
+		if !ancestorIDs[receiptStoreID] || targetRevision > CurrentStoreFormatRevision {
+			formatRows.Close()
+			return fmt.Errorf("format migration receipt %q does not apply to the current identity/format", receiptID)
+		}
+	}
+	if err := formatRows.Err(); err != nil {
+		formatRows.Close()
+		return err
+	}
+	if err := formatRows.Close(); err != nil {
+		return err
+	}
 
 	events, err := loadEventsContext(ctx, tx)
 	if err != nil {
@@ -562,7 +913,7 @@ func (s *Store) CheckConsistencyContext(ctx context.Context) error {
 	if err := verifyEventColumnsMatchPayload(ctx, tx); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT key, event_ids_json FROM idempotency`)
+	rows, err := tx.QueryContext(ctx, `SELECT key, event_ids_json, request_hash FROM idempotency`)
 	if err != nil {
 		return err
 	}
@@ -571,16 +922,58 @@ func (s *Store) CheckConsistencyContext(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		var key, eventIDsJSON string
-		if err := rows.Scan(&key, &eventIDsJSON); err != nil {
+		var key, eventIDsJSON, requestHash string
+		if err := rows.Scan(&key, &eventIDsJSON, &requestHash); err != nil {
 			return err
 		}
 		var ids []string
 		if err := json.Unmarshal([]byte(eventIDsJSON), &ids); err != nil {
 			return fmt.Errorf("idempotency %s has invalid event ids: %w", key, err)
 		}
+		if err := validateIdempotencyRequestHash(requestHash); err != nil {
+			return fmt.Errorf("idempotency %s has invalid request hash: %w", key, err)
+		}
 	}
 	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	tombstones, err := tx.QueryContext(ctx, `SELECT key, event_ids_json, result_json, reason FROM idempotency_key_tombstones`)
+	if err != nil {
+		return err
+	}
+	for tombstones.Next() {
+		if err := ctx.Err(); err != nil {
+			tombstones.Close()
+			return err
+		}
+		var key, eventIDsJSON, resultJSON, reason string
+		if err := tombstones.Scan(&key, &eventIDsJSON, &resultJSON, &reason); err != nil {
+			tombstones.Close()
+			return err
+		}
+		var ids []string
+		if err := json.Unmarshal([]byte(eventIDsJSON), &ids); err != nil {
+			tombstones.Close()
+			return fmt.Errorf("idempotency tombstone %s has invalid event ids: %w", key, err)
+		}
+		var result any
+		if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+			tombstones.Close()
+			return fmt.Errorf("idempotency tombstone %s has invalid result: %w", key, err)
+		}
+		if reason != "format-v2-unbound-request" {
+			tombstones.Close()
+			return fmt.Errorf("idempotency tombstone %s has unknown reason %q", key, reason)
+		}
+	}
+	if err := tombstones.Err(); err != nil {
+		tombstones.Close()
+		return err
+	}
+	if err := tombstones.Close(); err != nil {
 		return err
 	}
 	var hashCount int64
@@ -816,6 +1209,32 @@ func (s *Store) appendBatchWithRetry(ctx context.Context, events []model.Event, 
 }
 
 func (s *Store) appendBatchWithRetryFactory(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord, resultFactory func(uint64) any) (AppendOutcome, uint64, error) {
+	requestHash := ""
+	if idempotencyKey != "" {
+		requestHash = idempotencyRequestHashFromContext(ctx)
+		if requestHash == "" {
+			var err error
+			requestHash, err = ComputeIdempotencyRequestHashV1(struct {
+				Operation     string
+				Events        []model.Event
+				Preconditions []Precondition
+				Artifacts     []ArtifactRecord
+				AllocateAlias bool
+			}{
+				Operation:     "append-batch",
+				Events:        events,
+				Preconditions: preconditions,
+				Artifacts:     artifacts,
+				AllocateAlias: allocateAlias,
+			})
+			if err != nil {
+				return AppendOutcome{}, 0, err
+			}
+		}
+		if err := validateIdempotencyRequestHash(requestHash); err != nil {
+			return AppendOutcome{}, 0, err
+		}
+	}
 	var (
 		outcome AppendOutcome
 		alias   uint64
@@ -831,7 +1250,7 @@ func (s *Store) appendBatchWithRetryFactory(ctx context.Context, events []model.
 		for i := range attemptEvents {
 			attemptEvents[i].Sequence = originalSequences[i]
 		}
-		outcome, alias, err = s.appendBatchOnce(ctx, attemptEvents, idempotencyKey, preconditions, result, allocateAlias, artifacts, resultFactory)
+		outcome, alias, err = s.appendBatchOnce(ctx, attemptEvents, idempotencyKey, requestHash, preconditions, result, allocateAlias, artifacts, resultFactory)
 		if err == nil || !isRetryableAppendError(err) {
 			if err != nil {
 				s.emit("append-attempt", map[string]any{
@@ -862,7 +1281,7 @@ func (s *Store) appendBatchWithRetryFactory(ctx context.Context, events []model.
 	return outcome, alias, err
 }
 
-func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord, resultFactory func(uint64) any) (AppendOutcome, uint64, error) {
+func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idempotencyKey, requestHash string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord, resultFactory func(uint64) any) (AppendOutcome, uint64, error) {
 	if len(events) == 0 {
 		return AppendOutcome{}, 0, fmt.Errorf("event batch is empty")
 	}
@@ -876,8 +1295,12 @@ func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idemp
 	if idempotencyKey != "" {
 		var resultJSON string
 		var eventIDsJSON string
-		err := tx.QueryRowContext(ctx, `SELECT result_json, event_ids_json FROM idempotency WHERE key = ?`, idempotencyKey).Scan(&resultJSON, &eventIDsJSON)
+		var storedRequestHash string
+		err := tx.QueryRowContext(ctx, `SELECT result_json, event_ids_json, request_hash FROM idempotency WHERE key = ?`, idempotencyKey).Scan(&resultJSON, &eventIDsJSON, &storedRequestHash)
 		if err == nil {
+			if err := requireMatchingIdempotencyRequest(idempotencyKey, storedRequestHash, requestHash); err != nil {
+				return AppendOutcome{}, 0, err
+			}
 			if result != nil && resultJSON != "" {
 				if err := json.Unmarshal([]byte(resultJSON), result); err != nil {
 					return AppendOutcome{}, 0, err
@@ -895,6 +1318,14 @@ func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idemp
 				}
 			}
 			return AppendOutcome{Replayed: true, Events: replayedEvents}, replayAlias, nil
+		}
+		if err != sql.ErrNoRows {
+			return AppendOutcome{}, 0, err
+		}
+		var retired int
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM idempotency_key_tombstones WHERE key = ?`, idempotencyKey).Scan(&retired)
+		if err == nil {
+			return AppendOutcome{}, 0, retiredIdempotencyKeyError(idempotencyKey)
 		}
 		if err != sql.ErrNoRows {
 			return AppendOutcome{}, 0, err
@@ -1070,8 +1501,8 @@ func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idemp
 			resultJSON = string(raw)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO idempotency (key, event_ids_json, result_json, created_at) VALUES (?, ?, ?, ?)`,
-			idempotencyKey, string(idsJSON), resultJSON, now.Format(time.RFC3339Nano),
+			`INSERT INTO idempotency (key, event_ids_json, result_json, created_at, request_hash) VALUES (?, ?, ?, ?, ?)`,
+			idempotencyKey, string(idsJSON), resultJSON, now.Format(time.RFC3339Nano), requestHash,
 		); err != nil {
 			return AppendOutcome{}, 0, err
 		}
@@ -1775,7 +2206,7 @@ func ensureDerivedFreshWithHooks(db *sql.DB, hooks *projectionRepairHooks) error
 }
 
 // orderedProjectionDrift checks only ticket streams that have ever carried an
-// explicit order key. Legacy streams with no order metadata retain their
+// explicit order key. Streams predating order metadata retain their
 // sequence/Part-ID fallback and do not pay the projection-fold cost here.
 // The check is read-snapshot based; rebuildDerived obtains the writer
 // transaction afterward, so concurrent appends are serialized with the

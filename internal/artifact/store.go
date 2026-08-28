@@ -35,6 +35,20 @@ var (
 	ErrPathTooLong      = errors.New("artifact path is too long")
 )
 
+type IntegrityError struct {
+	Ref            Ref
+	ExpectedDigest string
+	ComputedDigest string
+	ExpectedSize   int64
+	ComputedSize   int64
+}
+
+func (e *IntegrityError) Error() string {
+	return fmt.Sprintf("%v: %s expected sha256=%s size=%d, computed sha256=%s size=%d", ErrMetadataMismatch, e.Ref, e.ExpectedDigest, e.ExpectedSize, e.ComputedDigest, e.ComputedSize)
+}
+
+func (e *IntegrityError) Unwrap() error { return ErrMetadataMismatch }
+
 // Ref is a canonical content-addressed artifact reference. Its only accepted
 // form in the first backend is artifact:sha256:<lowercase hex digest>.
 type Ref string
@@ -122,6 +136,23 @@ func NewLocalStore(root string) (*LocalStore, error) {
 	return &LocalStore{root: root}, nil
 }
 
+// OpenLocalStore opens an existing root without creating or repairing it.
+// Read-only verification uses this so a missing store remains observable.
+func OpenLocalStore(root string) (*LocalStore, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil, errors.New("artifact store root is empty")
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, wrapPathError(root, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("artifact store root is not a directory: %s", root)
+	}
+	return &LocalStore{root: root}, nil
+}
+
 func (s *LocalStore) Root() string { return s.root }
 
 func (s *LocalStore) Put(ctx context.Context, content io.Reader, mediaType string) (Metadata, error) {
@@ -191,21 +222,25 @@ func (s *LocalStore) Put(ctx context.Context, content io.Reader, mediaType strin
 		if err := validateMetadata(existing, ref, written); err != nil {
 			return Metadata{}, err
 		}
-		return existing, nil
+		// A same-size file can still have different bytes. Deduplication is
+		// accepted only after hashing the already-managed object.
+		return s.Verify(ctx, ref)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Metadata{}, err
 	}
 	if err := writeMetadata(metadataPath, metadata); err != nil {
 		return Metadata{}, err
 	}
-	return metadata, nil
+	return s.Verify(ctx, ref)
 }
 
 func (s *LocalStore) Open(ctx context.Context, ref Ref) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := s.Stat(ctx, ref); err != nil {
+	// Alpha correctness favors verified reads over an unproven fast path. This
+	// catches same-size manual edits before any consumer receives the bytes.
+	if _, err := s.Verify(ctx, ref); err != nil {
 		return nil, err
 	}
 	dataPath, _, err := s.paths(ref)
@@ -372,9 +407,10 @@ func (s *LocalStore) Scan(ctx context.Context) ([]Object, error) {
 	return result, nil
 }
 
-// Verify checks the immutable bytes as well as their metadata. Normal reads
-// use Stat for speed; maintenance operations use Verify before copying or
-// deleting an object.
+// Verify checks the immutable bytes as well as their metadata. Open, Put
+// deduplication, and maintenance scans call Verify so a same-size byte change
+// cannot pass as a healthy object. Stat remains metadata-and-size-only for
+// callers that explicitly need that cheaper, weaker observation.
 func (s *LocalStore) Verify(ctx context.Context, ref Ref) (Metadata, error) {
 	metadata, err := s.Stat(ctx, ref)
 	if err != nil {
@@ -406,7 +442,7 @@ func (s *LocalStore) verifyDigest(ctx context.Context, ref Ref, metadata Metadat
 	}
 	digest := hex.EncodeToString(hasher.Sum(nil))
 	if size != metadata.Size || digest != metadata.Digest {
-		return fmt.Errorf("%w: content digest or size differs for %s", ErrMetadataMismatch, ref)
+		return &IntegrityError{Ref: ref, ExpectedDigest: metadata.Digest, ComputedDigest: digest, ExpectedSize: metadata.Size, ComputedSize: size}
 	}
 	return nil
 }

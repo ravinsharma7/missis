@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -12,16 +14,89 @@ import (
 )
 
 const (
-	// MinReadableStoreFormatRevision is the oldest durable store contract this
-	// binary can migrate without rewriting ledger events.
-	MinReadableStoreFormatRevision = 1
+	// MinMigratableStoreFormatRevision is the oldest durable store contract the
+	// explicit version-targeted migration command can inspect and migrate.
+	MinMigratableStoreFormatRevision = 1
+	// MinReadableStoreFormatRevision is retained as a source-compatible alias
+	// for inspection/reporting callers. Normal Open accepts only Current.
+	MinReadableStoreFormatRevision = MinMigratableStoreFormatRevision
 	// CurrentStoreFormatRevision is independent of the CLI release and Git
 	// revision. It changes whenever durable encoding or interpretation becomes
 	// incompatible with an older writer.
-	CurrentStoreFormatRevision = 2
+	CurrentStoreFormatRevision = 6
 )
 
+// StoreFormatCompatibility is the release-visible physical compatibility
+// claim. NormalOpenFormat is the only revision accepted by normal clients;
+// MigratableFromFormats names the exact revisions understood by this
+// maintenance implementation; MigrationSetDigest binds the embedded SQL
+// migration catalog used to make that claim.
+type StoreFormatCompatibility struct {
+	NormalOpenFormat      int    `json:"normal_open_format"`
+	MigratableFromFormats []int  `json:"migratable_from_formats"`
+	MigrationSetDigest    string `json:"migration_set_digest"`
+}
+
+// FormatCompatibility returns a fresh compatibility value so callers cannot
+// mutate package state.
+func FormatCompatibility() StoreFormatCompatibility {
+	from := make([]int, 0, CurrentStoreFormatRevision-MinMigratableStoreFormatRevision+1)
+	for revision := MinMigratableStoreFormatRevision; revision <= CurrentStoreFormatRevision; revision++ {
+		from = append(from, revision)
+	}
+	return StoreFormatCompatibility{
+		NormalOpenFormat:      CurrentStoreFormatRevision,
+		MigratableFromFormats: from,
+		MigrationSetDigest:    migrationSetDigest(),
+	}
+}
+
+// migrationSetDigest is domain-separated and framed so filename/content
+// boundaries cannot collide:
+//
+// SHA256("MISSIS-STORE-MIGRATION-SET" || NUL || "v1" || NUL ||
+//
+//	repeated(filename || NUL || decimal-byte-length || NUL || bytes || NUL))
+func migrationSetDigest() string {
+	h := sha256.New()
+	_, _ = h.Write([]byte("MISSIS-STORE-MIGRATION-SET\x00v1\x00"))
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		panic(fmt.Sprintf("read embedded migration catalog: %v", err))
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := migrationsFS.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			panic(fmt.Sprintf("read embedded migration %s: %v", entry.Name(), err))
+		}
+		_, _ = h.Write([]byte(entry.Name()))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(fmt.Sprintf("%d", len(data))))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(data)
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 var ErrIncompatibleStoreFormat = errors.New("incompatible store format")
+var ErrStoreMigrationRequired = errors.New("store migration required")
+
+type StoreMigrationRequiredError struct {
+	Found  int
+	Target int
+	Path   string
+}
+
+func (e *StoreMigrationRequiredError) Error() string {
+	return fmt.Sprintf("%v: found revision %d; run missis-tools store migrate plan --store %q --to-format %d", ErrStoreMigrationRequired, e.Found, e.Path, e.Target)
+}
+
+func (e *StoreMigrationRequiredError) Unwrap() error { return ErrStoreMigrationRequired }
 
 // IncompatibleStoreFormatError is returned before migrations, WAL setup,
 // integrity verification, or projection repair can modify an existing store.
@@ -42,8 +117,11 @@ func (e *IncompatibleStoreFormatError) Error() string {
 func (e *IncompatibleStoreFormatError) Unwrap() error { return ErrIncompatibleStoreFormat }
 
 // inspectStoreFormat performs a read-only compatibility probe. A missing or
-// empty path is a new store. Before migration 0007, migration 0005 and older
-// are implicit revision 1 while migration 0006 is implicit revision 2.
+// empty path is a new store. Migration 0005 and older are implicit revision 1,
+// while stores through migration 0007 are revision 2. Migration 0008 records
+// revision 3, migration 0009 plus the identity step records revision 4, and
+// migration 0010 plus its explicit receipt records revision 5, and migration
+// 0011 plus its explicit receipt records revision 6.
 func inspectStoreFormat(path string) (int, error) {
 	return inspectStoreFormatMode(path, false)
 }
@@ -110,6 +188,20 @@ func inspectStoreFormatMode(path string, immutable bool) (int, error) {
 		if revision < MinReadableStoreFormatRevision || revision > CurrentStoreFormatRevision {
 			return 0, &IncompatibleStoreFormatError{Found: revision, Min: MinReadableStoreFormatRevision, Max: CurrentStoreFormatRevision}
 		}
+		if revision == CurrentStoreFormatRevision {
+			var info IdentityInfo
+			if err := db.QueryRow(`
+				SELECT i.store_id, i.identity_scheme, i.document_bytes, i.document_digest, i.artifact_namespace
+				FROM store_identity_v1 i
+				JOIN store_meta m ON m.singleton = i.singleton AND m.store_id = i.store_id
+				WHERE i.singleton = 1
+			`).Scan(&info.StoreID, &info.Scheme, &info.DocumentBytes, &info.DocumentDigest, &info.ArtifactNamespace); err != nil {
+				return 0, fmt.Errorf("inspect store identity: %w", err)
+			}
+			if err := validateIdentityInfo(info); err != nil {
+				return 0, err
+			}
+		}
 		return revision, nil
 	}
 
@@ -118,7 +210,7 @@ func inspectStoreFormatMode(path string, immutable bool) (int, error) {
 		highest = migrations[len(migrations)-1]
 	}
 	if highest >= "0006_ordered_parts.sql" {
-		return CurrentStoreFormatRevision, nil
+		return 2, nil
 	}
 	return MinReadableStoreFormatRevision, nil
 }
@@ -161,8 +253,22 @@ func InspectReadOnly(ctx context.Context, path string) (ReadOnlyInspection, erro
 		return ReadOnlyInspection{}, err
 	}
 	probe := &Store{reader: db}
-	if err := probe.CheckConsistencyContext(ctx); err != nil {
-		return ReadOnlyInspection{}, err
+	if revision == CurrentStoreFormatRevision {
+		if err := probe.CheckConsistencyContext(ctx); err != nil {
+			return ReadOnlyInspection{}, err
+		}
+	} else {
+		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return ReadOnlyInspection{}, err
+		}
+		if err := verifyHashesTx(tx); err != nil {
+			tx.Rollback()
+			return ReadOnlyInspection{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return ReadOnlyInspection{}, err
+		}
 	}
 	gaps, err := probe.SequenceGapsContext(ctx)
 	if err != nil {

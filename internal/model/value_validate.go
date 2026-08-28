@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ravinsharma7/missis/internal/artifact"
+	"github.com/ravinsharma7/missis/internal/externalref"
 )
 
 // CoerceBuiltInValue restores the typed representation for JSON/API maps so
@@ -26,6 +27,7 @@ func CoerceBuiltInValue(value Value) (Value, error) {
 	case ValueKindCodeRef:
 	case ValueKindGitRef:
 	case ValueKindArtifact:
+	case ValueKindExternalRef:
 	case ValueKindImage, ValueKindVideo, ValueKindAudio, ValueKindEmbed:
 	case ValueKindInlineSequence:
 	default:
@@ -37,7 +39,7 @@ func CoerceBuiltInValue(value Value) (Value, error) {
 		return value, err
 	}
 	switch value.Data.(type) {
-	case CodeRef, *CodeRef, GitRef, *GitRef, ArtifactDescriptor, *ArtifactDescriptor, MediaDescriptor, *MediaDescriptor:
+	case CodeRef, *CodeRef, GitRef, *GitRef, ArtifactDescriptor, *ArtifactDescriptor, externalref.ReferenceV1, *externalref.ReferenceV1, MediaDescriptor, *MediaDescriptor:
 		return value, nil
 	}
 	raw, err := json.Marshal(value.Data)
@@ -56,6 +58,10 @@ func CoerceBuiltInValue(value Value) (Value, error) {
 	case ValueKindArtifact:
 		var typed ArtifactDescriptor
 		err = json.Unmarshal(raw, &typed)
+		value.Data = typed
+	case ValueKindExternalRef:
+		var typed externalref.ReferenceV1
+		typed, err = externalref.CoerceV1(value.Data)
 		value.Data = typed
 	case ValueKindImage, ValueKindVideo, ValueKindAudio, ValueKindEmbed:
 		var typed MediaDescriptor
@@ -119,6 +125,14 @@ func ValidateBuiltInValue(value Value) error {
 			if _, _, err := mime.ParseMediaType(ref.MediaType); err != nil {
 				return fmt.Errorf("artifact descriptor media type: %w", err)
 			}
+		}
+	case ValueKindExternalRef:
+		ref, ok := value.Data.(externalref.ReferenceV1)
+		if !ok {
+			return fmt.Errorf("external-ref data must be an ExternalRefV1")
+		}
+		if err := ref.Validate(); err != nil {
+			return fmt.Errorf("external-ref: %w", err)
 		}
 	case ValueKindImage, ValueKindVideo, ValueKindAudio, ValueKindEmbed:
 		media, ok := value.Data.(MediaDescriptor)

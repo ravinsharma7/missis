@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,14 @@ func createStoreThroughMigration(t *testing.T, path, through string) *sql.DB {
 	return db
 }
 
+func migrateTestStore(t *testing.T, path string) {
+	t.Helper()
+	backup := filepath.Join(t.TempDir(), "pre-migration.db")
+	if _, err := ApplyMigration(context.Background(), path, CurrentStoreFormatRevision, backup); err != nil {
+		t.Fatalf("migrate store: %v", err)
+	}
+}
+
 func TestInspectImplicitStoreFormatRevisions(t *testing.T) {
 	// covers PH1-FMT-001
 	t.Parallel()
@@ -51,7 +60,7 @@ func TestInspectImplicitStoreFormatRevisions(t *testing.T) {
 		migration string
 		want      int
 	}{
-		{name: "legacy", migration: "0005_artifacts.sql", want: 1},
+		{name: "implicit-revision-1", migration: "0005_artifacts.sql", want: 1},
 		{name: "ordered", migration: "0006_ordered_parts.sql", want: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -104,6 +113,10 @@ func TestOpenMigratesFormatWithoutChangingLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := Open(path); !errors.Is(err, ErrStoreMigrationRequired) {
+		t.Fatalf("Open error = %v, want migration required", err)
+	}
+	migrateTestStore(t, path)
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -124,12 +137,96 @@ func TestOpenMigratesFormatWithoutChangingLedger(t *testing.T) {
 	}
 }
 
+func TestOpenMovesV2UnboundIdempotencyReceiptToTombstone(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missis.db")
+	db := createStoreThroughMigration(t, path, "0007_store_format_revision.sql")
+	if _, err := db.Exec(`INSERT INTO store_meta(singleton, store_id, head_hash, updated_at, format_revision) VALUES (1,'store:v2-idempotency','','2026-01-01T00:00:00Z',2)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO idempotency(key, event_ids_json, result_json, created_at) VALUES ('v2-key','[]','{"ref":"#1"}','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateTestStore(t, path)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got, err := s.FormatRevision(); err != nil || got != CurrentStoreFormatRevision {
+		t.Fatalf("format revision = %d, err=%v, want %d", got, err, CurrentStoreFormatRevision)
+	}
+	var activeCount int
+	if err := s.reader.QueryRow(`SELECT COUNT(*) FROM idempotency WHERE key = 'v2-key'`).Scan(&activeCount); err != nil {
+		t.Fatal(err)
+	}
+	if activeCount != 0 {
+		t.Fatalf("format-v2 unbound receipt remained active: count=%d", activeCount)
+	}
+	var reason string
+	if err := s.reader.QueryRow(`SELECT reason FROM idempotency_key_tombstones WHERE key = 'v2-key'`).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "format-v2-unbound-request" {
+		t.Fatalf("tombstone reason = %q", reason)
+	}
+	proposed, err := ComputeIdempotencyRequestHashV1(map[string]string{"operation": "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithIdempotencyRequestHash(context.Background(), proposed)
+	if replayed, err := s.LookupIdempotencyContext(ctx, "v2-key", nil); replayed || !errors.Is(err, ErrIdempotencyMismatch) {
+		t.Fatalf("format-v2 guarded lookup replayed=%t err=%v, want mismatch", replayed, err)
+	}
+	var rawResult map[string]any
+	if replayed, err := s.LookupIdempotency("v2-key", &rawResult); err != nil || !replayed || rawResult["ref"] != "#1" {
+		t.Fatalf("tombstone audit lookup replayed=%t result=%v err=%v", replayed, rawResult, err)
+	}
+}
+
+func TestRevision2FixtureMigrationTombstonesEveryUnboundKey(t *testing.T) {
+	t.Parallel()
+	source := filepath.Join("testdata", "compatibility", "revision-0002", "fixture.db")
+	rawDB, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "fixture.db")
+	if err := os.WriteFile(path, rawDB, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateTestStore(t, path)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var active, tombstoned int
+	if err := s.reader.QueryRow(`SELECT COUNT(*) FROM idempotency`).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reader.QueryRow(`SELECT COUNT(*) FROM idempotency_key_tombstones`).Scan(&tombstoned); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 || tombstoned != 4 {
+		t.Fatalf("migrated receipt counts active=%d tombstoned=%d, want 0 and 4", active, tombstoned)
+	}
+	if err := s.CheckConsistency(); err != nil {
+		t.Fatalf("migrated fixture consistency: %v", err)
+	}
+}
+
 func TestUnsupportedFormatFailsBeforeWALOrIntegrity(t *testing.T) {
 	// covers PH1-FMT-001
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "missis.db")
-	db := createStoreThroughMigration(t, path, "0007_store_format_revision.sql")
-	if _, err := db.Exec(`INSERT INTO store_meta(singleton, store_id, head_hash, updated_at, format_revision) VALUES (1,'store:future','deliberately-invalid','2026-01-01T00:00:00Z',3)`); err != nil {
+	db := createStoreThroughMigration(t, path, "0008_idempotency_request_hash.sql")
+	if _, err := db.Exec(`INSERT INTO store_meta(singleton, store_id, head_hash, updated_at, format_revision) VALUES (1,'store:future','deliberately-invalid','2026-01-01T00:00:00Z',?)`, CurrentStoreFormatRevision+1); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -141,7 +238,7 @@ func TestUnsupportedFormatFailsBeforeWALOrIntegrity(t *testing.T) {
 		t.Fatalf("Open error = %v, want incompatible format", err)
 	}
 	var detail *IncompatibleStoreFormatError
-	if !errors.As(err, &detail) || detail.Found != 3 || detail.Max != 2 {
+	if !errors.As(err, &detail) || detail.Found != CurrentStoreFormatRevision+1 || detail.Max != CurrentStoreFormatRevision {
 		t.Fatalf("format error detail = %#v", detail)
 	}
 	probe, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
@@ -161,7 +258,7 @@ func TestUnsupportedFormatFailsBeforeWALOrIntegrity(t *testing.T) {
 func TestUnknownMigrationFailsClosed(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "missis.db")
-	db := createStoreThroughMigration(t, path, "0007_store_format_revision.sql")
+	db := createStoreThroughMigration(t, path, "0008_idempotency_request_hash.sql")
 	if _, err := db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES ('9999_future.sql','2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +287,7 @@ func TestNewStoreRecordsCurrentFormat(t *testing.T) {
 	}
 }
 
-func TestOrderedFixtureDocumentsLegacyHashBoundary(t *testing.T) {
+func TestOrderedFixtureDocumentsGlobalJSONChainV1Boundary(t *testing.T) {
 	t.Parallel()
 	source := filepath.Join("testdata", "compatibility", "revision-0002", "fixture.db")
 	rawDB, err := os.ReadFile(source)
@@ -201,6 +298,7 @@ func TestOrderedFixtureDocumentsLegacyHashBoundary(t *testing.T) {
 	if err := os.WriteFile(path, rawDB, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	migrateTestStore(t, path)
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -223,25 +321,25 @@ func TestOrderedFixtureDocumentsLegacyHashBoundary(t *testing.T) {
 	if got := computeEventHash(current, previous); got != storedHash {
 		t.Fatalf("current model hash = %s, want stored %s", got, storedHash)
 	}
-	var legacyWire map[string]any
-	if err := json.Unmarshal([]byte(rawEvent), &legacyWire); err != nil {
+	var preOrderKeyWire map[string]any
+	if err := json.Unmarshal([]byte(rawEvent), &preOrderKeyWire); err != nil {
 		t.Fatal(err)
 	}
-	value, ok := legacyWire["Value"].(map[string]any)
+	value, ok := preOrderKeyWire["Value"].(map[string]any)
 	if !ok {
 		t.Fatal("fixture event Value is not an object")
 	}
 	delete(value, "OrderKey")
-	legacyRaw, err := json.Marshal(legacyWire)
+	preOrderKeyRaw, err := json.Marshal(preOrderKeyWire)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var legacy model.Event
-	if err := json.Unmarshal(legacyRaw, &legacy); err != nil {
+	var preOrderKey model.Event
+	if err := json.Unmarshal(preOrderKeyRaw, &preOrderKey); err != nil {
 		t.Fatal(err)
 	}
-	legacy.AliasSeq = alias
-	if got := computeEventHash(legacy, previous); got == storedHash {
+	preOrderKey.AliasSeq = alias
+	if got := computeEventHash(preOrderKey, previous); got == storedHash {
 		t.Fatal("dropping OrderKey unexpectedly preserved the event hash; v0.2.1 regression boundary is no longer represented")
 	}
 }
