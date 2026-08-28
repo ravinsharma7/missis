@@ -22,6 +22,10 @@ func TestSpyRunRoundTripUsesOnlyNeutralLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	feedStart, err := ledger.BeginChanges(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	at := time.Date(2026, 8, 28, 5, 45, 0, 0, time.UTC)
 	run := neutral.Ref{Kind: "run", ID: "run:spy:fixture-1"}
@@ -103,6 +107,13 @@ func TestSpyRunRoundTripUsesOnlyNeutralLedger(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, accepted) {
 		t.Fatalf("round trip mismatch\n got: %#v\nwant: %#v", got, accepted)
+	}
+	feedEvents, err := readAllChangesForTest(ctx, ledger, feedStart, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(feedEvents, accepted) {
+		t.Fatalf("Spy feed resume mismatch\n got: %#v\nwant: %#v", feedEvents, accepted)
 	}
 }
 

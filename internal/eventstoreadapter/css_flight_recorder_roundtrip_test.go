@@ -23,6 +23,10 @@ func TestCSSFlightRecorderSessionRoundTripUsesOnlyNeutralLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	feedStart, err := ledger.BeginChanges(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	at := time.Date(2026, 8, 28, 8, 0, 0, 0, time.UTC)
 	session := neutral.Ref{Kind: "browser-session", ID: "session:cssfr:fixture-1"}
@@ -138,6 +142,13 @@ func TestCSSFlightRecorderSessionRoundTripUsesOnlyNeutralLedger(t *testing.T) {
 	}
 	if got[len(got)-2].Subject != artifact {
 		t.Fatalf("artifact reference = %#v, want %#v", got[len(got)-2].Subject, artifact)
+	}
+	feedEvents, err := readAllChangesForTest(ctx, ledger, feedStart, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(feedEvents, first.Events) {
+		t.Fatalf("CSS recorder feed resume mismatch\n got: %#v\nwant: %#v", feedEvents, first.Events)
 	}
 }
 
