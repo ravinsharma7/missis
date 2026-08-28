@@ -8,9 +8,16 @@ internal/store/testdata/compatibility/**/manifest.json text eol=lf
 internal/model/testdata/*.golden.json text eol=lf
 README.md text eol=lf
 docs/agent-setup.md text eol=lf
+*.sh text eol=lf
 
 # Distribution contract snapshots are digest-pinned exact bytes. A Windows
 # checkout must materialize the same bytes verified by event-tooling.lock.json.
 specs/event-store-v3-alpha.md text eol=lf
 specs/cross-store-references-v3-alpha.md text eol=lf
 specs/event-tooling.lock.json text eol=lf
+
+# The standalone neutral eventstore module is generated and digest-pinned.
+# Windows checkout conversion must not change the verified package bytes.
+third_party/eventstore/go.mod text eol=lf
+third_party/eventstore/*.go text eol=lf
+specs/eventstore-package.lock.json text eol=lf
