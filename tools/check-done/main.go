@@ -20,7 +20,12 @@ func main() {
 	if len(os.Args) > 1 {
 		storeFlag = os.Args[1]
 	}
-	svc, err := application.Open(storeFlag)
+	storePath, err := resolveLifecycleStore(storeFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(8)
+	}
+	svc, err := application.OpenPath(storePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(8)
@@ -54,6 +59,27 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("check-done: %d done ticket(s), no outstanding follow-ups\n", doneCount)
+}
+
+func resolveLifecycleStore(storeFlag string) (string, error) {
+	resolved, err := missis.ResolveStore(storeFlag)
+	if err != nil {
+		return "", fmt.Errorf("resolve authoritative ticket store: %w", err)
+	}
+	if resolved.Source == missis.DiscoveryDefault {
+		return "", fmt.Errorf("authoritative ticket store is not selected: use an existing .missis marker, MISSIS_STORE, or an explicit store path; refusing the default path %q", resolved.Path)
+	}
+	info, err := os.Lstat(resolved.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("authoritative ticket store does not exist: %s", resolved.Path)
+		}
+		return "", fmt.Errorf("inspect authoritative ticket store %q: %w", resolved.Path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("authoritative ticket store must be an existing regular file, not a symlink: %s", resolved.Path)
+	}
+	return resolved.Path, nil
 }
 
 func inspectTickets(

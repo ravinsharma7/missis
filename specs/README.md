@@ -14,7 +14,9 @@ working draft. Agents and implementers must use the active documents first.
   the subordinate external-reference contract selected by the same lock.
 - `phase1-requirements.md` — current Phase 1 requirements.
 - `requirements-registry.v3.json` — requirement identifiers and traceability.
-- The repository's `.missis-store/` — authoritative current ticket data.
+- The existing project store selected through reviewed Missis discovery —
+  authoritative runtime ticket data for that project. The standalone source
+  mirror itself intentionally contains no development ticket store.
 
 The canonical agent workflow is the output of:
 
@@ -31,11 +33,12 @@ synchronize.
 
 ## Neutral contract authority
 
-Writable neutral protocol authority moved to the private
+Writable product and neutral protocol authority moved to the private
 `git@github.com:ravinsharma7/skunkwork.git` integration repository under
-ticket `#121`. Missis remains the product/release repository and consumes one
-explicit skunkwork commit through `event-tooling.lock.json`. The local
-Markdown remains present so the current requirements registry, documentation,
+ticket `#121`. Canonical Missis source is `products/missis` there. The
+standalone repository is a one-way build/release mirror and consumes one
+explicit contract authority commit through `event-tooling.lock.json`. The
+local Markdown remains present so the requirements registry, documentation,
 source tests, and released format-6 implementation are self-contained.
 
 Do not synchronize in both directions. A reviewed skunkwork contract update

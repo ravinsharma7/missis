@@ -5,9 +5,6 @@ on:
     branches: [main]
   pull_request:
 
-# Always-on store diagnostics (ticket #65): every run captures append-path
-# JSON lines and preserves failing stress-test stores, so flaky concurrency
-# evidence is visible without re-running anything.
 env:
   MISSIS_STORE_DIAG: ${{ github.workspace }}/temp/diag/cli-diag.jsonl
   MISSIS_DIAG_DIR: ${{ github.workspace }}/temp/diag/testsuite
@@ -21,80 +18,26 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
-      - name: vet
-        run: go vet ./...
-      - name: staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@v0.6.1 ./...
-      - name: GitHub Actions workflow lint
-        run: bash scripts/check-workflows.sh
-      - name: Event-tooling contract lock
-        run: bash scripts/check-event-tooling-lock.sh
-      - name: shellcheck
+      - name: Install shellcheck
         run: |
           sudo apt-get update
           sudo apt-get install --yes shellcheck
-          shellcheck scripts/*.sh testsuite/scripts/*.sh testsuite/benchmarks/*.sh
-      - name: POSIX installer harness
-        run: bash testsuite/scripts/test-install.sh
-      - name: test commands
-        run: go test -count=1 ./cmd/...
-      - name: test application internals
-        run: go test -count=1 ./internal/application
-      - name: test store internals
-        run: go test -count=1 ./internal/store
-      - name: test TUI internals
-        run: go test -count=1 ./internal/tui
-      - name: test foundation internals
-        run: >-
-          go test -count=1
-          ./internal/artifact
-          ./internal/buildinfo
-          ./internal/compatfixture
-          ./internal/fsutil
-          ./internal/idgen
-          ./internal/media
-          ./internal/model
-          ./internal/plugin/...
-          ./internal/schema
-      - name: test onboarding internals
-        run: go test -count=1 ./internal/onboarding
-      - name: test tooling internals
-        run: go test -count=1 ./internal/tooling
-      - name: test update internals
-        run: go test -count=1 ./internal/update
-      - name: test public packages
-        run: go test -count=1 ./pkg/...
-      - name: test tools
-        run: go test -count=1 ./tools/...
-      - name: test black-box and benchmarks
-        run: go test -count=1 ./testsuite/...
-      - name: generated onboarding
-        run: go run ./tools/generate-onboarding --check
-      - name: consolidated tools build
-        run: go build ./tools/missis-tools
-      - name: requirements coverage
-        run: go run ./tools/coverage --registry specs/requirements-registry.v3.json
-      - name: backup remote harness
-        run: bash testsuite/scripts/test-rclone-backup.sh
-      - name: benchmark selection harness
-        run: bash testsuite/benchmarks/test-benchmark-selection.sh
-      - name: TUI smoke
-        run: go test -count=1 -run '^TestRunTUISmoke$' -v ./tools/missis-tools
-      - name: store diagnostic summary
+      - name: Verify canonical product surface
+        run: bash scripts/ci/verify.sh linux
+      - name: Store diagnostic summary
+        if: always()
         shell: bash
         run: |
           DIAG="${MISSIS_STORE_DIAG//\\//}"
           if [ -s "$DIAG" ]; then
             echo "store diagnostics: $DIAG"
-            if grep -E '"(err_kind|decision)":"(busy|conflict|unique)"' "$DIAG"; then
-              :
-            else
+            if ! grep -E '"(err_kind|decision)":"(busy|conflict|unique)"' "$DIAG"; then
               echo "no busy/conflict/unique markers in store diagnostics"
             fi
           else
             echo "no store diagnostics captured"
           fi
-      - name: upload diagnostics on failure
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -102,13 +45,8 @@ jobs:
           path: temp/diag
           if-no-files-found: ignore
           retention-days: 7
-      - name: ticket lifecycle
-        run: go run ./tools/check-done
 
   windows:
-    # Ticket #55 C1: real windows/amd64 runner. Exercises the black-box suite
-    # end-to-end (binary build with .exe), drive-letter/UNC discovery tests
-    # (build-tagged windows), and SQLite concurrency/locking on Windows.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -116,112 +54,26 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
-      - name: build
-        run: go build ./...
-      - name: vet
-        run: go vet ./...
-      - name: test commands
-        run: go test -count=1 ./cmd/...
-      - name: test application internals
-        run: go test -count=1 ./internal/application
-      - name: test store internals
-        run: go test -count=1 ./internal/store
-      - name: test TUI internals
-        run: go test -count=1 ./internal/tui
-      - name: test foundation internals
-        run: >-
-          go test -count=1
-          ./internal/artifact
-          ./internal/buildinfo
-          ./internal/compatfixture
-          ./internal/fsutil
-          ./internal/idgen
-          ./internal/media
-          ./internal/model
-          ./internal/plugin/...
-          ./internal/schema
-      - name: test onboarding internals
-        run: go test -count=1 ./internal/onboarding
-      - name: test tooling internals
-        run: go test -count=1 ./internal/tooling
-      - name: test update internals
-        run: go test -count=1 ./internal/update
-      - name: test public packages
-        run: go test -count=1 ./pkg/...
-      - name: test tools
-        run: go test -count=1 ./tools/...
-      - name: test black-box and benchmarks
-        run: go test -count=1 ./testsuite/...
-      - name: generated onboarding
-        run: go run ./tools/generate-onboarding --check
-      - name: requirements coverage
-        run: go run ./tools/coverage --registry specs/requirements-registry.v3.json
-      - name: consolidated tools build
-        run: go build ./tools/missis-tools
-      - name: PowerShell installer syntax
+      - name: Verify portable product surface
+        shell: bash
+        run: bash scripts/ci/verify.sh windows
+      - name: Verify native Windows pair
         shell: pwsh
-        run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            "$pwd\scripts\install.ps1",
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | Format-List | Out-String | Write-Error
-            exit 1
-          }
-          Write-Host "PowerShell installer syntax passed"
-      - name: PowerShell installer smoke
-        shell: pwsh
-        run: |
-          # A CI commit has no published release bundle yet. Exercise the
-          # source/module path at the exact commit; the verified paired path is
-          # covered by internal/update and the stable-release bundle smoke.
-          $bin = Join-Path $env:RUNNER_TEMP "missis-install-bin"
-          New-Item -ItemType Directory -Force $bin | Out-Null
-          $env:Path = "$bin;$env:Path"
-          $env:MISSIS_INSTALL_SOURCE = "go"
-          & .\scripts\install.ps1 -Ref $env:GITHUB_SHA -BinDir $bin
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $missis = (& (Join-Path $bin "missis.exe") --version --json | ConvertFrom-Json)
-          $tools = (& (Join-Path $bin "missis-tools.exe") --version --json | ConvertFrom-Json)
-          if ([string]::IsNullOrWhiteSpace($missis.version) -or $missis.version -eq "dev") {
-            throw "source install did not report its module version"
-          }
-          if ($missis.version -ne $tools.version -or
-              $missis.display_version -ne $tools.display_version -or
-              $missis.commit -ne $tools.commit -or
-              $missis.dirty -ne $tools.dirty -or
-              $missis.store_format_revision -ne 6 -or
-              $tools.store_format_revision -ne 6 -or
-              $missis.normal_open_format -ne 6 -or
-              $tools.normal_open_format -ne 6 -or
-              $missis.migration_set_digest -ne $tools.migration_set_digest) {
-            throw "installed binary identities do not match: missis=$($missis | ConvertTo-Json -Compress) tools=$($tools | ConvertTo-Json -Compress)"
-          }
-          & (Join-Path $bin "missis.exe") --help | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "missis command surface failed" }
-          & (Join-Path $bin "missis-tools.exe") --help | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "missis-tools command surface failed" }
-      - name: TUI smoke
-        run: go test -count=1 -run '^TestRunTUISmoke$' -v ./tools/missis-tools
-      - name: store diagnostic summary
+        run: .\scripts\ci\verify-windows.ps1
+      - name: Store diagnostic summary
+        if: always()
         shell: bash
         run: |
           DIAG="${MISSIS_STORE_DIAG//\\//}"
           if [ -s "$DIAG" ]; then
             echo "store diagnostics: $DIAG"
-            if grep -E '"(err_kind|decision)":"(busy|conflict|unique)"' "$DIAG"; then
-              :
-            else
+            if ! grep -E '"(err_kind|decision)":"(busy|conflict|unique)"' "$DIAG"; then
               echo "no busy/conflict/unique markers in store diagnostics"
             fi
           else
             echo "no store diagnostics captured"
           fi
-      - name: upload diagnostics on failure
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -229,5 +81,3 @@ jobs:
           path: temp/diag
           if-no-files-found: ignore
           retention-days: 7
-      - name: ticket lifecycle
-        run: go run ./tools/check-done

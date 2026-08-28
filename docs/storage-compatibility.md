@@ -133,7 +133,7 @@ the old writer after being migrated.
 Create and verify a fresh backup of the current authoritative format-6 store:
 
 ~~~bash
-cd /home/ravin/Projects/missis
+cd /absolute/path/to/project
 go run ./tools/missis-tools backup \
   .missis-backups/pre-v0.3.0-install.db
 go run ./tools/missis-tools backup verify \
@@ -148,16 +148,16 @@ Plan and apply using the published target installer:
 ~~~bash
 go run github.com/ravinsharma7/missis/tools/paired-install@v0.3.0 \
   --ref v0.3.0 \
-  --bin-dir /home/ravin/go/bin \
+  --bin-dir /absolute/path/to/bin \
   --rollout plan \
-  --store /home/ravin/Projects/missis/.missis-store/missis.db \
+  --store /absolute/path/to/project/.missis-store/missis.db \
   --to-format 6 --json
 
 go run github.com/ravinsharma7/missis/tools/paired-install@v0.3.0 \
   --ref v0.3.0 \
-  --bin-dir /home/ravin/go/bin \
+  --bin-dir /absolute/path/to/bin \
   --rollout apply \
-  --store /home/ravin/Projects/missis/.missis-store/missis.db \
+  --store /absolute/path/to/project/.missis-store/missis.db \
   --to-format 6 --json
 ~~~
 

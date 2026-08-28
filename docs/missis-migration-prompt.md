@@ -4,6 +4,10 @@ Use this prompt in a project that already has Missis but may contain the old
 `.missis.d/context.md`, `active.local.md`, `active.example.md`, backlog files,
 exports, or copied ticket Markdown.
 
+This describes a user project store selected by that project's existing
+`.missis` marker. It does not authorize creating a development ledger inside a
+standalone Missis source mirror.
+
 The prompt is deliberately review-first. It does not delete files, rewrite
 the event store, create tickets, choose a focus, or infer a task.
 

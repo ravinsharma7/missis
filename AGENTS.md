@@ -13,15 +13,18 @@ Authoritative contracts:
   for external references pinned by `specs/event-tooling.lock.json`
 - `specs/phase1-requirements.md`
 - `specs/requirements-registry.v3.json`
-- the skunkwork repository-root Missis store (`../../.missis-store/` when this
-  file is read at `products/missis/`), including tickets
+- the existing store selected by a reviewed `.missis` marker, explicit
+  `MISSIS_STORE`, or explicit `--store` for the project being operated on
 
 Writable Missis product and consumer-neutral event-tooling authority is
 `git@github.com:ravinsharma7/skunkwork.git`. In skunkwork, Missis product code
 lives at `products/missis`; the standalone Missis repository is a one-way
-read-only distribution mirror. Do not create a product-local `.missis` marker
-or ticket store. Do not edit the two local neutral snapshots without updating
-the pinned authority commit/digests and passing
+read-only distribution mirror. When this file is read inside skunkwork, its
+ancestor `.missis` marker selects the sole development ticket ledger. A
+standalone source mirror deliberately has no development marker: do not create
+one there; switch to skunkwork for product or platform ticket changes. Do not
+edit the two local neutral snapshots without updating the pinned authority
+commit/digests and passing
 `scripts/check-event-tooling-lock.sh` in the same reviewed change.
 
 Transient or generated context (treat as context, never as contract):
@@ -47,6 +50,8 @@ Transient or generated context (treat as context, never as contract):
   the achieved state and move the unmet criterion to a new follow-up ticket
   linked via `related`. Never mark a ticket `done` with an unchecked or
   skipped criterion; make the outstanding work explicit and owned.
-- Verify with `go run ./tools/check-done` (exit non-zero on violations).
+- In skunkwork, verify with `go run ./tools/check-done` (exit non-zero on
+  violations). The command requires an existing explicitly selected store and
+  refuses an unmarked standalone source checkout.
 - Before creating tickets, list existing refs with `missis show` — alias
   numbers may be allocated by other sessions.

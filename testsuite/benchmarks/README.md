@@ -19,7 +19,7 @@ or `testsuite/blackbox`, so normal test runs never spend tokens.
 
 ## Skill usage
 
-The skill itself is provider-neutral: [SKILL.md](/home/ravin/Projects/missis/tools/skills/missis/SKILL.md)
+The skill itself is provider-neutral: [SKILL.md](../../tools/skills/missis/SKILL.md)
 only depends on the `missis` CLI and never references Codex. The portable
 definition is `tools/skills/missis/SKILL.md` in this repo; copy that directory into
 any agent's skills location. For Codex, that location is
