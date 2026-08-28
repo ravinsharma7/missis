@@ -246,6 +246,55 @@ func TestChangeFeedCancellationDoesNotAdvance(t *testing.T) {
 	}
 }
 
+func TestChangeFeedCursorResumesVerifiedBackup(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.db")
+	backup := filepath.Join(dir, "backup.db")
+	ledger, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	begin, err := ledger.BeginChanges(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := neutral.Ref{Kind: "run", ID: "run:feed:backup"}
+	at := time.Date(2026, 8, 28, 13, 45, 0, 0, time.UTC)
+	if _, err := ledger.Append(ctx, neutral.AppendRequest{IdempotencyKey: "feed-backup-v1", Events: []neutral.Event{
+		spyEvent("event:feed:backup:1", stream, "spy.run.started", stream, `{}`, at),
+		spyEvent("event:feed:backup:2", stream, "spy.run.completed", stream, `{}`, at.Add(time.Second)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := ledger.ReadChanges(ctx, neutral.ReadChangesRequest{After: begin, Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AtHead || len(first.Changes) != 1 {
+		t.Fatalf("first backup page = %#v", first)
+	}
+	if err := ledger.store.BackupContext(ctx, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := Open(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	remaining, err := restored.ReadChanges(ctx, neutral.ReadChangesRequest{After: first.Next, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := changeIDs(remaining.Changes); !reflect.DeepEqual(got, []string{"event:feed:backup:2"}) || !remaining.AtHead {
+		t.Fatalf("restored backup page = %#v", remaining)
+	}
+}
+
 func TestChangeCursorV1StrictCanonicalEncoding(t *testing.T) {
 	claims := changeCursorClaimsV1{
 		Version:        neutral.ChangeCursorVersionV1,
@@ -383,6 +432,25 @@ func rawCursorForTest(payload []byte) neutral.ChangeCursor {
 	_, _ = hash.Write(changeCursorDigestDomainV1)
 	_, _ = hash.Write(payload)
 	return neutral.ChangeCursor(neutral.ChangeCursorVersionV1 + "." + base64.RawURLEncoding.EncodeToString(payload) + "." + hex.EncodeToString(hash.Sum(nil)))
+}
+
+func FuzzDecodeChangeCursorV1(f *testing.F) {
+	valid, err := encodeChangeCursorV1(changeCursorClaimsV1{
+		Version:        neutral.ChangeCursorVersionV1,
+		StoreID:        "store:v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		IntegrityEpoch: "canonical-event-chain-v1",
+		Position:       42,
+	})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(string(valid))
+	f.Add("")
+	f.Add("eventstore-change-cursor-v1.not-base64.not-a-digest")
+	f.Add(strings.Repeat("x", maxChangeCursorBytes+1))
+	f.Fuzz(func(t *testing.T, raw string) {
+		_, _ = decodeChangeCursorV1(neutral.ChangeCursor(raw))
+	})
 }
 
 func readAllChangesForTest(ctx context.Context, feed neutral.ChangeFeed, cursor neutral.ChangeCursor, limit uint32) ([]neutral.Event, error) {
