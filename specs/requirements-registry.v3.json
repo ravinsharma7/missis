@@ -32,7 +32,7 @@
     {"id":"N109","decision":"adopt","reason":"Subtree moves and recursive retractions must commit atomically.","target":"concurrency tests"},
     {"id":"N110","decision":"adopt","reason":"Independent additions should commute.","target":"concurrency tests"},
     {"id":"N111","decision":"adopt","reason":"One user operation produces one atomic batch.","target":"store tests"},
-    {"id":"N112","decision":"adopt","reason":"Creation and mutation require idempotency keys.","target":"idempotency tests"},
+    {"id":"N112","decision":"adopt","reason":"Creation and mutation require request-bound idempotency keys so ambiguous retries replay only the same request.","target":"idempotency mismatch and migration tests"},
     {"id":"N113","decision":"adopt","reason":"Automation requires structured JSON errors.","target":"CLI and black-box tests"}
   ],
   "requirements": [
@@ -141,10 +141,13 @@
     {
       "id": "PH1-CON-004",
       "source": "21.5",
-      "text": "Clients can use idempotency keys.",
+      "text": "Active idempotency keys are atomically bound to a versioned request fingerprint: the same request replays and a different request conflicts without appending; format-v2 unbound keys migrate to non-reusable audit tombstones rather than receiving guessed fingerprints.",
       "tests": [
         "TestIdempotency",
-        "TestOptimisticConflict"
+        "TestIdempotencyDifferentRequestIsRejected",
+        "TestIdempotencyRequestHashRejectsDifferentRequest",
+        "TestOpenMovesV2UnboundIdempotencyReceiptToTombstone",
+        "TestRevision2FixtureMigrationTombstonesEveryUnboundKey"
       ]
     },
     {
@@ -223,10 +226,11 @@
     },
     {
       "id": "PH1-EVT-008",
-      "source": "20.1, 20.2",
-      "text": "Append preconditions and postconditions are enforced before durability success.",
+      "source": "20.1, 20.2, 31.6",
+      "text": "Append preconditions and postconditions are enforced before success under the reported durability profile.",
       "tests": [
         "TestShowHealth",
+        "TestDurabilityProfileReportsActiveWriteSettings",
         "TestValidateAppendRejectsCycleAndCollision"
       ]
     },
@@ -563,6 +567,34 @@
       ]
     },
     {
+      "id": "PH1-FMT-002",
+      "source": "34.1",
+      "text": "Format 5 preserves hashed store identity while admitting strictly decoded durable `external-ref-v1` values; older formats require an exact version-targeted migration and backup.",
+      "tests": [
+        "TestFormat4To5MigrationPreservesIdentityAndRecordsReceipt",
+        "TestStructuredValuesRoundTripThroughCLI",
+        "TestCompatibilityFixtureFresh"
+      ]
+    },
+    {
+      "id": "PH1-ART-001",
+      "source": "33",
+      "text": "Artifact verification semantically replays accepted references with exact event/field evidence, fully hashes bytes, and reports explicit integrity/recovery states.",
+      "tests": [
+        "TestAcceptedArtifactReferencesNamesEverySemanticLocation",
+        "TestArtifactVerifyReplaysExactEventsAndDetectsSameSizeTampering",
+        "TestArtifactCrashStagingIsReportedThenExplicitlyCollected"
+      ]
+    },
+    {
+      "id": "PH1-ART-002",
+      "source": "33",
+      "text": "Artifact GC protects accepted references even when the derived index is missing, and index recovery builds a verified replacement database without mutating the source.",
+      "tests": [
+        "TestArtifactVerifyFindsMissingIndexAndGCStillPreservesAcceptedObject"
+      ]
+    },
+    {
       "id": "PH1-REL-001",
       "source": "34.2",
       "text": "Stable releases pair missis and missis-tools from one commit and self-update only after manifest, archive, binary identity, and checksum verification.",
@@ -572,6 +604,18 @@
         "TestDownloadRejectsTampering",
         "TestInstallPublishesVerifiedPairAndManifest",
         "TestRecoverRollsBackInterruptedPair"
+      ]
+    },
+    {
+      "id": "PH1-REL-002",
+      "source": "34.2",
+      "text": "A format-changing release binds its migration compatibility and coordinates staged pair verification, explicit-store backup/migration, paired activation, and crash recovery as one journaled rollout.",
+      "tests": [
+        "TestReleaseManifestRejectsUnboundMigrationCompatibility",
+        "TestStoreRolloutMigratesBeforeActivatingPair",
+        "TestStoreRolloutRecoversEveryDurablePhase",
+        "TestStoreRolloutSurvivesAbruptProcessDeathAtEveryPhase",
+        "TestStoreRolloutRejectsChangedBoundBackup"
       ]
     },
     {
@@ -1556,9 +1600,13 @@
       "source": "21.5",
       "strength": "SHOULD",
       "status": "phase-1-should",
-      "text": "`new` and `set` accept idempotency keys.",
+      "text": "`new` and `set` accept request-bound idempotency keys; same-key/different-request reuse fails without appending, and migrated format-v2 unbound keys remain non-reusable audit tombstones.",
       "tests": [
-        "TestIdempotency"
+        "TestIdempotency",
+        "TestIdempotencyDifferentRequestIsRejected",
+        "TestIdempotencyRequestHashRejectsDifferentRequest",
+        "TestOpenMovesV2UnboundIdempotencyReceiptToTombstone",
+        "TestRevision2FixtureMigrationTombstonesEveryUnboundKey"
       ]
     },
     {
@@ -1667,6 +1715,37 @@
       "status": "phase-1",
       "text": "Clean bootstrap uses one explicitly pinned stable ref and invokes setup through the installed absolute binary.",
       "tests": ["TestPairedInstallRefSelection"]
+    },
+    {
+      "id": "N126",
+      "source": "34.2",
+      "strength": "MUST",
+      "status": "phase-1",
+      "text": "A format-changing release binds its migration compatibility and coordinates staged pair verification, explicit-store backup/migration, paired activation, and crash recovery as one journaled rollout.",
+      "tests": [
+        "TestReleaseManifestRejectsUnboundMigrationCompatibility",
+        "TestStoreRolloutMigratesBeforeActivatingPair",
+        "TestStoreRolloutRecoversEveryDurablePhase",
+        "TestStoreRolloutSurvivesAbruptProcessDeathAtEveryPhase",
+        "TestStoreRolloutRejectsChangedBoundBackup"
+      ]
+    },
+    {
+      "id": "V3-REF-002",
+      "source": "cross-store-references-v3-alpha.md 3.2",
+      "strength": "MUST",
+      "status": "eventstore-v3-alpha.3-linux",
+      "text": "An operator-configured local SQLite peer binds an expected hashed store identity to an adapter-private path, verifies identity and the complete chain, and returns claim plus entity resolution from one read snapshot without trusting or repairing derived projections.",
+      "tests": [
+        "TestPeerResolverUsesOneAuthoritySnapshotAndClosesIt",
+        "TestResolutionSnapshotStaysCoherentAcrossAppend",
+        "TestOpenVerifiedReadSnapshotDoesNotChangeLiveDatabaseWALOrLock",
+        "TestReadSnapshotCloseIsIdempotent",
+        "TestLocalPeerAccessErrorsHaveStableRecourse",
+        "TestPeerSetBoundsAreEnforced",
+        "TestLocalPeerFoldsAcceptedEventsWithoutRepairingProjection",
+        "TestConfiguredLocalPeerInspectionAndMovedStoreNavigation"
+      ]
     }
   ]
 }

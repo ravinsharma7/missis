@@ -1,14 +1,190 @@
 # Storage Compatibility Statement
 
-**Status:** store format revision 2 (local alpha) — 2026-08-24
+**Status:** store format revision 6 (local alpha) — 2026-08-28
 
 This statement is the compatibility contract for the on-disk store format.
 It exists so upgrades and cross-platform moves are predictable. Ticket: #53.
 
-**Source of truth:** the authoritative contract is
-`specs/missues-issue-specification.v2.md`; this document is the human-readable
-compatibility summary. Any ticket that changes the on-disk format (new
+`store_format_revision=6` is a Missis SQLite compatibility number. It is not
+the consumer-neutral event-store v3-alpha protocol. The latter is the active
+alpha extraction contract in
+`specs/event-store-v3-alpha.md` for separate Missis, Spy Testing, and CSS
+Flight Recorder adapters.
+
+**Sources of truth:** `specs/missues-issue-specification.v2.md` is the frozen
+Missis product/domain contract; `specs/event-store-v3-alpha.md` and
+`specs/cross-store-references-v3-alpha.md` govern new event-store behavior.
+This document is the human-readable compatibility summary. Any ticket that changes the on-disk format (new
 migration, canonical encoding, derived tables) must update this document.
+
+## Binary/store rollout generations
+
+Changing the installed release and changing a store format are separately
+durable operations. Use this generation rollout whenever the target release
+has a different normal-open format:
+
+~~~text
+inspect
+  -> stage and verify both target binaries
+  -> plan with the staged maintenance tool
+  -> stop clients and acquire the exclusive lease
+  -> re-plan
+  -> create and verify the rollback generation
+  -> migrate the explicitly named store
+  -> verify using the staged pair
+  -> activate both binaries
+  -> write the installation manifest last
+  -> re-inspect and commit the rollout journal
+~~~
+
+The rollback generation consists of the previous `missis` and
+`missis-tools` binaries, their installation manifest, and the verified
+pre-migration database/artifact backup. Do not mix components across
+generations.
+
+For the repository incident recorded on 2026-08-28, the store is already
+format 6 and contains work accepted after migration. Do not restore the older
+database merely to satisfy `v0.2.2`. Until a stable format-6 pair is
+published, use the current Linux source explicitly:
+
+~~~bash
+go run ./tools/missis-tools tui --store ./.missis-store/missis.db
+~~~
+
+Do not use the Windows executable through `\\wsl.localhost` for this store.
+That is an unsupported cross-OS SQLite access path, not a migration method.
+
+### Exact rollout commands
+
+Use the installer from the exact target tag. The target format is mandatory;
+never use an unversioned `--migrate` switch.
+
+~~~bash
+go run github.com/ravinsharma7/missis/tools/paired-install@vX.Y.Z \
+  --ref vX.Y.Z \
+  --bin-dir /absolute/bin \
+  --rollout plan \
+  --store /absolute/project/.missis-store/missis.db \
+  --to-format N \
+  --backup /absolute/backups/pre-format-N.db \
+  --json
+
+go run github.com/ravinsharma7/missis/tools/paired-install@vX.Y.Z \
+  --ref vX.Y.Z \
+  --bin-dir /absolute/bin \
+  --rollout apply \
+  --store /absolute/project/.missis-store/missis.db \
+  --to-format N \
+  --backup /absolute/backups/pre-format-N.db \
+  --json
+~~~
+
+`plan` downloads and verifies the target pair but does not modify the store
+or live pair. `apply` repeats all checks, holds the exclusive store lease,
+creates the rollback generation, migrates and verifies the explicit store,
+then activates both binaries.
+
+After an interruption, use the same target-tag installer and binary directory:
+
+~~~bash
+go run github.com/ravinsharma7/missis/tools/paired-install@vX.Y.Z \
+  --ref vX.Y.Z --bin-dir /absolute/bin --rollout inspect --json
+
+go run github.com/ravinsharma7/missis/tools/paired-install@vX.Y.Z \
+  --ref vX.Y.Z --bin-dir /absolute/bin --rollout recover --json
+~~~
+
+Inspection reports `discard-staged-old-generation`, `resume-migration`,
+`finish-activation`, `finish-commit`, or a named integrity incident.
+Recovery never searches for stores and never adopts an unrelated backup.
+
+### Repository format-6 repair release
+
+The proposed repair release is `v0.3.0`. It is a reviewed minor version
+because the normal-open format, release-manifest schema, installation
+procedure, and operator recovery behavior change together. It MUST NOT be
+silently emitted as the next patch.
+
+Before publication:
+
+1. Commit the authoritative specification/registry changes, conformance tests,
+   rollout implementation, release workflow, and operator documentation in
+   reviewable commits. The final release commit MUST have no untracked or dirty
+   source and MUST be the commit reviewed by CI.
+2. Run `go test ./...`, the race suite used by the release workflow,
+   `bash scripts/check-workflows.sh`, requirements coverage, generated
+   onboarding verification, shell harnesses, `git diff --check`, and
+   `check-done`.
+3. Confirm the release commit reports format 6, normal-open format 6,
+   migratable formats `[1,2,3,4,5,6]`, and the reviewed migration-set digest.
+4. Dispatch `stable-release` with exact input `v0.3.0`. The workflow rejects
+   an existing, older, prerelease, or invalid version. It builds both binaries
+   from one full commit, lints workflows with pinned actionlint, verifies all
+   archives/digests, creates a draft, exercises the pinned installer against
+   draft assets, and only then publishes.
+
+Before touching the authoritative installation, download the published
+manifest and pair into a temporary binary directory. Verify the published
+commit, both binary hashes, compatibility fields, a new disposable store, and
+a disposable copy of the repository store. The copy MUST retain the same
+store identity because it is read-only rehearsal input; it is never opened by
+the old writer after being migrated.
+
+Create and verify a fresh backup of the current authoritative format-6 store:
+
+~~~bash
+cd /home/ravin/Projects/missis
+go run ./tools/missis-tools backup \
+  .missis-backups/pre-v0.3.0-install.db
+go run ./tools/missis-tools backup verify \
+  .missis-backups/pre-v0.3.0-install.db --against-current
+~~~
+
+The older pre-format-6 backup is retained migration evidence but is not the
+rollback target: accepted events after that snapshot would be lost.
+
+Plan and apply using the published target installer:
+
+~~~bash
+go run github.com/ravinsharma7/missis/tools/paired-install@v0.3.0 \
+  --ref v0.3.0 \
+  --bin-dir /home/ravin/go/bin \
+  --rollout plan \
+  --store /home/ravin/Projects/missis/.missis-store/missis.db \
+  --to-format 6 --json
+
+go run github.com/ravinsharma7/missis/tools/paired-install@v0.3.0 \
+  --ref v0.3.0 \
+  --bin-dir /home/ravin/go/bin \
+  --rollout apply \
+  --store /home/ravin/Projects/missis/.missis-store/missis.db \
+  --to-format 6 --json
+~~~
+
+This particular store is already format 6, so apply MUST report no database
+migration. It still verifies the store, captures the previous binary pair,
+activates both target binaries, publishes the installation manifest last, and
+verifies the installed maintenance tool. If interrupted, run the same
+`v0.3.0` installer with `--rollout inspect`, then `--rollout recover`.
+
+The previous `v0.2.2` pair is not a service-capable rollback generation for
+this format-6 store. Recovery therefore finishes forward to the verified
+`v0.3.0` pair. If the published pair itself is later found defective, stop
+writers, preserve the incident files, verify/restore the fresh format-6 backup
+to a copy, and use the reviewed source format-6 maintenance tool until a
+corrected paired release is published. Do not restore the pre-format-6
+database and do not put only one old binary back on PATH.
+
+Close ticket #124 only after recording:
+
+- the final release tag, full commit, and release-manifest digest;
+- both installed binary digests and installation-manifest digest;
+- rollout plan/apply receipts and any recovery journal disposition;
+- fresh backup path/digest and `--against-current` result;
+- explicit-store manifest and TUI smoke;
+- disposable-copy interruption/recovery rehearsal;
+- confirmation that bare `missis` and `missis-tools` resolve the installed
+  `v0.3.0` pair and no old writer can open the authoritative store.
 
 ## What a missis store is
 
@@ -19,8 +195,8 @@ A single SQLite database file, holding:
   per-event hash chain in `event_hashes` and the chain head in `store_meta`.
 - **Derived current projections:** `tickets` and `parts_current` — rebuildable
   current-time snapshots maintained transactionally on append (ticket #51).
-- **Idempotency records:** `idempotency` mapping a client key to the event IDs
-  and JSON result it produced.
+- **Idempotency records:** `idempotency` mapping a client key to a versioned
+  semantic request hash, the event IDs, and the JSON result it produced.
 - **Migration bookkeeping:** `schema_migrations` recording applied versions.
 - **Artifact metadata:** `artifacts` records durable content-addressed
   objects; blob bytes remain outside SQLite in the configured artifact root.
@@ -29,20 +205,54 @@ A single SQLite database file, holding:
 
 - Schema migrations are **forward-only and additive**. Current set:
   `0001_init`, `0002_link_operation_index`, `0003_store_identity`,
-  `0004_projection_snapshots`, `0005_artifacts`, and
-  `0006_ordered_parts`, followed by `0007_store_format_revision`.
+  `0004_projection_snapshots`, `0005_artifacts`,
+  `0006_ordered_parts`, `0007_store_format_revision`, and
+  `0008_idempotency_request_hash`, `0009_store_identity_v1`, and
+  `0010_external_ref_v1`, and `0011_artifact_namespace_fork_v1`.
 - Store format is one internal integer independent of binary versions. The
-  current value is 2. Stores through 0005 without a marker are implicit
-  revision 1; unmarked 0006 stores are implicit revision 2.
+  current value is 6. Stores through 0005 without a marker are implicit
+  revision 1; unmarked stores through 0007 are implicit revision 2.
+- New stores are created directly at revision 6. Revisions 1–5 are named
+  inspection/migration inputs only. Normal open rejects them before WAL setup
+  with the exact versioned command. Operators use `missis-tools store migrate
+  plan --to-format 6` and `missis-tools store migrate apply --to-format 6
+  --backup PATH`; the target format is mandatory.
 - On open, the store: (1) probes compatibility read-only, (2) applies pending
   migrations in order, (3) verifies
   store identity and the hash chain, (4) backfills derived tables for stores
   created before migration 0004.
 - Unknown migrations or a revision newer than the binary supports fail before
   WAL setup, migration, integrity verification, or projection repair.
-- **Upgrades are in place:** an older store is migrated and backfilled on first
-  open by a newer binary. Always back up first
-  (`missis-tools backup`, then `missis-tools remote upload`).
+- **Upgrades are explicit:** normal open never migrates an older format. The
+  migration command requires and verifies a pre-migration backup before
+  changing the source.
+- **Writable-copy identity changes are separately versioned:** `missis-tools
+  store fork plan --to-identity-version 1 --store COPY` reports the exact
+  source identity and semantic artifact inventory. `fork apply` requires
+  `--from-store-id ID` and `--backup PATH`; a non-empty artifact inventory also
+  requires an absent `--destination-artifact-root` and resolves or accepts the
+  exact source root. This operation changes identity, not store format.
+  Plan resolves or accepts the source root read-only, fully hashes the CAS, and
+  reports required object count, exact excluded refs, integrity issues,
+  protocol, receipt version, and reconciliation blockers without creating a
+  lock, child identity, backup, or staging path.
+- A zero inventory uses `store-identity-fork-v1` and an empty child namespace.
+  A reconciled non-zero inventory uses `artifact-namespace-fork-v1` plus
+  `store-identity-fork-v2`. It copies the union of managed accepted references
+  and artifact-index rows into an independent CAS, fully verifies source and
+  child bytes, preserves unmanaged source identities as provenance without
+  opening them, and lists but excludes valid CAS objects absent from both
+  authoritative sets. An accepted managed ref without an index row blocks with
+  an exact count and directs `artifacts rebuild-index-copy`; the fork never
+  repairs the source in place. Hard links and shared writable namespaces are
+  forbidden.
+- The child identity is persisted before copying. The sorted manifest and its
+  completion marker are flushed before atomic namespace publication; only then
+  may SQLite atomically install the child identity, fork receipt, and indexed
+  manifest/marker digests. `fork inspect` correlates disk and database state.
+  `fork recover` resumes the same prepared identity and accepts an existing
+  verified backup; ordinary `apply` rejects pre-existing backups and unrelated
+  destination roots.
 - **There is no downgrade path.** Once a store has been opened by a newer
   version, an older binary may not be able to read it. Forward-compatible with
   later versions; not backward-compatible with earlier binaries after
@@ -50,34 +260,71 @@ A single SQLite database file, holding:
 
 ### Compatibility corpus
 
-The checked-in `internal/store/testdata/compatibility/revision-0002/` corpus
+The checked-in `internal/store/testdata/compatibility/revision-0006/` corpus
 contains a deterministic database, manifest, and synthetic artifact CAS. It
 covers every registered operation, built-in value/inline/reference kind,
 relation, first-party ingestion plugin output, provenance shape, temporal
-behavior, and derived projection supported by revision 2. It uses fixed IDs,
+behavior, and derived projection supported by revision 6. It uses fixed IDs,
 UTC timestamps, logical slash paths, and synthetic bytes, so tests compare
 logical state and hashes consistently on Linux and Windows.
 
 Ordinary `go test ./...` regenerates the corpus in a temporary directory and
-checks completeness and freshness. Compatible changes preserve revision 2
+checks completeness and freshness. Compatible changes preserve revision 6
 and its logical snapshot. Incompatible durable changes increment the revision
 and add a retained fixture directory. Never rewrite an accepted fixture in
 place. `go run ./tools/store-fixture --output DIR` is the explicit builder.
+
+Revision 3 binds every active idempotency receipt to
+`missis-request-v1:<sha256>`. Reusing a key for a different request is rejected
+without appending. Format-revision-2 receipts have no recoverable original
+caller request. Migration therefore moves them from the active `idempotency`
+table into `idempotency_key_tombstones`; it never invents a request hash from
+result or event data. A tombstoned key cannot be replayed or reused by guarded
+mutation, so an old retry cannot appear to be a new request and append a
+duplicate. Its original event IDs and result remain available through the
+unguarded store-level audit lookup. The retained revision-2 fixture proves
+that boundary.
 
 Confirmed boundary: `v0.2.1` cannot verify revision-2 ledgers containing
 ordered events because it did not deserialize `OrderKey` before recomputing
 event hashes. Use the paired `v0.2.2` release or newer; this is not evidence of
 corruption in such a store.
 
+Revision 4 installs the exact `eventstore-hash-v1` identity document and
+identity migration/fork receipts. Revision 5 preserves that identity, adds an
+explicit format-migration receipt, and admits the strict `external-ref-v1`
+durable value. External references reject unknown fields and never contain a
+path, URL, credential, or embedded locator. Format 4 to 5 requires the exact
+version-targeted migration and a pre-migration backup; it does not change
+`store_id`.
+
+Revision 6 preserves identity and accepted event interpretation while adding
+the `artifact_namespace_forks` index and the versioned artifact fork
+manifest/marker/receipt protocol. Format 5 to 6 requires the exact
+version-targeted migration and a pre-migration backup; it does not change
+`store_id`.
+
 ## Integrity contract
 
-- **Canonical event encoding v1** (ticket #45) is used for hash computation;
-  timestamps are 9-digit nanoseconds UTC.
-- **Head hash** is a SHA-256 chain over canonical events. It is verified on
+- **Canonical event encoding v1** and its test vectors are defined by ticket
+  #45, but the live revision-2/revision-3 ledger hash has not migrated to it.
+  The current scheme is named `global-json-chain-v1`: SHA-256 over the
+  previous hex hash, a newline, and the implementation JSON event encoding.
+  Ticket #57 owns migration to a new named integrity epoch; accepted history
+  under `global-json-chain-v1` must never be silently rehashed.
+- **Head hash** is the live SHA-256 chain described above. It is verified on
   every open (an intentional O(ledger) integrity check, ticket #51 decision)
   and by `show --health` / `CheckConsistency`.
-- **Store identity** (`store_id`) is immutable; **per-stream sequences** are
-  unique and strictly increasing. A sequence gap is an integrity incident:
+- **Store identity** (`store_id`) is the domain-separated SHA-256 of exact
+  `StoreIdentityDocumentV1` bytes containing a 32-byte OS-CSPRNG nonce. Migrated
+  `missis-ulid-v1` stores receive a new ID and an atomic receipt binding the old
+  ID, source head/count/epoch, new ID, and retained artifact namespace. A
+  deliberately writable copy whose exact artifact/index inventory is zero
+  receives another new document and a digest-addressed lineage receipt that
+  preserves the exact parent document, fork head/count/epoch, backup digest,
+  and new empty artifact namespace.
+  Read-only copies keep the original identity. **Per-stream
+  sequences** are unique and strictly increasing. A sequence gap is an integrity incident:
   accepted events are never rewritten, and recovery is restore-from-backup.
 - **Bitemporal semantics** (ticket #42): the winner is
   `max(effective_at, recorded_at, stream_sequence, event_id)` among candidates
@@ -87,12 +334,43 @@ corruption in such a store.
   transaction (ticket #77): a failed batch writes nothing, and per-stream
   sequences are allocated independently.
 
+### Artifact integrity and recovery
+
+`missis-tools artifacts verify --json` takes offline exclusive leases,
+semantically replays all accepted artifact references with exact event IDs and
+field locations, and fully hashes every local CAS object. It distinguishes
+unreferenced objects, missing/stale index rows, missing data/metadata, corrupt
+bytes, and metadata conflicts. Equal size alone is never content verification;
+normal artifact `Open` and deduplicating `Put` perform a full digest check.
+
+GC protects the union of accepted semantic references and current index rows,
+so a missing index cannot cause referenced bytes to be collected. If verified
+bytes exist but the index is irreconcilable, `artifacts rebuild-index-copy`
+creates and verifies a replacement database while leaving the source
+untouched. Missing bytes require the exact digest from a verified backup or
+trusted exact copy. The complete algorithm, result-to-recourse table,
+injected-fault matrix, and not-yet-implemented artifact-namespace fork/remote
+profiles are in `docs/artifact-integrity-and-recovery.md`.
+
+## Live durability profile
+
+- The confirmed writer configuration is SQLite WAL with
+  `synchronous=NORMAL`. `show --health` reads and reports the active settings
+  as `wal-normal`.
+- This profile gives ordinary crash recovery and database consistency, but it
+  does not promise that the newest acknowledged transaction survives host
+  power loss. It is not a replication guarantee.
+- The safety boundary, evidence states, and laptop-safe fault-injection ladder
+  are in [`durability-testing.md`](durability-testing.md). Ticket #117 owns a
+  configurable FULL profile and its benchmark; strict power-loss durability is
+  currently **not confirmed**.
+
 ## Derived data
 
 - `tickets`/`parts_current` are rebuildable from the ledger via
   `RebuildProjection` (SDK) or the automatic open-time backfill.
 - `parts_current.order_key` is a rebuildable projection of the current
-  containment event. Empty keys preserve the legacy stream-sequence/Part-ID
+  containment event. Empty keys preserve the pre-order-key stream-sequence/Part-ID
   ordering fallback.
 - `CheckConsistency` verifies derived tables against the ledger.
 - Normal `store.Open` calls own one shared advisory lease for the Store
@@ -118,7 +396,8 @@ corruption in such a store.
   `backup.db.complete.json` publication marker. The marker is written last
   and binds the database hash, manifest hash, bundle version, and completion
   timestamp.
-- `missis-tools backup verify` distinguishes `complete`, `legacy-v1`,
+- `missis-tools backup verify` distinguishes `complete`, the retained
+  database-only backup state `legacy-v1`,
   `incomplete`, and `corrupt` backups. `backup cleanup` removes only stale
   staging paths and explicitly incomplete bundles; it never removes a valid
   published backup automatically.
@@ -157,7 +436,7 @@ corruption in such a store.
 
 - The store file format is identical across operating systems; only the
   **default location** differs: `%LOCALAPPDATA%\missis\missis.db` on Windows
-  (with `os.UserConfigDir()` and legacy XDG fallbacks), and
+  (with `os.UserConfigDir()` and the pre-user-config XDG fallback), and
   `~/.local/share/missis/missis.db` on POSIX (ticket #55).
 - Private-by-default permissions are POSIX-scoped (0700 dir / 0600 file);
   Windows relies on user-profile ACLs.
@@ -171,7 +450,7 @@ corruption in such a store.
   the root, preventing project collisions and excessive path length.
 - `MISSIS_ARTIFACT_STORE` overrides the root for tests and deployments. An
   unusable or overlong root is an explicit error with override guidance.
-- Only `<store-directory>/artifacts/` is legacy. Run
+- The pre-isolated artifact layout is `<store-directory>/artifacts/`. Run
   `missis-tools artifacts migrate --store PATH` while all clients are
   stopped. Successful migration quarantines, rather than deletes, the old
   directory. Run `missis-tools artifacts gc --grace DURATION` for explicit
@@ -344,15 +623,18 @@ the removed standalone wrappers as follows; no runtime aliases are provided.
 | `repair-store` | `missis-tools repair` |
 | `store-gaps` | `missis-tools gaps` |
 | `store-manifest` | `missis-tools manifest` |
+| `store-migrate` | `missis-tools store migrate plan/apply --to-format N` |
+| writable-copy identity declaration | `missis-tools store fork plan/apply/recover --to-identity-version N` plus `store fork inspect` |
 | `store-backup` | `missis-tools backup` |
 | `store-remote` | `missis-tools remote` |
 
-## Stability promise for revision 2
+## Stability promise for revision 6
 
-- The on-disk format is stable while `store_format_revision` remains 2.
+- The on-disk format is stable while `store_format_revision` remains 6.
 - Any future breaking change to the ledger format is gated behind a new
   migration and documented here before release.
-- Canonical event payloads (v1) will not be reinterpreted by later phases.
+- Accepted `global-json-chain-v1` bytes will not be reinterpreted or silently rehashed;
+  canonical-v1 adoption requires the explicit epoch owned by #57.
 
 ## Local alpha readiness
 

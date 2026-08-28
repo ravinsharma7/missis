@@ -2,7 +2,7 @@
 
 ## Unified specification for a three-command, agent-friendly and human-friendly issue system
 
-**Status:** Design specification  
+**Status:** Frozen v2 contract (2026-08-27)
 **Primary interface:** `missis new`, `missis show`, `missis set`
 **Primary storage model:** immutable event ledger  
 **Primary content unit:** recursive addressable part  
@@ -16,7 +16,15 @@ surface is the output of `missis --ag-brief` and the Phase 1 requirements. Any
 flag or workflow not present there, including `--next`, `--blocked`,
 `--obligations`, `--verification`, and `--effects`, is aspirational and MUST
 NOT be used as current agent guidance until implemented and tested.
-**Revision:** 2026-08-15 — recursive part hierarchy and temporal containment made explicit
+**Revision:** 2026-08-27 — v2 frozen; new protocol work moves to v3-alpha
+
+The v2 contract is frozen. It accepts only correctness, security, data-loss,
+and unambiguous documentation corrections needed to preserve its implemented
+behavior. New storage protocol capabilities, neutral consumer abstractions,
+cross-store references, and intentional behavior changes enter the
+authoritative `event-store-v3-alpha.md` contract and its subordinate alpha
+contracts. Event-store v3 becomes stable only after the maturity gates there
+are met.
 
 ---
 
@@ -1386,6 +1394,18 @@ safedesign#184/problem
 ```
 
 The tickets remain separate, maintain separate home projects, and preserve separate histories. The link permits shared search, lineage traversal, and reasoning across project boundaries.
+
+This v2 example assumes both projects resolve inside the **same authoritative
+store**. A project label is not a store identity. Two repository-local stores
+may both allocate `#184`, and may even contain independently generated entity
+IDs; `safedesign#184` therefore MUST NOT be serialized as a canonical
+cross-store reference.
+
+Canonical cross-store identity, durable external-reference values, peer
+construction, resolution, and their implementation status are outside frozen
+v2. They are governed only by the authoritative versioned
+`event-store-v3-alpha.md` and `cross-store-references-v3-alpha.md` contracts.
+New cross-store behavior MUST NOT be added normatively to this document.
 
 ## 9.7 Lineage view
 
@@ -3807,7 +3827,8 @@ Postconditions:
 - the event has a unique immutable ID;
 - recorded_at is system assigned;
 - per-stream sequence is monotonic;
-- the event is durable before success is returned;
+- the event is atomically committed under the adapter's reported durability
+  profile before success is returned;
 - the current projection can be recomputed from events;
 - provenance references are retained;
 - projection and indexing work is either completed or durably queued;
@@ -3970,7 +3991,76 @@ A batch containing parts, links, and metadata SHOULD commit atomically when they
 
 ## 21.5 Idempotent clients
 
-`new` and `set` SHOULD accept an idempotency key. Repeating the same request with the same key must return the same result or a clear conflict, not create duplicate tickets or duplicate events.
+`new` and `set` SHOULD accept an idempotency key. A key is bound atomically to
+one versioned request fingerprint, the accepted event IDs, and the result.
+
+The version-1 fingerprint is SHA-256 over the domain-separated
+framing:
+
+```text
+SHA256(
+  UTF8("MISSIS-IDEMPOTENCY-REQUEST") || 0x00 || UTF8("v1") || 0x00 ||
+  request_envelope_json
+)
+```
+
+The outer envelope field order is `operation`, `actor`, `effective_at`,
+`known_at`, `if_current`, `because`, `payload`; empty optional fields are
+omitted. Operation-specific payload field order and JSON encoding are frozen
+by the format-revision-3 implementation and compatibility fixture. This local
+v1 encoding must not be claimed as a cross-language protocol until v3-alpha
+publishes independent canonical vectors.
+
+The envelope includes the operation, actor after documented defaulting,
+caller payload, explicit effective/known times, expected-current precondition,
+and causal reference. Ingestion fingerprints include the content-addressed
+artifact digest and normalized media/capability fields. It excludes
+authority-assigned event/ticket IDs, generated aliases, stream sequences,
+recorded time, and omitted time defaults. Caller-supplied IDs and reference
+text remain part of the payload. Equivalent references are not collapsed in
+v1: a retry must use the same public request representation.
+
+Repeating the same request and key MUST return the original result without
+creating duplicate tickets or events. Reusing the key for a different
+fingerprint MUST fail with `idempotency_mismatch` in conflict exit class 5 and
+append nothing. The receipt and request fingerprint MUST commit in the same
+transaction as the events.
+
+Format-revision-2 receipts without a request fingerprint cannot be safely
+reconstructed from their result or accepted events. Revision-3 migration MUST
+move them out of the active receipt table into permanent
+`idempotency_key_tombstones`; it MUST NOT invent a fingerprint. Guarded
+high-level replay and key reuse fail closed and instruct the caller to use a
+new key. Unguarded store-level lookup remains available for audit of the
+stored result and event IDs.
+
+Processing order is:
+
+```text
+fingerprint caller request before authority-assigned defaults
+begin transaction
+lookup key
+  absent          -> validate and append
+  same hash       -> return stored receipt without re-executing
+  different hash  -> idempotency_mismatch, no append
+  v2 tombstone    -> idempotency_mismatch with new-key guidance
+commit events + request hash + receipt atomically
+```
+
+Replay precedes current-state validation: the original request may no longer
+be valid against later state even though it already committed. The stored
+receipt is returned; the operation is not executed again.
+
+Required conformance cases:
+
+| Case | Result |
+| --- | --- |
+| Same key, identical request | Original receipt/events replayed; event count unchanged. |
+| Same key, changed operation/payload/time/precondition/content digest | `idempotency_mismatch`; event count unchanged. |
+| Two concurrent different requests with one key | Exactly one may commit; the other mismatches. |
+| Response lost after commit | Identical retry returns the committed receipt. |
+| Migrated format-v2 tombstone | Guarded replay and reuse fail closed; evidence remains auditable and the key is never rebound. |
+| Unknown/malformed fingerprint version | Fail closed; never treat it as a match. |
 
 ---
 
@@ -4858,9 +4948,9 @@ retracted.
 | Immutable events | Accepted events are never rewritten, deleted, or repaired in place. Corruption recovery restores a verified backup. |
 | Stream sequences | Sequences are unique and strictly increasing per stream; a gap is an integrity incident. |
 | Temporal winner | Latest effective time wins; recorded time breaks ties. |
-| Canonical hashes | Event hashes use canonical encoding v1 and append order defines the SHA-256 chain. |
+| Event hashes | Canonical event encoding v1 and test vectors are defined, but revision-2/revision-3 live stores use `global-json-chain-v1`: SHA-256 over previous hash, newline, and implementation JSON. Ticket #57 owns adoption through a new named integrity epoch; accepted history is never silently rehashed. |
 | Atomic batches | `AppendBatch` and `ApplyLinkBatch` commit all events in one transaction, including multi-stream batches. Failure writes nothing. |
-| Idempotency | Repeating an append with the same idempotency key replays its stored result and events. |
+| Idempotency | The key and versioned request fingerprint commit with the result/events. Same request replays; a different request is `idempotency_mismatch` and appends nothing. Migrated format-v2 tombstone keys fail closed for guarded replay and reuse. |
 | Derived state | `tickets` and `parts_current` are rebuildable from the ledger with parity checks. |
 | Preconditions | Part/entity and link-assertion expected-current-event mismatches are conflicts. Link preconditions use evidence semantics. |
 | Retraction | Retraction is the only removal mechanism; it never erases accepted history. |
@@ -4892,12 +4982,14 @@ retracted.
 
 ### 31.5 Performance
 
-`n` is ledger size. Correctness is unchanged while derived-index work replaces
-linear reads.
+`n` is ledger size, `s` is the complete history of the touched stream, and `p`
+is the current projected part count of the touched ticket. These are measured
+current bounds, not target guarantees. Correctness must remain unchanged while
+derived-index work replaces linear reads.
 
 | Path | Complexity | Notes |
 | --- | --- | --- |
-| Append | Amortized constant per event | Sequence allocation and affected-stream validation. |
+| Append | O(s log s + p) for a touched ticket stream | The current adapter refolds the touched stream and replaces its current part projection; #119 owns affected-key deltas. Work is independent of unrelated ledger history after #61. |
 | Multi-stream batch | One transaction | Sequences remain per-stream. |
 | Link-precondition evaluation | O(n) | Target of derived-index work. |
 | Project/group listing | O(n) | Full-ledger scan until scope indexes land. |
@@ -4905,8 +4997,30 @@ linear reads.
 | Scope history | O(stream) | Loads one entity stream. |
 | Schema resolution | O(n) per write | Target of declaration indexes. |
 
+### 31.6 Local durability profile
+
+The SQLite writer uses WAL with `synchronous=NORMAL`. Health reads and reports
+the effective settings as `wal-normal`, including
+`acknowledged_commit_power_loss_durable=false`.
+
+This profile provides SQLite atomicity/consistency and ordinary process-crash
+recovery. It does not promise that the newest acknowledged transaction
+survives operating-system crash or host power loss, and it provides no
+replication. A configurable WAL/FULL profile remains ticket #117 work and MUST
+be benchmarked before any default change. Host-power-loss evidence is not
+confirmed; safe testing uses a disposable VM and disposable virtual disk as
+documented in `docs/durability-testing.md`, never destructive injection
+against a developer machine's physical storage.
+
 ## 32. Change log
 
+- 2026-08-27: froze v2; corrected the live hash and append-complexity
+  descriptions; strengthened request-bound idempotency and its format-v2
+  tombstone migration rule;
+  documented the active WAL/NORMAL durability profile, and recorded store
+  format revisions 3–5 for request binding, hashed identity, and strict
+  durable external references. Broader event-store changes are proposed non-normatively
+  in `event-store-v3-alpha.md` under ticket #118.
 - 2026-08-19: added 9.8 (atomic link workflows and link-assertion
   preconditions), 14.8 (v1 project/group membership), the `has-home` /
   `home-of` vocabulary pair (9.2), and this guarantees appendix (31).
@@ -4916,14 +5030,61 @@ linear reads.
 
 The local artifact backend is content-addressed and durable before an
 artifact reference becomes visible in the event ledger or SQLite artifact
-index. New stores use a per-store isolated root under the platform user-data
+index. `Put` copies into mode-0600 staging while computing SHA-256 and size,
+flushes and closes the staging file, atomically publishes the digest path,
+syncs its parent, atomically publishes metadata, and fully re-hashes the
+published object before returning. Deduplication also fully hashes an existing
+same-reference object; equal size is not accepted as equal content. The
+application then commits the artifact index row and all events that first
+reference it in one SQLite transaction. A failed database transaction may
+leave only a safe unreferenced CAS object.
+
+An accepted artifact-kind occurrence is derived by semantic decoding, never by
+searching event JSON for an artifact-looking substring. Exact
+`artifact:sha256:<digest>` values are managed CAS references. Existing accepted
+history may contain named non-CAS source identities such as
+`artifact:specs/report.md`; these preserve provenance but do not imply managed
+bytes and MUST be reported as `unmanaged-reference` with exact event/field
+locations. A malformed `artifact:sha256:` value remains an integrity error.
+The inventory covers
+every typed core `Ref` location in the accepted event envelope, effect
+before/after values, typed descriptors/media/evidence/verification values,
+and typed inline items. It records the exact event ID and field location for
+each occurrence. The event ledger and immutable bytes are authoritative; the
+SQLite `artifacts` table is rebuildable metadata.
+
+`Stat` validates metadata and current size but does not hash content. `Open`
+and `Put` deduplication perform a full digest verification before serving or
+reusing an object. `missis-tools artifacts verify` takes exclusive database
+and artifact leases, replays the semantic inventory, fully hashes the CAS, and
+reports exact `healthy`, `unmanaged-reference`, `unreferenced-object`, `missing-index`,
+`indexed-without-accepted-reference`, `missing-object`, `missing-metadata`,
+`corrupt-object`, and `index-object-metadata-mismatch` states. Corruption
+diagnostics MUST name the reference, expected and computed digest/size, and
+every known accepted event/field occurrence. Missing or corrupt referenced
+bytes MUST NOT be served; recovery requires that exact digest from a verified
+backup or trusted exact copy. Event replay cannot reconstruct missing bytes.
+
+When all accepted bytes verify but the artifact index cannot be reconciled,
+`missis-tools artifacts rebuild-index-copy --destination NEW.db` MUST leave
+the source unchanged, copy its exact accepted ledger/identity, rebuild only
+the destination index from semantic replay and verified CAS metadata, verify
+the destination, and publish it atomically. The output is an exact-identity
+replacement candidate, not a second writable authority. GC MUST protect the
+union of semantic accepted references and current index rows; it may collect
+only objects in neither set after an explicit grace period and confirmation.
+
+New stores use a per-store isolated root under the platform user-data
 directory, namespaced by a hash of the immutable store identity. The
 `MISSIS_ARTIFACT_STORE` environment variable is an explicit root override.
+The exact publication, audit, recovery-copy, crash-state, writable-fork, and
+remote-profile algorithms are recorded in
+`docs/artifact-integrity-and-recovery.md`.
 
-The only legacy layout is `<store-directory>/artifacts/`. A valid legacy root
+The pre-isolated layout is `<store-directory>/artifacts/`. A valid old root
 is used with visible migration guidance when no isolated root exists. If both
 roots exist, opening the store fails rather than choosing one silently.
-`missis-tools artifacts migrate` validates and copies the legacy CAS objects,
+`missis-tools artifacts migrate` validates and copies the old-layout CAS objects,
 verifies every indexed artifact, and quarantines the old root as
 `artifacts.legacy-<timestamp>`. The quarantine is retained for rollback and
 is never removed automatically. `missis-tools artifacts gc` is an offline,
@@ -4944,7 +5105,7 @@ artifact root before publication.
 
 The rebuildable `parts_current` projection stores the core-assigned opaque
 containment `order_key`. Migration `0006_ordered_parts` adds the column with
-an empty legacy default. Projection refresh, rebuild, and consistency checks
+an empty pre-order-key default. Projection refresh, rebuild, and consistency checks
 must match the key carried by the current containment event. Events without a
 key retain deterministic stream-sequence/Part-ID ordering. Reordering emits a
 new provenance-bearing event; clients do not calculate keys. Sparse numeric
@@ -4958,7 +5119,7 @@ Version-2 logical backups stage and validate the SQLite snapshot, manifest,
 and embedded artifact sidecar before publication, then write
 `backup.db.complete.json` last. The marker contains database and manifest
 hashes, bundle version, and completion time. `missis-tools backup verify`
-reports complete, legacy-v1, incomplete, or corrupt state. Cleanup removes
+reports complete, database-only `legacy-v1`, incomplete, or corrupt state. Cleanup removes
 only stale staging paths and explicitly incomplete bundles; valid published
 backups are never removed automatically. Database-only and version-1 backups
 remain readable.
@@ -4991,17 +5152,64 @@ close/reopen, and projection rebuild.
 
 Binary release identity and durable store compatibility are independent.
 `store_format_revision` is one internal monotonically increasing integer;
-revision 2 is the current format. Unmarked stores through migration 0005 are
-implicit revision 1, unmarked stores containing migration 0006 are implicit
-revision 2, and migration `0007_store_format_revision` records revision 2 in
-`store_meta`.
+revision 6 is the current format. Unmarked stores through migration 0005 are
+implicit revision 1, unmarked stores through migration 0007 are implicit
+revision 2, migration `0007_store_format_revision` records revision 2 in
+`store_meta`, and migration `0008_idempotency_request_hash` adds the nullable
+request fingerprint and records revision 3. Migration
+`0009_store_identity_v1` adds exact hashed identity documents and receipts;
+the Go identity step atomically records revision 4 because CSPRNG generation is
+not delegated to SQL. Migration `0010_external_ref_v1` admits the strict
+`external-ref-v1` durable value vocabulary and adds versioned format-migration
+receipts; the explicit Go step preserves store identity and atomically records
+revision 5 after its required backup.
+Migration `0011_artifact_namespace_fork_v1` adds the independently inspectable
+artifact-fork receipt index; the explicit Go step preserves store identity and
+atomically records revision 6 after its required backup.
 
 Opening an existing database MUST probe this revision read-only before WAL
 configuration, migration, integrity verification, or projection repair.
-Known implicit revisions may migrate forward. Unknown migrations and newer
+Normal open accepts only the current revision. Known older revisions may move
+forward only through `missis-tools store migrate plan/apply --to-format N`;
+`apply` requires a pre-migration backup path. Unknown migrations and newer
 revisions MUST fail closed with the found and supported revision range. The
 gate records neither a binary hash nor a growing feature-name list: several
 binary releases may correctly support the same store revision.
+
+Changing a deliberately writable copy's identity is not a format migration.
+It uses the independently versioned `missis-tools store fork
+plan/apply/recover --to-identity-version 1` operation. Apply MUST require the
+exact expected parent `--from-store-id` and a pre-change `--backup`; it MUST
+atomically install a fresh identity document, new store ID, and lineage receipt
+binding the parent document, fork head/count/integrity epoch, backup digest,
+and artifact disposition. The plan reports artifact index rows, accepted-event
+count, managed CAS occurrences, and unmanaged artifact-kind source occurrences
+from semantic decoding rather than an event-JSON substring heuristic.
+
+Any accepted managed reference without an artifact-index row MUST make the
+plan ineligible with the exact missing-row count and direct the operator to
+`artifacts rebuild-index-copy`. The fork MUST NOT repair its source database in
+place.
+
+Zero inventory uses `store-identity-fork-v1` and an empty child namespace.
+Non-zero inventory uses `artifact-namespace-fork-v1` and
+`store-identity-fork-v2`. The required copy set is the union of all index rows
+and managed accepted references. Every source and child object MUST be fully
+verified and physically copied without hard links. Unmanaged values MUST be
+preserved exactly as `provenance-only-unmanaged-v1` and MUST NOT be interpreted
+as paths or fetched. Valid CAS objects in neither set MUST be listed as
+`excluded-unreferenced-v1` and omitted; invalid source CAS entries MUST stop the
+fork.
+
+The operation MUST persist one reusable child identity, a canonical sorted
+manifest, and a completion marker before atomically publishing the child
+namespace. Only then may SQLite commit the child identity, lineage receipt, and
+matching manifest/marker index in one transaction. `fork inspect` MUST fully
+verify and distinguish incomplete copy, prepared/uncommitted, complete,
+identity mismatch, and integrity failure. `fork recover` MUST reuse the same
+prepared identity and verified backup; it MUST NOT invent a second child or
+adopt an unrelated destination. A read-only replica or ordinary backup
+preserves identity and does not run this operation.
 
 `internal/store/testdata/compatibility/revision-NNNN` is the immutable,
 cross-platform compatibility corpus. Each retained revision contains a
@@ -5024,11 +5232,30 @@ recomputed a different hash for ordered events. It is explicitly unsupported
 for revision-2 stores containing those events; the first compatible paired
 release is `v0.2.2`.
 
+Revision 3 binds every new idempotency receipt to a versioned request
+fingerprint. Format-revision-2 rows move to permanent key tombstones because
+their original caller request is unrecoverable; guarded replay and reuse fail
+closed rather than guessing, while event IDs/result remain available for
+audit. The active revision-3 table rejects a missing fingerprint. The
+immutable revision-2 fixture remains retained.
+
+Revision 4 installs the location-independent `eventstore-hash-v1` store
+identity document and migration/fork lineage receipts. Revision 5 preserves
+that identity while admitting strictly decoded `external-ref-v1` values.
+Unknown fields—including paths, URLs, credentials, and embedded locators—are
+rejected before append. Revision 6 preserves those semantics while adding the
+artifact namespace fork manifest/marker/receipt index. The immutable
+revision-6 fixture is the current generation target; revisions 2–5 remain
+retained migration/conformance input.
+
 ### 34.2 Release identity and paired update
 
-Stable Git tags remain SemVer. The release workflow selects the next patch
-automatically and builds `missis` and `missis-tools` from the same full Git
-commit. Both binaries report release version, commit, display identity
+Stable Git tags remain SemVer. Operator-triggered publication requires an
+explicit new stable version and rejects an existing, older, prerelease, or
+non-SemVer value; a format-changing compatibility boundary uses an explicitly
+reviewed version rather than silently selecting the next patch. The workflow
+builds `missis` and `missis-tools` from the same full Git commit. Both
+binaries report release version, commit, display identity
 `vX.Y.Z+g<short-sha>`, and supported store-format revision. Development builds
 report `dev+g<short-sha>` and dirty state when available.
 
@@ -5048,6 +5275,24 @@ waits for the running executable to exit, then applies the same journaled
 replacement. Release installation writes the same paired manifest. Independent
 cryptographic signing is deferred; SHA-256 verification currently relies on
 the GitHub HTTPS release trust boundary.
+
+When a release changes the physical store format, paired replacement and store
+migration form one recoverable rollout, not two unrelated operator actions and
+not one claimed atomic transaction. The release manifest MUST declare the
+normal-open format, the exact sorted source revisions its maintenance tool can
+migrate, and a digest of that migration set. The target pair MUST be staged and
+verified before any store mutation. An exclusive store lease then covers
+re-planning, verified backup, exact-version migration, staged-pair
+verification, paired activation, and final generation inspection.
+
+The rollout journal MUST bind the previous pair and installation manifest to
+the pre-migration database/artifact backup, and bind the staged pair to the
+target migration receipt. Recovery MUST reach either the complete previous
+generation or the complete target generation. It MUST reject split pairs, old
+writers against the new store, new normal writers against the old store,
+unverified staging, and receipt/backup/generation mismatches. Installing a
+global pair MUST NOT silently discover or migrate project stores; every store
+is an explicit rollout target.
 
 ### 34.3 Clean project setup
 

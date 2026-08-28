@@ -7,4 +7,5 @@
 .missis.d/manifest.json
 .missis.d/active.local.md
 /temp/
+/reports/
 testsuite/benchmarks/results/

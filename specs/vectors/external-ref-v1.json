@@ -1,0 +1,15 @@
+{
+  "vector_version": "external-ref-vector-v1",
+  "accepted_json": "{\"version\":\"external-ref-v1\",\"store_id\":\"store:v1:sha256:120311f35ac84b69682c5b5be1dbe7ab96994ef4a8db9d43473d8d0f1f379867\",\"namespace\":\"missis\",\"kind\":\"ticket\",\"entity_id\":\"ticket:target\",\"subentity_id\":\"part:problem\",\"pin\":{\"event_id\":\"event:pinned\"},\"observation\":{\"stream_revision\":7,\"current_event_id\":\"event:observed\",\"observed_at\":\"2026-08-27T01:02:03Z\"},\"display_hint\":\"project#42/problem\"}",
+  "identity_key": "15:external-ref-v180:store:v1:sha256:120311f35ac84b69682c5b5be1dbe7ab96994ef4a8db9d43473d8d0f1f3798676:missis6:ticket13:ticket:target12:part:problem12:event:pinned0:",
+  "identity_excludes": [
+    "observation",
+    "display_hint"
+  ],
+  "forbidden_unknown_fields": [
+    "path",
+    "url",
+    "locator",
+    "credentials"
+  ]
+}

@@ -51,7 +51,7 @@ Public command spelling:
 | PH1-EVT-005 | 10.6 | Corrections identify the events they supersede. |
 | PH1-EVT-006 | 10.8, 21.4 | Multi-event batches are atomic by default. |
 | PH1-EVT-007 | 19 | Internal event operation vocabulary drives projection and validation without new CLI commands. |
-| PH1-EVT-008 | 20.1, 20.2 | Append preconditions and postconditions are enforced before durability success. |
+| PH1-EVT-008 | 20.1, 20.2, 31.6 | Append preconditions and postconditions are enforced before success under the reported durability profile. |
 | PH1-PRJ-001 | 4.4, 20.3-7 | Current ticket state is a derived projection; the event ledger is authoritative. |
 | PH1-PRJ-002 | 4.4, 10.2 | Valid-time projection is supported. |
 | PH1-PRJ-003 | 4.4, 10.2 | Bitemporal projection is supported. |
@@ -63,7 +63,7 @@ Public command spelling:
 | PH1-CON-001 | 21.1, 21.2 | Scalar and hierarchy updates support expected-revision checks. |
 | PH1-CON-002 | 21.2, 20.1 | Concurrent hierarchy mutations are atomic and reject cycles or path collisions. |
 | PH1-CON-003 | 21.3 | Independent additions may commute without unnecessary conflict. |
-| PH1-CON-004 | 21.5 | Clients can use idempotency keys. |
+| PH1-CON-004 | 21.5 | Active idempotency keys are atomically bound to a versioned request fingerprint: the same request replays and a different request conflicts without appending; format-v2 unbound keys migrate to non-reusable audit tombstones. |
 | PH1-CLI-007 | 5.7 | Default coordination statuses are `open`, `doing`, `blocked`, and `done`; avoid status proliferation. |
 | PH1-CLI-008 | 5.7 | A blocked ticket has a reason or dependency. |
 | PH1-PART-012 | 6.3 | Conventional part names are recognized but remain open-world. |
@@ -74,7 +74,11 @@ Public command spelling:
 | PH1-DM-002 | 18 | Projection and validation functions have concrete signatures. |
 | PH1-ACC-001 | 29.1, 29.2, 29.3, 29.4, 29.11 | Phase 1 acceptance criteria are mapped to the requirements above. |
 | PH1-FMT-001 | 34.1 | A store is compatibility-probed before mutation, rejects unsupported revisions, and is covered by an immutable complete compatibility corpus. |
+| PH1-FMT-002 | 34.1 | Format 5 preserves hashed store identity while admitting strictly decoded durable `external-ref-v1` values; older formats require an exact version-targeted migration and backup. |
+| PH1-ART-001 | 33 | Artifact verification semantically replays accepted references with exact event/field evidence, fully hashes bytes, and reports explicit integrity/recovery states. |
+| PH1-ART-002 | 33 | Artifact GC protects accepted references even when the derived index is missing, and index recovery builds a verified replacement database without mutating the source. |
 | PH1-REL-001 | 34.2 | Stable releases pair `missis` and `missis-tools` from one commit and self-update only after manifest, archive, binary identity, and checksum verification. |
+| PH1-REL-002 | 34.2 | A format-changing release binds its migration compatibility and coordinates staged pair verification, explicit-store backup/migration, paired activation, and crash recovery as one journaled rollout. |
 | PH1-SETUP-001 | 34.3 | Setup validates the in-project store before atomically publishing the marker and is idempotent on retry. |
 | PH1-SETUP-002 | 34.3 | Setup check mode performs read-only compatibility, consistency, and scope verification. |
 | PH1-SETUP-003 | 34.3 | Stable setup requires a verified paired installation; development use requires an explicit exception. |
@@ -234,7 +238,7 @@ Status values:
 | N109 | SHOULD | 21.2 | Subtree move or recursive retraction commits atomically. | phase-1-should | PH1-CON-002 |
 | N110 | SHOULD | 21.3 | Independent additions avoid unnecessary conflicts. | phase-1-should | PH1-CON-003 |
 | N111 | SHOULD | 21.4 | Batch containing parts, links, and metadata commits atomically. | phase-1-should | PH1-EVT-006 |
-| N112 | SHOULD | 21.5 | `new` and `set` accept idempotency keys. | phase-1-should | PH1-CON-004 |
+| N112 | SHOULD | 21.5 | `new` and `set` accept request-bound idempotency keys; same-key/different-request reuse fails without appending, and migrated format-v2 unbound keys remain non-reusable audit tombstones. | phase-1-should | PH1-CON-004 |
 | N113 | SHOULD | 22 | JSON errors are structured. | phase-1-should | PH1-CLI-006 |
 | N114 | SHOULD | 23.1 | Plugins, agents, and hooks receive explicit capabilities. | deferred-phase-6 | Security, processors |
 | N115 | SHOULD | 23.2 | Effectful capabilities are denied by default. | deferred-phase-6 | Security, processors |
@@ -248,6 +252,7 @@ Status values:
 | N123 | MUST | 34.3 | Setup check mode performs read-only compatibility, consistency, and scope verification. | phase-1 | PH1-SETUP-002 |
 | N124 | MUST | 34.3 | Stable setup requires a verified paired installation; development use requires an explicit exception. | phase-1 | PH1-SETUP-003 |
 | N125 | MUST | 34.3 | Clean bootstrap uses one explicitly pinned stable ref and invokes setup through the installed absolute binary. | phase-1 | PH1-SETUP-004 |
+| N126 | MUST | 34.2 | A format-changing release binds its migration compatibility and coordinates staged pair verification, explicit-store backup/migration, paired activation, and crash recovery as one journaled rollout. | phase-1 | PH1-REL-002 |
 
 ## Retirement condition
 

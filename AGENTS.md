@@ -7,6 +7,8 @@ AG4: propose "hill climbing" solutions when it assists long term stability of th
 
 Authoritative contracts:
 - `specs/missues-issue-specification.v2.md`
+- `specs/event-store-v3-alpha.md` — all new event-store and persistence work
+- `specs/cross-store-references-v3-alpha.md` — v3-alpha external references and peer resolution
 - `specs/phase1-requirements.md`
 - `specs/requirements-registry.v3.json`
 - the repo-local missis store (`.missis-store/`), including tickets
