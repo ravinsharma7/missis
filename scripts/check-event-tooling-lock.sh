@@ -14,9 +14,17 @@ jq -e '
 ' "$lock" >/dev/null
 
 while IFS=$'\t' read -r path expected; do
-  test -f "$path"
+  if [ ! -f "$path" ]; then
+    echo "event-tooling authority lock: snapshot missing: $path" >&2
+    exit 1
+  fi
   actual="$(sha256sum "$path" | cut -d' ' -f1)"
-  test "$actual" = "$expected"
+  if [ "$actual" != "$expected" ]; then
+    echo "event-tooling authority lock: digest mismatch: $path" >&2
+    echo "expected: $expected" >&2
+    echo "actual:   $actual" >&2
+    exit 1
+  fi
 done < <(jq -r '.snapshots[] | [.local_path, .sha256] | @tsv' "$lock")
 
 echo "event-tooling authority lock verified"
