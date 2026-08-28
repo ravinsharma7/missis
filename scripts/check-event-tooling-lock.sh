@@ -14,6 +14,9 @@ jq -e '
 ' "$lock" >/dev/null
 
 while IFS=$'\t' read -r path expected; do
+  # Native jq on Windows terminates TSV records with CRLF. Bash read removes
+  # LF but retains CR on the final field; it is transport, not lock content.
+  expected="${expected%$'\r'}"
   if [ ! -f "$path" ]; then
     echo "event-tooling authority lock: snapshot missing: $path" >&2
     exit 1
