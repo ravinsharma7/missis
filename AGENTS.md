@@ -13,13 +13,16 @@ Authoritative contracts:
   for external references pinned by `specs/event-tooling.lock.json`
 - `specs/phase1-requirements.md`
 - `specs/requirements-registry.v3.json`
-- the repo-local missis store (`.missis-store/`), including tickets
+- the skunkwork repository-root Missis store (`../../.missis-store/` when this
+  file is read at `products/missis/`), including tickets
 
-Writable consumer-neutral event-tooling contract authority is
-`git@github.com:ravinsharma7/skunkwork.git`. New neutral protocol work starts
-there. Missis product/domain changes remain here. Do not edit the two local
-neutral snapshots without updating the pinned authority commit/digests and
-passing `scripts/check-event-tooling-lock.sh` in the same reviewed change.
+Writable Missis product and consumer-neutral event-tooling authority is
+`git@github.com:ravinsharma7/skunkwork.git`. In skunkwork, Missis product code
+lives at `products/missis`; the standalone Missis repository is a one-way
+read-only distribution mirror. Do not create a product-local `.missis` marker
+or ticket store. Do not edit the two local neutral snapshots without updating
+the pinned authority commit/digests and passing
+`scripts/check-event-tooling-lock.sh` in the same reviewed change.
 
 Transient or generated context (treat as context, never as contract):
 - `reports/*` — audit and analysis outputs
