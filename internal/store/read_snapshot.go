@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/ravinsharma7/missis/internal/model"
@@ -77,7 +78,7 @@ func OpenVerifiedReadSnapshot(ctx context.Context, path string) (*ReadSnapshot, 
 		_ = lease.Close()
 		return nil, &StoreMigrationRequiredError{Found: revision, Target: CurrentStoreFormatRevision, Path: absPath}
 	}
-	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absPath)}).String() + "?mode=ro"
+	dsn := sqliteReadOnlySnapshotDSN(absPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		_ = lease.Close()
@@ -106,6 +107,20 @@ func OpenVerifiedReadSnapshot(ctx context.Context, path string) (*ReadSnapshot, 
 		return nil, err
 	}
 	return snapshot, nil
+}
+
+func sqliteReadOnlySnapshotDSN(absPath string) string {
+	uriPath := filepath.ToSlash(absPath)
+	// A Windows drive path must be represented as file:///C:/... . Without
+	// the leading slash SQLite parses C: as a URI authority and rejects it.
+	if filepath.VolumeName(absPath) != "" && !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	u := &url.URL{Scheme: "file", Path: uriPath}
+	query := u.Query()
+	query.Set("mode", "ro")
+	u.RawQuery = query.Encode()
+	return u.String()
 }
 
 func (s *ReadSnapshot) verify(ctx context.Context) error {

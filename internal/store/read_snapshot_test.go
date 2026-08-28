@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,28 @@ import (
 
 	"github.com/ravinsharma7/missis/internal/model"
 )
+
+func TestSQLiteReadOnlySnapshotDSNIsAbsoluteAndReadOnly(t *testing.T) {
+	absPath, err := filepath.Abs(filepath.Join(t.TempDir(), "peer with space.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn := sqliteReadOnlySnapshotDSN(absPath)
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "file" || parsed.Query().Get("mode") != "ro" {
+		t.Fatalf("read-only DSN = %q", dsn)
+	}
+	wantPath := filepath.ToSlash(absPath)
+	if filepath.VolumeName(absPath) != "" && !strings.HasPrefix(wantPath, "/") {
+		wantPath = "/" + wantPath
+	}
+	if parsed.Path != wantPath {
+		t.Fatalf("DSN path = %q, want %q (DSN %q)", parsed.Path, wantPath, dsn)
+	}
+}
 
 func TestOpenVerifiedReadSnapshotFailsStopOnCorruptChain(t *testing.T) {
 	t.Parallel()
