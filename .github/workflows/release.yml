@@ -135,6 +135,7 @@ jobs:
         env:
           GOPROXY: direct
           MISSIS_REF: ${{ steps.version.outputs.version }}
+          MISSIS_MODULE_REF: ${{ github.sha }}
         run: |
           set -euo pipefail
           base_url="http://127.0.0.1:18080"

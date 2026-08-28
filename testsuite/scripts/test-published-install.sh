@@ -7,6 +7,11 @@ set -euo pipefail
 # into a temporary GOBIN so it cannot alter the operator's existing Go tools.
 module="github.com/ravinsharma7/missis"
 ref="${MISSIS_REF:?MISSIS_REF must name a published release containing --setup}"
+# A draft release has no fetchable Git tag. Release automation therefore runs
+# the installer source from the exact tested commit while still requiring the
+# requested stable ref in the artifact manifest. Normal published installs use
+# the stable ref for both identities.
+module_ref="${MISSIS_MODULE_REF:-$ref}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -19,7 +24,7 @@ install_args=(--ref "$ref" --bin-dir "$GOBIN" --project "$tmp/project" --json)
 if [ -n "${MISSIS_MANIFEST_URL:-}" ]; then
   install_args+=(--manifest-url "$MISSIS_MANIFEST_URL")
 fi
-go run "$module/tools/paired-install@$ref" "${install_args[@]}" >/dev/null
+go run "$module/tools/paired-install@$module_ref" "${install_args[@]}" >/dev/null
 
 cd "$tmp/project"
 test -x "$GOBIN/missis"
