@@ -397,6 +397,49 @@ func TestChangeFeedRejectsAcceptedBytesDigestMismatch(t *testing.T) {
 	}
 }
 
+func TestChangeFeedRejectsOrdinalGapWithoutReturningPartialPage(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "ordinal-gap.db")
+	ledger, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	begin, err := ledger.BeginChanges(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := neutral.Ref{Kind: "run", ID: "run:ordinal-gap"}
+	at := time.Date(2026, 8, 28, 13, 40, 0, 0, time.UTC)
+	if _, err := ledger.Append(ctx, neutral.AppendRequest{IdempotencyKey: "ordinal-gap-v1", Events: []neutral.Event{
+		spyEvent("event:ordinal-gap:1", stream, "spy.run.started", stream, `{}`, at),
+		spyEvent("event:ordinal-gap:2", stream, "spy.probe.observed", stream, `{}`, at.Add(time.Second)),
+		spyEvent("event:ordinal-gap:3", stream, "spy.run.completed", stream, `{}`, at.Add(2*time.Second)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM events WHERE id=?`, "event:ordinal-gap:2"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	page, err := ledger.ReadChanges(ctx, neutral.ReadChangesRequest{After: begin, Limit: 10})
+	if !errors.Is(err, neutral.ErrChangeFeedIntegrity) || !strings.Contains(err.Error(), "expected accepted position 2") {
+		t.Fatalf("ordinal gap error = %v", err)
+	}
+	if len(page.Changes) != 0 || page.Next != "" {
+		t.Fatalf("ordinal gap returned partial page %#v", page)
+	}
+	if err := ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func eventIDs(events []neutral.Event) []string {
 	ids := make([]string, len(events))
 	for index := range events {
