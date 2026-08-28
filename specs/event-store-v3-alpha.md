@@ -1,8 +1,8 @@
-# Event-store v3-alpha.4 contract and extraction boundary
+# Event-store v3-alpha.5 contract and extraction boundary
 
 **Status:** authoritative v3-alpha event-store contract
 **Owner:** ticket `#118`
-**Protocol version:** `eventstore-v3-alpha.4`
+**Protocol version:** `eventstore-v3-alpha.5`
 **Contract bundle digest:** unassigned; manifest tooling is not implemented
 **Evidence baseline:** `reports/missis-event-store.md`, current implementation,
 and retained store fixtures as of 2026-08-27
@@ -32,6 +32,7 @@ number:
 | Idempotency request fingerprint v1 | Domain-separated request/operation fingerprint | Implemented by `#116`. |
 | Store identity scheme | Immutable authority identity, independent of location and mutable content | Revision 4 implements `eventstore-hash-v1`; older `missis-ulid-v1` stores are explicit migration inputs and receive an identity receipt. |
 | Integrity scheme/epoch | How accepted bytes are chained or checkpointed | Format-6 history remains `global-json-chain-v1`; new format-7 records use `canonical-event-chain-v1`, with the first mixed-epoch record bound by `integrity-epoch-transition-v1`. |
+| Change-feed cursor | Opaque restart position in one authority's total accepted order | `eventstore-change-cursor-v1`, introduced by v3-alpha.5; it does not alter accepted-record bytes or physical store format. |
 | Contract bundle digest | Digest of the exact protocol schemas, canonical vectors, and requirements used by one build/store | Proposed below; independent of physical format and product version. |
 | Projection version | Consumer-specific reducer/index interpretation | Must be declared independently per projection. |
 
@@ -674,6 +675,197 @@ for long histories, large current documents, link ledgers, backdating,
 supersession, and subtree moves before and after. Ticket `#119` owns those
 gates.
 
+### V3-FEED-001 — bounded resumable accepted-change feed
+
+Spy Testing and CSS Flight Recorder require an incremental view of accepted
+records across all streams. `ReadStream` is not that view: it returns one
+complete stream, allocates in proportion to that stream's history, and has no
+authority-bound restart position. An implementation MUST NOT describe repeated
+`ReadStream` calls as a change feed.
+
+The v3-alpha.5 feed is a read-only pull capability. It adds no subscription,
+notification, remote transport, acknowledgement, retention deletion, or
+consumer projection semantics. It does not change
+`eventstore-record-json-v1`: records accepted under v3-alpha.4 retain their
+exact protocol field and bytes. The feed orders those existing immutable
+records through a separately versioned cursor protocol.
+
+#### Neutral surface and limits
+
+The logical capability is:
+
+```text
+BeginChanges(ctx) -> ChangeCursor
+ReadChanges(ctx, { after: ChangeCursor, limit: uint32 }) -> ChangePage
+LatestCursor(ctx) -> ChangeCursor
+
+ChangePage {
+  changes[] { cursor, event }
+  next
+  at_head
+}
+```
+
+`limit` MUST be in `1..1000`. The implementation MUST allocate no more than
+`O(limit)` record/envelope memory for one call. An empty string is not an
+implicit beginning: callers obtain an explicit authority-issued beginning
+cursor. `LatestCursor` intentionally skips existing history and therefore MUST
+be called only when that loss is the caller's declared policy.
+
+The first local SQLite implementation supports retained complete history only.
+Its earliest accepted ordinal is one and it deletes no accepted feed record.
+The stale-cursor result is nevertheless normative so a later retention adapter
+cannot turn data loss into an empty page. Because this adapter has no declared
+retention floor, observing an earliest ordinal greater than one is an integrity
+failure rather than guessed retention.
+
+#### Total accepted order
+
+Each accepted record receives one monotonically increasing unsigned ordinal
+inside the same atomic append transaction. The ordinal is store-wide and
+orders records by authority acceptance, including the deterministic order of
+records inside one batch. It is not stream revision, event time, effective
+time, wall-clock time, an event ID, or a consumer projection watermark.
+
+The SQLite adapter uses `events.alias_seq` as this ordinal. That column name and
+value MUST NOT appear in the public API, cursor fields, diagnostics intended
+for consumers, or accepted event bytes. Other adapters may use a different
+physical key if they produce the same observable order and cursor behavior.
+
+Every ordinal in the accepted range is part of the feed. An adapter MUST NOT
+silently skip an unknown record codec, consumer schema, or undecodable accepted
+record because doing so would create an invisible gap. It returns an explicit
+unsupported-record or integrity error and leaves the input cursor unadvanced.
+
+#### `eventstore-change-cursor-v1` exact encoding
+
+A cursor is an opaque UTF-8 token with three period-separated components:
+
+```text
+eventstore-change-cursor-v1.<payload-base64url>.<digest-lowerhex>
+```
+
+`payload-base64url` is unpadded RFC 4648 base64url of this exact compact JSON
+field order with no trailing newline:
+
+```json
+{"version":"eventstore-change-cursor-v1","store_id":"store:v1:sha256:<64 lowercase hex>","integrity_epoch":"canonical-event-chain-v1","position":42}
+```
+
+`digest-lowerhex` is 64 lowercase hexadecimal characters:
+
+```text
+SHA256("EVENTSTORE-CHANGE-CURSOR" || 0x00 || "v1" || 0x00 || payload_bytes)
+```
+
+The complete token MUST be no more than 2048 bytes. Decoding is strict:
+exactly three components, the literal version prefix, unpadded canonical
+base64url, exact JSON field set and order as reproduced by canonical
+re-encoding, no trailing input, non-empty store/epoch strings, and a digest
+compared without timing-dependent early exit. A successfully decoded token is
+still not authorized until its store and epoch match the read snapshot.
+
+The digest detects damaged, truncated, or manually edited local checkpoint
+bytes. It is not a signature, authorization proof, or protection against an
+attacker who can replace both payload and digest. Authenticated remote cursors
+remain owned by the remote-authority protocol.
+
+`position` means “the last accepted ordinal durably processed by the caller.”
+Position zero is the beginning before the first accepted record. A page is
+strictly exclusive of `after.position`.
+
+#### Page algorithm
+
+`ReadChanges` MUST perform the following order without returning partial
+results:
+
+1. Check context cancellation.
+2. Reject a limit outside `1..1000`.
+3. Strictly decode and digest-check the cursor.
+4. Begin one read-only snapshot transaction.
+5. Read `store_id`, the active integrity epoch, the earliest retained ordinal,
+   and the current maximum accepted ordinal in that transaction.
+6. Compare cursor authority and epoch with the snapshot.
+7. Reject a position above the maximum as future. Reject a position whose next
+   required ordinal precedes the retained lower bound as stale.
+8. Capture the maximum as this call's immutable high-water mark.
+9. Select at most `limit` records satisfying
+   `ordinal > position AND ordinal <= high_water`, ordered by ordinal ascending.
+10. Require every returned ordinal to be exactly the successor of the previous
+    ordinal; decode every exact accepted record through its named codec.
+11. Issue one cursor per change. `next` is the final returned cursor, or the
+    unchanged input cursor for an empty page.
+12. Set `at_head` exactly when `next.position == high_water`, commit the read
+    transaction, and return the complete page.
+
+An append committed after step 5 is outside this snapshot. `at_head=true`
+therefore means “at the captured head,” not that another writer cannot append
+immediately afterward. The caller supplies `next` to another read and receives
+that later append. Writers are never required to wait for a consumer
+acknowledgement.
+
+`BeginChanges` uses the same snapshot metadata and issues the position directly
+before the earliest retained ordinal (zero for the complete-history adapter).
+`LatestCursor` issues the captured maximum. Both are authority- and
+epoch-bound; neither returns an unbound sentinel.
+
+#### Delivery and consumer checkpoint rule
+
+Chaining successful pages guarantees no duplicate or missing accepted ordinal
+in page traversal. It does not make consumer side effects exactly-once. A crash
+after applying a page but before saving `next` causes safe redelivery.
+Consumers MUST either commit their projection changes and `next` atomically in
+their own database or make event application idempotent by immutable record ID.
+The honest cross-process guarantee is deterministic ordered at-least-once
+delivery with a durable consumer checkpoint.
+
+The feed has no server-side acknowledgement and retains no consumer name or
+lease. Backpressure is pull-based: the consumer controls call timing and page
+size. A slow consumer consumes no writer memory; its only durable state is its
+own cursor.
+
+#### Results, failure behavior, and recourse
+
+| Result | Detection | Required behavior and recourse |
+| --- | --- | --- |
+| empty at captured head | valid position equals snapshot high-water | return zero changes, unchanged `next`, and `at_head=true`; wait or poll again |
+| more pages | returned final position is below high-water | return `at_head=false`; immediately request another bounded page if desired |
+| invalid limit | zero or greater than 1000 | fail fast before opening the read snapshot; choose a supported limit |
+| invalid cursor | wrong component count, prefix, base64, JSON shape/order, canonical form, length, or required value | fail fast with `cursor-invalid`; restore the last trusted consumer checkpoint or call an explicit begin/latest operation according to declared policy |
+| corrupt cursor | syntactically canonical payload with digest mismatch | fail fast with `cursor-corrupt`; restore the checkpoint bytes; never guess a position |
+| unsupported cursor version | well-formed version-shaped token using another version | fail fast with `cursor-version-unsupported`; use a version-aware migration/reader |
+| foreign cursor | decoded `store_id` differs from snapshot | fail closed with both expected and observed store identities; open the correct authority |
+| epoch mismatch | store matches but active integrity epoch differs | fail closed with expected and observed epochs; inspect the transition receipt and obtain an explicitly migrated cursor |
+| future cursor | position exceeds snapshot high-water | fail stop for that consumer; investigate wrong replica, rollback, restored backup, or forged checkpoint |
+| stale cursor | the next required position is below earliest retained | fail safe with earliest available boundary; restore/rebuild from a verified snapshot; never jump silently |
+| unsupported record | an ordinal names a preserved codec this reader cannot decode | fail stop with ordinal, event ID, and codec; install a capable reader; do not skip |
+| corrupt accepted record or non-contiguous ordinal | exact bytes fail codec/integrity checks or an expected ordinal is absent | fail stop, return no page, and run store verification/restore |
+| cancelled/deadline | context ends before the page commits | return the context error and no usable page/cursor advancement; retry from the input cursor |
+| storage/resource error | SQLite/filesystem/allocation operation fails | return no usable page/cursor advancement; correct the resource problem and retry |
+
+All failure returns leave the caller's durable cursor unchanged. A diagnostic
+MAY include positions for operator repair, but the cursor and neutral API remain
+free of SQLite names and filesystem locations.
+
+#### Required conformance and benchmark scenarios
+
+Hermetic tests MUST cover empty/begin/latest behavior; limit one and 1000;
+multi-page traversal; a multi-record batch; events from interleaved streams;
+append before a page, append during its read snapshot, and append after it;
+close/open resume; redelivery after a simulated consumer crash; foreign,
+future, stale, corrupt, malformed, non-canonical, oversized, unsupported-version,
+epoch-mismatch, cancelled, unsupported-codec, and ordinal-gap outcomes. They
+MUST compare the concatenated record IDs with acceptance order and prove no
+page allocates in proportion to total history.
+
+Spy Testing and CSS Flight Recorder each MUST traverse independently stored
+fixtures through this same surface and persist/reuse `next`; Missis-specific
+ticket projections are not involved. Benchmarks MUST publish event count,
+payload size, page limit, allocations per page, pages/second, bytes read, and
+consumer lag. They MUST include 1, 100, and 1000 record pages over at least
+100,000 accepted records. These measurements characterize read bounds only;
+ticket `#119` continues to own append and projection scaling.
+
 ### V3-REF-001 — canonical cross-store references
 
 A reference to another Missis repository/store cannot use `project#184` as
@@ -836,3 +1028,7 @@ permission to weaken current open behavior.
   `eventstore-record-json-v1`, exact accepted-byte/content identity,
   `canonical-event-chain-v1`, and receipt-bound mixed-epoch activation while
   preserving all format-6 event and hash evidence unchanged.
+- `eventstore-v3-alpha.5`: adds the read-only bounded accepted-change feed and
+  `eventstore-change-cursor-v1`. It preserves v3-alpha.4 accepted-record bytes,
+  uses no new physical store revision, and makes cursor authority, epoch,
+  paging, restart, retention, failure, and backpressure behavior explicit.

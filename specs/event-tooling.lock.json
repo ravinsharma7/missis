@@ -1,13 +1,13 @@
 {
   "version": "missis-event-tooling-lock-v1",
   "authority_repository": "git@github.com:ravinsharma7/skunkwork.git",
-  "authority_commit": "81b28002feb6ca4906aab2a8c9a3d076293b1e81",
-  "protocol": "eventstore-v3-alpha.4",
+  "authority_commit": "61d7519a5af7e226356d5674bccf2746e80e5be3",
+  "protocol": "eventstore-v3-alpha.5",
   "snapshots": [
     {
       "local_path": "specs/event-store-v3-alpha.md",
-      "authority_path": "contracts/eventstore/v3-alpha.4/specification.md",
-      "sha256": "aa80ba876129c11b376c1d47b7c0e06bb80bb21aab1301b8e7bce08365b1ae09"
+      "authority_path": "contracts/eventstore/v3-alpha.5/specification.md",
+      "sha256": "eda2305eb9385559a61b14c2a603ddb0e1f098281c136c5f480afe01114a86a7"
     },
     {
       "local_path": "specs/cross-store-references-v3-alpha.md",
