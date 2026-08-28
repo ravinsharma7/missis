@@ -3,6 +3,7 @@ package tooling
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -26,6 +27,12 @@ func TestInspectPeersReportsVerifiedAndDifferentStoreEvidence(t *testing.T) {
 	}
 	set := peerconfig.SetV1{Version: peerconfig.VersionV1, Peers: []peerconfig.BindingV1{{Handle: "peer", Adapter: peerconfig.AdapterLiveV1, ExpectedStoreID: storeID, SQLitePath: path}}}
 	report := InspectPeers(context.Background(), set)
+	if runtime.GOOS != "linux" {
+		if report.Status != "failed" || len(report.Peers) != 1 || report.Peers[0].Classification != "peer-platform-unsupported" || report.Peers[0].Recourse == "" {
+			t.Fatalf("unsupported-platform report = %#v", report)
+		}
+		return
+	}
 	if report.Status != "ok" || len(report.Peers) != 1 || report.Peers[0].Classification != "verified" || report.Peers[0].Claim == nil || report.Peers[0].Claim.StoreID != storeID {
 		t.Fatalf("verified report = %#v", report)
 	}
