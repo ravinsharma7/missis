@@ -30,7 +30,7 @@ while IFS=$'\t' read -r relative expected; do
     echo "eventstore distribution digest mismatch: $relative expected=$expected actual=$actual" >&2
     exit 1
   }
-done < <(jq -r '.files[] | [.path, .sha256] | @tsv' "$lock_path")
+done < <(jq -r '.files[] | [.path, .sha256] | @tsv' "$lock_path" | tr -d '\r')
 
 module="$(sed -n 's/^module //p' "$distribution_dir/go.mod")"
 [[ "$module" == "github.com/ravinsharma7/skunkwork/packages/eventstore" ]] || {
