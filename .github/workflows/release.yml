@@ -7,6 +7,11 @@ on:
         description: Exact new stable SemVer tag (format-6 repair candidate is v0.3.0)
         required: true
         type: string
+      publish:
+        description: Publish the verified draft as the latest stable release
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -141,9 +146,15 @@ jobs:
           curl --fail --retry 10 --retry-connrefused --retry-delay 1 "$base_url/release-manifest.json" >/dev/null
           MISSIS_MANIFEST_URL="$base_url/release-manifest.json" bash testsuite/scripts/test-published-install.sh
       - name: Publish stable release
+        if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           gh release edit "$VERSION" --draft=false --latest
+      - name: Retain verified draft
+        if: ${{ !inputs.publish }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: echo "Verified release $VERSION remains a draft; stable publication was not requested."
