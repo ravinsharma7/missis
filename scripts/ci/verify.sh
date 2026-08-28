@@ -16,6 +16,7 @@ go run ./tools/generate-onboarding --check
 go run ./tools/coverage --registry specs/requirements-registry.v3.json
 go build ./tools/missis-tools
 bash scripts/check-event-tooling-lock.sh
+bash scripts/check-format-declarations.sh
 
 # Workflow syntax is platform-independent and is linted once by Linux and
 # release verification. actionlint's Go runner exits without diagnostics under

@@ -30,10 +30,10 @@ if ($missis.version -ne $tools.version -or
     $missis.display_version -ne $tools.display_version -or
     $missis.commit -ne $tools.commit -or
     $missis.dirty -ne $tools.dirty -or
-    $missis.store_format_revision -ne 6 -or
-    $tools.store_format_revision -ne 6 -or
-    $missis.normal_open_format -ne 6 -or
-    $tools.normal_open_format -ne 6 -or
+    $missis.store_format_revision -ne 7 -or
+    $tools.store_format_revision -ne 7 -or
+    $missis.normal_open_format -ne 7 -or
+    $tools.normal_open_format -ne 7 -or
     $missis.migration_set_digest -ne $tools.migration_set_digest) {
     throw "local binary identities do not match: missis=$($missis | ConvertTo-Json -Compress) tools=$($tools | ConvertTo-Json -Compress)"
 }
