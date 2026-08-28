@@ -18,6 +18,7 @@ type Adapter struct {
 }
 
 var _ neutral.Ledger = (*Adapter)(nil)
+var _ neutral.ChangeFeed = (*Adapter)(nil)
 
 func Open(path string) (*Adapter, error) {
 	opened, err := store.Open(path)
@@ -107,6 +108,9 @@ func (a *Adapter) ReadStream(ctx context.Context, streamRef neutral.Ref) ([]neut
 	for index, record := range records {
 		if record.RecordCodec != neutral.RecordCodecV1 {
 			return nil, fmt.Errorf("eventstore adapter: event %s uses unsupported codec %q; exact bytes preserved", record.EventID, record.RecordCodec)
+		}
+		if computed := model.EventContentHashV1(record.AcceptedBytes); record.ContentHash != computed {
+			return nil, fmt.Errorf("eventstore adapter: event %s content digest mismatch: stored=%q computed=%q", record.EventID, record.ContentHash, computed)
 		}
 		decoded, err := neutral.DecodeAcceptedEventV1(record.AcceptedBytes)
 		if err != nil {

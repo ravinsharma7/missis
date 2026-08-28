@@ -2,6 +2,10 @@ package eventstoreadapter
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -9,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ravinsharma7/missis/internal/model"
 	neutral "github.com/ravinsharma7/skunkwork/packages/eventstore"
 )
 
@@ -212,8 +217,11 @@ func TestChangeFeedRejectsInvalidAuthorityAndPosition(t *testing.T) {
 	if _, err := firstFeed.ReadChanges(ctx, neutral.ReadChangesRequest{After: wrongEpoch, Limit: 1}); !errors.Is(err, neutral.ErrCursorEpochMismatch) {
 		t.Fatalf("epoch cursor error = %v", err)
 	}
-	if err := validateChangeCursorWindow(0, 2, 10); !errors.Is(err, neutral.ErrCursorStale) {
+	if err := validateChangeCursorWindow(0, 2, 10, true); !errors.Is(err, neutral.ErrCursorStale) {
 		t.Fatalf("stale cursor error = %v", err)
+	}
+	if err := validateChangeCursorWindow(1, 2, 10, false); !errors.Is(err, neutral.ErrChangeFeedIntegrity) {
+		t.Fatalf("undeclared retention gap error = %v", err)
 	}
 }
 
@@ -235,6 +243,108 @@ func TestChangeFeedCancellationDoesNotAdvance(t *testing.T) {
 	}
 	if len(page.Changes) != 0 || page.Next != "" {
 		t.Fatalf("cancelled call returned usable page %#v", page)
+	}
+}
+
+func TestChangeCursorV1StrictCanonicalEncoding(t *testing.T) {
+	claims := changeCursorClaimsV1{
+		Version:        neutral.ChangeCursorVersionV1,
+		StoreID:        "store:v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		IntegrityEpoch: "canonical-event-chain-v1",
+		Position:       42,
+	}
+	cursor, err := encodeChangeCursorV1(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "eventstore-change-cursor-v1.eyJ2ZXJzaW9uIjoiZXZlbnRzdG9yZS1jaGFuZ2UtY3Vyc29yLXYxIiwic3RvcmVfaWQiOiJzdG9yZTp2MTpzaGEyNTY6YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImludGVncml0eV9lcG9jaCI6ImNhbm9uaWNhbC1ldmVudC1jaGFpbi12MSIsInBvc2l0aW9uIjo0Mn0.280a21f9d734a7df849ffb69a356b14abec7168a1c7ec6a761c9101a82124707"
+	if string(cursor) != want {
+		t.Fatalf("cursor vector changed\n got: %s\nwant: %s", cursor, want)
+	}
+	decoded, err := decodeChangeCursorV1(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded != claims {
+		t.Fatalf("decoded claims = %#v, want %#v", decoded, claims)
+	}
+
+	nonCanonical := rawCursorForTest([]byte(`{"position":42,"version":"eventstore-change-cursor-v1","store_id":"store:v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","integrity_epoch":"canonical-event-chain-v1"}`))
+	if _, err := decodeChangeCursorV1(nonCanonical); !errors.Is(err, neutral.ErrCursorInvalid) {
+		t.Fatalf("non-canonical cursor error = %v", err)
+	}
+	unknownField := rawCursorForTest([]byte(`{"version":"eventstore-change-cursor-v1","store_id":"store:v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","integrity_epoch":"canonical-event-chain-v1","position":42,"extra":true}`))
+	if _, err := decodeChangeCursorV1(unknownField); !errors.Is(err, neutral.ErrCursorInvalid) {
+		t.Fatalf("unknown-field cursor error = %v", err)
+	}
+	oversized := neutral.ChangeCursor(neutral.ChangeCursorVersionV1 + "." + strings.Repeat("a", maxChangeCursorBytes) + "." + strings.Repeat("0", 64))
+	if _, err := decodeChangeCursorV1(oversized); !errors.Is(err, neutral.ErrCursorInvalid) {
+		t.Fatalf("oversized cursor error = %v", err)
+	}
+}
+
+func TestChangeFeedDoesNotSkipUnsupportedAcceptedCodec(t *testing.T) {
+	ctx := context.Background()
+	ledger, err := Open(filepath.Join(t.TempDir(), "unsupported-codec.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	begin, err := ledger.BeginChanges(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := neutral.Ref{Kind: "run", ID: "run:unsupported-codec"}
+	native := toMissisEvent(spyEvent("event:unsupported-codec", stream, "spy.run.started", stream, `{}`, time.Date(2026, 8, 28, 13, 0, 0, 0, time.UTC)))
+	if _, err := ledger.store.AppendBatch([]model.Event{native}, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	page, err := ledger.ReadChanges(ctx, neutral.ReadChangesRequest{After: begin, Limit: 10})
+	if !errors.Is(err, neutral.ErrChangeRecordUnsupported) {
+		t.Fatalf("unsupported codec error = %v", err)
+	}
+	if len(page.Changes) != 0 || page.Next != "" {
+		t.Fatalf("unsupported codec returned usable page %#v", page)
+	}
+}
+
+func TestChangeFeedRejectsAcceptedBytesDigestMismatch(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "digest-mismatch.db")
+	ledger, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	begin, err := ledger.BeginChanges(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := neutral.Ref{Kind: "run", ID: "run:digest-mismatch"}
+	if _, err := ledger.Append(ctx, neutral.AppendRequest{IdempotencyKey: "digest-mismatch-v1", Events: []neutral.Event{
+		spyEvent("event:digest-mismatch", stream, "spy.run.started", stream, `{}`, time.Date(2026, 8, 28, 13, 30, 0, 0, time.UTC)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE events SET content_hash=? WHERE id=?`, "sha256:"+strings.Repeat("0", 64), "event:digest-mismatch"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	page, err := ledger.ReadChanges(ctx, neutral.ReadChangesRequest{After: begin, Limit: 10})
+	if !errors.Is(err, neutral.ErrChangeFeedIntegrity) || !strings.Contains(err.Error(), "content digest mismatch") {
+		t.Fatalf("digest mismatch error = %v", err)
+	}
+	if len(page.Changes) != 0 || page.Next != "" {
+		t.Fatalf("digest mismatch returned usable page %#v", page)
+	}
+	if err := ledger.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -266,4 +376,28 @@ func corruptCursor(cursor neutral.ChangeCursor) neutral.ChangeCursor {
 		last = '0'
 	}
 	return neutral.ChangeCursor(raw[:len(raw)-1] + string(last))
+}
+
+func rawCursorForTest(payload []byte) neutral.ChangeCursor {
+	hash := sha256.New()
+	_, _ = hash.Write(changeCursorDigestDomainV1)
+	_, _ = hash.Write(payload)
+	return neutral.ChangeCursor(neutral.ChangeCursorVersionV1 + "." + base64.RawURLEncoding.EncodeToString(payload) + "." + hex.EncodeToString(hash.Sum(nil)))
+}
+
+func readAllChangesForTest(ctx context.Context, feed neutral.ChangeFeed, cursor neutral.ChangeCursor, limit uint32) ([]neutral.Event, error) {
+	var events []neutral.Event
+	for {
+		page, err := feed.ReadChanges(ctx, neutral.ReadChangesRequest{After: cursor, Limit: limit})
+		if err != nil {
+			return nil, err
+		}
+		for _, change := range page.Changes {
+			events = append(events, change.Event)
+		}
+		cursor = page.Next
+		if page.AtHead {
+			return events, nil
+		}
+	}
 }

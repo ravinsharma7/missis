@@ -60,6 +60,26 @@ type AcceptedRecord struct {
 	EventID       model.EventID
 	RecordCodec   string
 	AcceptedBytes []byte
+	ContentHash   string
+}
+
+// AcceptedChangeRecord is one exact accepted record in the store-wide
+// authority order. Position is adapter-internal and must remain opaque to
+// neutral consumers.
+type AcceptedChangeRecord struct {
+	Position uint64
+	AcceptedRecord
+}
+
+// AcceptedChangeWindow is captured by one read-only SQLite transaction.
+// HighWater is therefore stable even when another connection appends after
+// the snapshot begins.
+type AcceptedChangeWindow struct {
+	StoreID        string
+	IntegrityEpoch string
+	Earliest       uint64
+	HighWater      uint64
+	Records        []AcceptedChangeRecord
 }
 
 type TicketSummary struct {
@@ -89,6 +109,10 @@ type Store struct {
 	// with the stream kind and entity loaded for each append, proving appends
 	// are stream-scoped. Production code never sets it.
 	appendLoadHook func(streamKind, streamEntity string)
+	// changeReadSnapshotHook is test-only synchronization. When non-nil it runs
+	// after the accepted-change high-water mark is captured and before rows are
+	// selected from the same read transaction.
+	changeReadSnapshotHook func()
 }
 
 //go:embed migrations/*.sql
@@ -2208,7 +2232,7 @@ func (s *Store) LoadAcceptedStreamRecordsContext(ctx context.Context, stream mod
 		return nil, err
 	}
 	rows, err := s.reader.QueryContext(ctx,
-		`SELECT id,record_codec,accepted_bytes FROM events WHERE stream_kind=? AND stream_entity=? ORDER BY sequence ASC`,
+		`SELECT id,record_codec,accepted_bytes,content_hash FROM events WHERE stream_kind=? AND stream_entity=? ORDER BY sequence ASC`,
 		string(stream.Kind), stream.Entity,
 	)
 	if err != nil {
@@ -2219,7 +2243,7 @@ func (s *Store) LoadAcceptedStreamRecordsContext(ctx context.Context, stream mod
 	for rows.Next() {
 		var record AcceptedRecord
 		var codec sql.NullString
-		if err := rows.Scan(&record.EventID, &codec, &record.AcceptedBytes); err != nil {
+		if err := rows.Scan(&record.EventID, &codec, &record.AcceptedBytes, &record.ContentHash); err != nil {
 			return nil, err
 		}
 		if !codec.Valid || record.AcceptedBytes == nil {
@@ -2229,6 +2253,65 @@ func (s *Store) LoadAcceptedStreamRecordsContext(ctx context.Context, stream mod
 		records = append(records, record)
 	}
 	return records, rows.Err()
+}
+
+// LoadAcceptedChangeWindowContext reads a bounded page in the store-wide
+// accepted order. The physical alias_seq key is deliberately contained here;
+// callers expose only authority-issued opaque cursors.
+func (s *Store) LoadAcceptedChangeWindowContext(ctx context.Context, after uint64, limit uint32) (AcceptedChangeWindow, error) {
+	if err := ctx.Err(); err != nil {
+		return AcceptedChangeWindow{}, err
+	}
+	if limit == 0 {
+		return AcceptedChangeWindow{}, fmt.Errorf("accepted change limit must be positive")
+	}
+	tx, err := s.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return AcceptedChangeWindow{}, err
+	}
+	defer tx.Rollback()
+
+	var window AcceptedChangeWindow
+	if err := tx.QueryRowContext(ctx, `SELECT store_id,integrity_epoch FROM store_meta WHERE singleton=1`).Scan(&window.StoreID, &window.IntegrityEpoch); err != nil {
+		return AcceptedChangeWindow{}, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(alias_seq),0),COALESCE(MAX(alias_seq),0) FROM events`).Scan(&window.Earliest, &window.HighWater); err != nil {
+		return AcceptedChangeWindow{}, err
+	}
+	if s.changeReadSnapshotHook != nil {
+		s.changeReadSnapshotHook()
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT alias_seq,id,record_codec,accepted_bytes,content_hash
+		FROM events
+		WHERE alias_seq>? AND alias_seq<=?
+		ORDER BY alias_seq ASC
+		LIMIT ?`, after, window.HighWater, limit)
+	if err != nil {
+		return AcceptedChangeWindow{}, err
+	}
+	for rows.Next() {
+		var record AcceptedChangeRecord
+		var codec sql.NullString
+		if err := rows.Scan(&record.Position, &record.EventID, &codec, &record.AcceptedBytes, &record.ContentHash); err != nil {
+			rows.Close()
+			return AcceptedChangeWindow{}, err
+		}
+		if codec.Valid {
+			record.RecordCodec = codec.String
+		}
+		window.Records = append(window.Records, record)
+	}
+	if err := rows.Close(); err != nil {
+		return AcceptedChangeWindow{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return AcceptedChangeWindow{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AcceptedChangeWindow{}, err
+	}
+	return window, nil
 }
 
 func (s *Store) CurrentProjection(ticketID model.TicketID, effectiveAt time.Time) (*model.Projection, error) {
