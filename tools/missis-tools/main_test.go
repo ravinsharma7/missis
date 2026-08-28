@@ -534,7 +534,7 @@ func TestRunHelpAndUnknownCommand(t *testing.T) {
 
 func TestStoreMigrationCommandRequiresExplicitActionAndTarget(t *testing.T) {
 	path := newTestStore(t)
-	code, stdout, stderr := runCommand(t, "store", "migrate", "plan", "--store", path, "--to-format", "6", "--json")
+	code, stdout, stderr := runCommand(t, "store", "migrate", "plan", "--store", path, "--to-format", "7", "--json")
 	if code != 0 || stderr != "" {
 		t.Fatalf("plan: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -542,13 +542,13 @@ func TestStoreMigrationCommandRequiresExplicitActionAndTarget(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &plan); err != nil {
 		t.Fatal(err)
 	}
-	if plan.FromFormat != 6 || plan.ToFormat != 6 || plan.RequiresBackup || plan.ChangesStoreID {
+	if plan.FromFormat != 7 || plan.ToFormat != 7 || plan.RequiresBackup || plan.ChangesStoreID {
 		t.Fatalf("plan = %#v", plan)
 	}
 	if code, _, stderr := runCommand(t, "store", "migrate", "plan", "--store", path); code != 2 || !strings.Contains(stderr, "--to-format") {
 		t.Fatalf("missing target: code=%d stderr=%q", code, stderr)
 	}
-	if code, _, stderr := runCommand(t, "store", "migrate", "apply", "--store", path, "--to-format", "6"); code != 2 || !strings.Contains(stderr, "--backup") {
+	if code, _, stderr := runCommand(t, "store", "migrate", "apply", "--store", path, "--to-format", "7"); code != 2 || !strings.Contains(stderr, "--backup") {
 		t.Fatalf("missing backup: code=%d stderr=%q", code, stderr)
 	}
 }

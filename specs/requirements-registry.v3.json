@@ -1734,7 +1734,7 @@
       "id": "V3-REF-002",
       "source": "cross-store-references-v3-alpha.md 3.2",
       "strength": "MUST",
-      "status": "eventstore-v3-alpha.3-linux",
+      "status": "eventstore-v3-alpha.4-linux",
       "text": "An operator-configured local SQLite peer binds an expected hashed store identity to an adapter-private path, verifies identity and the complete chain, and returns claim plus entity resolution from one read snapshot without trusting or repairing derived projections.",
       "tests": [
         "TestPeerResolverUsesOneAuthoritySnapshotAndClosesIt",

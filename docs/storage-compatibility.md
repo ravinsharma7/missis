@@ -1,11 +1,11 @@
 # Storage Compatibility Statement
 
-**Status:** store format revision 6 (local alpha) — 2026-08-28
+**Status:** store format revision 7 (local alpha) — 2026-08-28
 
 This statement is the compatibility contract for the on-disk store format.
 It exists so upgrades and cross-platform moves are predictable. Ticket: #53.
 
-`store_format_revision=6` is a Missis SQLite compatibility number. It is not
+`store_format_revision=7` is a Missis SQLite compatibility number. It is not
 the consumer-neutral event-store v3-alpha protocol. The latter is the active
 alpha extraction contract in
 `specs/event-store-v3-alpha.md` for separate Missis, Spy Testing, and CSS
@@ -186,6 +186,37 @@ Close ticket #124 only after recording:
 - confirmation that bare `missis` and `missis-tools` resolve the installed
   `v0.3.0` pair and no old writer can open the authoritative store.
 
+### Format-7 canonical-byte rollout
+
+Format 7 is a new generation, not an in-place source-build convenience. Until
+a reviewed stable pair advertising normal-open format 7 is published, the
+authoritative repository store remains format 6 and must be opened only by its
+installed format-6 pair. Do not migrate it with an uncommitted build.
+
+The target release must rehearse this exact transition on the retained
+revision-0006 fixture and on a disposable current-store copy:
+
+~~~text
+format 6 / global-json-chain-v1 head H, count N
+  -> exclusive lease and verified pre-format7 backup
+  -> apply 0012 without changing any historical event_json/hash/head
+  -> format receipt, active epoch still global-json-chain-v1
+  -> first new append writes exact bytes + canonical hash
+     + integrity-epoch-transition-v1 in one transaction
+  -> active epoch canonical-event-chain-v1
+~~~
+
+The rollout uses the published target tag and `--to-format 7`; its backup path
+must not already exist. Verification must record old/new format, unchanged
+store identity, source head/count/epoch, backup SHA-256, format receipt,
+transition receipt after a disposable append rehearsal, exact accepted bytes,
+and Linux/Windows compatibility results. Installation still follows the
+journaled paired-binary algorithm above: stage pair, plan, quiesce, backup,
+migrate, verify with staged pair, activate pair, write installation manifest
+last. Before the migration commit, recovery returns to the complete format-6
+generation. After it, recovery finishes forward with the verified format-7
+pair or restores the bound backup and complete old pair; it never mixes them.
+
 ## What a missis store is
 
 A single SQLite database file, holding:
@@ -208,14 +239,15 @@ A single SQLite database file, holding:
   `0004_projection_snapshots`, `0005_artifacts`,
   `0006_ordered_parts`, `0007_store_format_revision`, and
   `0008_idempotency_request_hash`, `0009_store_identity_v1`, and
-  `0010_external_ref_v1`, and `0011_artifact_namespace_fork_v1`.
+  `0010_external_ref_v1`, `0011_artifact_namespace_fork_v1`, and
+  `0012_canonical_event_epoch_v1`.
 - Store format is one internal integer independent of binary versions. The
-  current value is 6. Stores through 0005 without a marker are implicit
+  current value is 7. Stores through 0005 without a marker are implicit
   revision 1; unmarked stores through 0007 are implicit revision 2.
-- New stores are created directly at revision 6. Revisions 1–5 are named
+- New stores are created directly at revision 7. Revisions 1–6 are named
   inspection/migration inputs only. Normal open rejects them before WAL setup
   with the exact versioned command. Operators use `missis-tools store migrate
-  plan --to-format 6` and `missis-tools store migrate apply --to-format 6
+  plan --to-format 7` and `missis-tools store migrate apply --to-format 7
   --backup PATH`; the target format is mandatory.
 - On open, the store: (1) probes compatibility read-only, (2) applies pending
   migrations in order, (3) verifies
@@ -260,16 +292,17 @@ A single SQLite database file, holding:
 
 ### Compatibility corpus
 
-The checked-in `internal/store/testdata/compatibility/revision-0006/` corpus
+The checked-in `internal/store/testdata/compatibility/revision-0007/` corpus
 contains a deterministic database, manifest, and synthetic artifact CAS. It
 covers every registered operation, built-in value/inline/reference kind,
 relation, first-party ingestion plugin output, provenance shape, temporal
-behavior, and derived projection supported by revision 6. It uses fixed IDs,
+behavior, exact accepted bytes, integrity epochs, and derived projection
+supported by revision 7. It uses fixed IDs,
 UTC timestamps, logical slash paths, and synthetic bytes, so tests compare
 logical state and hashes consistently on Linux and Windows.
 
 Ordinary `go test ./...` regenerates the corpus in a temporary directory and
-checks completeness and freshness. Compatible changes preserve revision 6
+checks completeness and freshness. Compatible changes preserve revision 7
 and its logical snapshot. Incompatible durable changes increment the revision
 and add a retained fixture directory. Never rewrite an accepted fixture in
 place. `go run ./tools/store-fixture --output DIR` is the explicit builder.
@@ -304,10 +337,20 @@ manifest/marker/receipt protocol. Format 5 to 6 requires the exact
 version-targeted migration and a pre-migration backup; it does not change
 `store_id`.
 
+Revision 7 preserves every format-6 `event_json`, hash row, head, and store
+identity while adding exact accepted-record bytes for new events. Historical
+rows retain null codec/accepted-byte/content-digest fields and continue under
+`global-json-chain-v1`; migration never manufactures canonical history. New
+records use `canonical-event-chain-v1`, direct `sha256:` content identity, and
+either `missis-event-canonical-json-v1` or `eventstore-record-json-v1` exact
+bytes. The first post-migration append atomically binds the old head/count/
+cursor and first new content/head in `integrity-epoch-transition-v1`.
+
 ## Integrity contract
 
 - **Canonical event encoding v1** and its test vectors are defined by ticket
-  #45, but the live revision-2/revision-3 ledger hash has not migrated to it.
+  #45. Format-7 events use persisted exact bytes as the live chain input;
+  format-6 history retains its original verifier and hashes.
   The current scheme is named `global-json-chain-v1`: SHA-256 over the
   previous hex hash, a newline, and the implementation JSON event encoding.
   Ticket #57 owns migration to a new named integrity epoch; accepted history
@@ -628,13 +671,14 @@ the removed standalone wrappers as follows; no runtime aliases are provided.
 | `store-backup` | `missis-tools backup` |
 | `store-remote` | `missis-tools remote` |
 
-## Stability promise for revision 6
+## Stability promise for revision 7
 
-- The on-disk format is stable while `store_format_revision` remains 6.
+- The on-disk format is stable while `store_format_revision` remains 7.
 - Any future breaking change to the ledger format is gated behind a new
   migration and documented here before release.
-- Accepted `global-json-chain-v1` bytes will not be reinterpreted or silently rehashed;
-  canonical-v1 adoption requires the explicit epoch owned by #57.
+- Accepted `global-json-chain-v1` history will not be reinterpreted or silently
+  rehashed; canonical adoption occurs only for new rows through the explicit
+  receipt-bound epoch transition owned by #57.
 
 ## Local alpha readiness
 

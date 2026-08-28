@@ -130,7 +130,7 @@ func TestMigrationTargetIsMandatoryAndVersionSpecific(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PlanMigration(path, CurrentStoreFormatRevision+1); err == nil || !strings.Contains(err.Error(), "targets format 6") {
+	if _, err := PlanMigration(path, CurrentStoreFormatRevision+1); err == nil || !strings.Contains(err.Error(), "targets format 7") {
 		t.Fatalf("plan error = %v", err)
 	}
 	plan, err := PlanMigration(path, CurrentStoreFormatRevision)
@@ -693,7 +693,7 @@ func TestFormat4To5MigrationPreservesIdentityAndRecordsReceipt(t *testing.T) {
 	}
 }
 
-func TestFormat5To6MigrationPreservesIdentityAndAddsArtifactForkIndex(t *testing.T) {
+func TestFormat5To7MigrationPreservesIdentityAndAddsRequiredIndexes(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "revision5.db")
 	input, err := os.ReadFile(filepath.Join("testdata", "compatibility", "revision-0005", "fixture.db"))
@@ -711,7 +711,7 @@ func TestFormat5To6MigrationPreservesIdentityAndAddsArtifactForkIndex(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.FromFormat != 5 || plan.ToFormat != 6 || plan.ChangesStoreID || !plan.RequiresBackup {
+	if plan.FromFormat != 5 || plan.ToFormat != 7 || plan.ChangesStoreID || !plan.RequiresBackup {
 		t.Fatalf("format 5 plan = %#v", plan)
 	}
 	report, err := ApplyMigration(context.Background(), path, CurrentStoreFormatRevision, filepath.Join(t.TempDir(), "pre-format6.db"))

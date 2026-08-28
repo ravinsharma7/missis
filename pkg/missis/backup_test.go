@@ -38,7 +38,7 @@ func TestBackupManifestRestoreVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.StoreID == "" || manifest.HeadHash == "" || manifest.EventCount < 3 {
+	if manifest.StoreID == "" || manifest.HeadHash == "" || manifest.EventCount < 3 || manifest.HeadIntegrityEpoch != "canonical-event-chain-v1" {
 		t.Fatalf("unexpected manifest: %+v", manifest)
 	}
 

@@ -24,7 +24,7 @@ import (
 	"github.com/ravinsharma7/missis/internal/store"
 )
 
-const RevisionDirectory = "revision-0006"
+const RevisionDirectory = "revision-0007"
 
 type ArtifactExpectation struct {
 	Ref       string `json:"ref"`

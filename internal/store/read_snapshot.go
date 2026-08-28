@@ -173,6 +173,24 @@ func (s *ReadSnapshot) HeadHashContext(ctx context.Context) (string, error) {
 	return value, err
 }
 
+func (s *ReadSnapshot) HeadIntegrityEpochContext(ctx context.Context) (string, error) {
+	var value string
+	err := s.tx.QueryRowContext(ctx, `SELECT integrity_epoch FROM store_meta WHERE singleton=1`).Scan(&value)
+	return value, err
+}
+
+func (s *ReadSnapshot) GenesisIntegrityEpochContext(ctx context.Context) (string, error) {
+	var value string
+	err := s.tx.QueryRowContext(ctx, `
+		SELECT COALESCE((
+			SELECT h.integrity_epoch FROM events e
+			JOIN event_hashes h ON h.event_id=e.id
+			ORDER BY e.alias_seq ASC LIMIT 1
+		), (SELECT integrity_epoch FROM store_meta WHERE singleton=1))
+	`).Scan(&value)
+	return value, err
+}
+
 func (s *ReadSnapshot) EventCountContext(ctx context.Context) (int64, error) {
 	var value int64
 	err := s.tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&value)

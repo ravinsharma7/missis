@@ -44,6 +44,14 @@ func (s *externalResolutionSnapshot) StoreIdentityClaimContext(ctx context.Conte
 	if err != nil {
 		return missis.StoreIdentityClaimV1{}, err
 	}
+	genesisEpoch, err := s.store.GenesisIntegrityEpochContext(ctx)
+	if err != nil {
+		return missis.StoreIdentityClaimV1{}, err
+	}
+	headEpoch, err := s.store.HeadIntegrityEpochContext(ctx)
+	if err != nil {
+		return missis.StoreIdentityClaimV1{}, err
+	}
 	eventCount, err := s.store.EventCountContext(ctx)
 	if err != nil {
 		return missis.StoreIdentityClaimV1{}, err
@@ -56,7 +64,7 @@ func (s *externalResolutionSnapshot) StoreIdentityClaimContext(ctx context.Conte
 	if err != nil {
 		return missis.StoreIdentityClaimV1{}, err
 	}
-	claim := missis.NewHashedStoreIdentityClaimV1(identity.StoreID, identity.DocumentBytes, genesisDigest, headDigest, eventCount, formatRevision)
+	claim := missis.NewHashedStoreIdentityClaimV1(identity.StoreID, identity.DocumentBytes, genesisDigest, genesisEpoch, headDigest, headEpoch, eventCount, formatRevision)
 	claim.LineageReceiptDigest = lineageDigest
 	return claim, nil
 }

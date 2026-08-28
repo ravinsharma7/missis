@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ravinsharma7/missis/internal/idgen"
 	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/internal/store"
 	neutral "github.com/ravinsharma7/missis/pkg/eventstore"
@@ -38,23 +39,58 @@ func (a *Adapter) Append(ctx context.Context, request neutral.AppendRequest) (ne
 	if len(request.Events) == 0 {
 		return neutral.AppendResult{}, fmt.Errorf("%w: event batch is empty", neutral.ErrInvalidEvent)
 	}
+	if request.IdempotencyKey != "" {
+		requestHash, err := store.ComputeIdempotencyRequestHashV1(struct {
+			Operation string
+			Events    []neutral.Event
+		}{Operation: "eventstore-append-v1", Events: request.Events})
+		if err != nil {
+			return neutral.AppendResult{}, err
+		}
+		ctx = store.WithIdempotencyRequestHash(ctx, requestHash)
+	}
 	converted := make([]model.Event, len(request.Events))
+	originalByID := make(map[string]neutral.Event, len(request.Events))
+	var acceptedBatchID *model.BatchID
+	if len(request.Events) > 1 {
+		batchID := model.BatchID(idgen.New("batch"))
+		acceptedBatchID = &batchID
+	}
 	for index, event := range request.Events {
 		if err := neutral.ValidateEvent(event); err != nil {
 			return neutral.AppendResult{}, fmt.Errorf("event %d: %w", index, err)
 		}
 		converted[index] = toMissisEvent(event)
+		converted[index].BatchID = acceptedBatchID
+		originalByID[event.ID] = event
 	}
-	outcome, err := a.store.AppendBatchContext(ctx, converted, request.IdempotencyKey, nil, nil)
+	storeID, err := a.store.StoreIDContext(ctx)
+	if err != nil {
+		return neutral.AppendResult{}, err
+	}
+	encode := func(assigned model.Event) (string, []byte, error) {
+		original, ok := originalByID[string(assigned.ID)]
+		if !ok {
+			return "", nil, fmt.Errorf("eventstore adapter: no neutral proposal for event %s", assigned.ID)
+		}
+		accepted := authorityAcceptedEvent(original, assigned, storeID)
+		data, err := neutral.CanonicalAcceptedEventBytesV1(accepted)
+		return neutral.RecordCodecV1, data, err
+	}
+	outcome, err := a.store.AppendEncodedBatchContext(ctx, converted, request.IdempotencyKey, nil, nil, encode)
 	if err != nil {
 		if errors.Is(err, store.ErrIdempotencyMismatch) {
 			return neutral.AppendResult{}, fmt.Errorf("%w: %v", neutral.ErrIdempotencyMismatch, err)
 		}
 		return neutral.AppendResult{}, err
 	}
-	accepted, err := fromMissisEvents(outcome.Events)
-	if err != nil {
-		return neutral.AppendResult{}, err
+	accepted := make([]neutral.Event, len(outcome.Events))
+	for index, assigned := range outcome.Events {
+		original, ok := originalByID[string(assigned.ID)]
+		if !ok {
+			return neutral.AppendResult{}, fmt.Errorf("eventstore adapter: replay returned unknown event %s", assigned.ID)
+		}
+		accepted[index] = authorityAcceptedEvent(original, assigned, storeID)
 	}
 	return neutral.AppendResult{Replayed: outcome.Replayed, Events: accepted}, nil
 }
@@ -63,11 +99,22 @@ func (a *Adapter) ReadStream(ctx context.Context, streamRef neutral.Ref) ([]neut
 	if err := neutral.ValidateRef(streamRef); err != nil {
 		return nil, err
 	}
-	events, err := a.store.LoadStreamEventsContext(ctx, model.Ref{Kind: model.Kind(streamRef.Kind), Entity: streamRef.ID})
+	records, err := a.store.LoadAcceptedStreamRecordsContext(ctx, model.Ref{Kind: model.Kind(streamRef.Kind), Entity: streamRef.ID})
 	if err != nil {
 		return nil, err
 	}
-	return fromMissisEvents(events)
+	events := make([]neutral.Event, len(records))
+	for index, record := range records {
+		if record.RecordCodec != neutral.RecordCodecV1 {
+			return nil, fmt.Errorf("eventstore adapter: event %s uses unsupported codec %q; exact bytes preserved", record.EventID, record.RecordCodec)
+		}
+		decoded, err := neutral.DecodeAcceptedEventV1(record.AcceptedBytes)
+		if err != nil {
+			return nil, fmt.Errorf("eventstore adapter: decode event %s: %w", record.EventID, err)
+		}
+		events[index] = decoded
+	}
+	return events, nil
 }
 
 func toMissisEvent(event neutral.Event) model.Event {
@@ -94,26 +141,24 @@ func toMissisEvent(event neutral.Event) model.Event {
 	}
 }
 
-func fromMissisEvents(events []model.Event) ([]neutral.Event, error) {
-	result := make([]neutral.Event, len(events))
-	for index, event := range events {
-		if event.Operation != model.OpObserveEffect || len(event.Inputs) != 1 {
-			return nil, fmt.Errorf("eventstore adapter: event %s is not a neutral envelope", event.ID)
-		}
-		payload, ok := event.Value.Data.(string)
-		if !ok {
-			return nil, fmt.Errorf("eventstore adapter: event %s payload is not exact text", event.ID)
-		}
-		result[index] = neutral.Event{
-			ID:          string(event.ID),
-			Stream:      neutral.Ref{Kind: string(event.Stream.Kind), ID: event.Stream.Entity},
-			Type:        event.Value.Text,
-			Subject:     neutral.Ref{Kind: string(event.Inputs[0].Kind), ID: event.Inputs[0].Entity},
-			Payload:     []byte(payload),
-			RecordedAt:  event.RecordedAt,
-			EffectiveAt: event.EffectiveAt,
-			Actor:       neutral.Actor{Kind: event.Actor.Kind, ID: event.Actor.ID},
-		}
+func authorityAcceptedEvent(original neutral.Event, assigned model.Event, storeID string) neutral.Event {
+	accepted := original
+	accepted.ProtocolVersion = neutral.ProtocolVersionV3Alpha4
+	accepted.Namespace = storeID
+	accepted.StreamRevision = assigned.Sequence
+	if assigned.BatchID != nil {
+		accepted.BatchID = string(*assigned.BatchID)
+	} else {
+		accepted.BatchID = ""
 	}
-	return result, nil
+	accepted.RecordedAt = assigned.RecordedAt
+	accepted.EffectiveAt = assigned.EffectiveAt
+	accepted.RecordCodec = neutral.RecordCodecV1
+	if accepted.SchemaVersion == 0 {
+		accepted.SchemaVersion = 1
+	}
+	if accepted.PayloadCodec == "" {
+		accepted.PayloadCodec = neutral.DefaultPayloadCodec
+	}
+	return accepted
 }

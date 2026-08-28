@@ -146,6 +146,9 @@ func TestResolutionSnapshotStaysCoherentAcrossAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if claim.GenesisDigestScheme != "canonical-event-chain-v1" || claim.HeadIntegrityEpoch != "canonical-event-chain-v1" {
+		t.Fatalf("claim does not identify format-7 integrity epochs: %#v", claim)
+	}
 	if _, err := target.Set(ctx, missis.RequestContext{Actor: "test"}, missis.SetValue{Target: ticket.Ref + "/status", Value: "doing", Kind: model.ValueKindStatus}); err != nil {
 		t.Fatal(err)
 	}

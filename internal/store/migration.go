@@ -52,6 +52,7 @@ type WritableForkPlan struct {
 	FromIdentityScheme                  string   `json:"from_identity_scheme"`
 	SourceArtifactNamespace             string   `json:"source_artifact_namespace"`
 	SourceHeadDigest                    string   `json:"source_head_digest"`
+	SourceIntegrityEpoch                string   `json:"source_integrity_epoch"`
 	ToIdentityVersion                   int      `json:"to_identity_version"`
 	FormatRevision                      int      `json:"format_revision"`
 	EventCount                          int64    `json:"event_count"`
@@ -161,7 +162,7 @@ func PlanWritableFork(path string, identityVersion int) (WritableForkPlan, error
 	if err := db.QueryRow(`SELECT store_id,identity_scheme,artifact_namespace FROM store_identity_v1 WHERE singleton=1`).Scan(&plan.FromStoreID, &plan.FromIdentityScheme, &plan.SourceArtifactNamespace); err != nil {
 		return WritableForkPlan{}, err
 	}
-	if err := db.QueryRow(`SELECT head_hash FROM store_meta WHERE singleton=1`).Scan(&plan.SourceHeadDigest); err != nil {
+	if err := db.QueryRow(`SELECT head_hash,integrity_epoch FROM store_meta WHERE singleton=1`).Scan(&plan.SourceHeadDigest, &plan.SourceIntegrityEpoch); err != nil {
 		return WritableForkPlan{}, err
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&plan.EventCount); err != nil {
@@ -449,16 +450,16 @@ func verifyWritableForkBackup(ctx context.Context, path string, plan WritableFor
 	if err := verifyPreMigrationHashes(ctx, db); err != nil {
 		return err
 	}
-	var head string
+	var head, integrityEpoch string
 	var count int64
-	if err := db.QueryRowContext(ctx, `SELECT head_hash FROM store_meta WHERE singleton=1`).Scan(&head); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT head_hash,integrity_epoch FROM store_meta WHERE singleton=1`).Scan(&head, &integrityEpoch); err != nil {
 		return err
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
 		return err
 	}
-	if head != plan.SourceHeadDigest || count != plan.EventCount {
-		return fmt.Errorf("backup snapshot changed: head=%q events=%d, expected head=%q events=%d", head, count, plan.SourceHeadDigest, plan.EventCount)
+	if head != plan.SourceHeadDigest || count != plan.EventCount || integrityEpoch != plan.SourceIntegrityEpoch {
+		return fmt.Errorf("backup snapshot changed: head=%q events=%d epoch=%q, expected head=%q events=%d epoch=%q", head, count, integrityEpoch, plan.SourceHeadDigest, plan.EventCount, plan.SourceIntegrityEpoch)
 	}
 	return nil
 }
@@ -484,7 +485,7 @@ func PlanMigration(path string, target int) (MigrationPlan, error) {
 		}
 		plan.FromStoreID, plan.FromIdentityScheme = info.StoreID, info.Scheme
 		plan.SourceHeadDigest, plan.SourceEventCount = source.head, source.eventCount
-		plan.IntegrityEpoch, plan.ArtifactNamespace = "global-json-chain-v1", info.ArtifactNamespace
+		plan.IntegrityEpoch, plan.ArtifactNamespace = source.integrityEpoch, info.ArtifactNamespace
 		plan.RequiresBackup, plan.ChangesStoreID = false, false
 		return plan, nil
 	}
@@ -494,7 +495,7 @@ func PlanMigration(path string, target int) (MigrationPlan, error) {
 	}
 	plan.FromStoreID = source.storeID
 	plan.SourceHeadDigest, plan.SourceEventCount = source.head, source.eventCount
-	plan.IntegrityEpoch = "global-json-chain-v1"
+	plan.IntegrityEpoch = source.integrityEpoch
 	if revision >= 4 {
 		info, identityErr := readCurrentIdentityReadOnly(clean)
 		if identityErr != nil {
@@ -692,9 +693,9 @@ func applyMigration(ctx context.Context, path string, target int, backupPath str
 }
 
 type migrationSource struct {
-	storeID, head string
-	eventCount    int64
-	format        int
+	storeID, head, integrityEpoch string
+	eventCount                    int64
+	format                        int
 }
 
 func readMigrationSource(path string) (migrationSource, error) {
@@ -711,6 +712,16 @@ func readMigrationSource(path string) (migrationSource, error) {
 	source.format = revision
 	if err := db.QueryRow(`SELECT store_id, head_hash FROM store_meta WHERE singleton = 1`).Scan(&source.storeID, &source.head); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return migrationSource{}, err
+	}
+	source.integrityEpoch = globalJSONIntegrityEpochV1
+	var epochColumn int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('store_meta') WHERE name='integrity_epoch'`).Scan(&epochColumn); err != nil {
+		return migrationSource{}, err
+	}
+	if epochColumn == 1 {
+		if err := db.QueryRow(`SELECT integrity_epoch FROM store_meta WHERE singleton=1`).Scan(&source.integrityEpoch); err != nil {
+			return migrationSource{}, err
+		}
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&source.eventCount); err != nil {
 		return migrationSource{}, err
@@ -808,7 +819,7 @@ func migrateIdentityV1(db *sql.DB, source migrationSource, backupDigest string) 
 	receipt := identityMigrationReceiptV1{
 		Version: "store-identity-migration-v1", FromStoreID: source.storeID, FromIdentityScheme: "missis-ulid-v1",
 		ToStoreID: toStoreID, ToIdentityScheme: storeidentity.Scheme, SourceHeadDigest: source.head,
-		SourceHeadIntegrityEpoch: "global-json-chain-v1", SourceEventCount: source.eventCount,
+		SourceHeadIntegrityEpoch: source.integrityEpoch, SourceEventCount: source.eventCount,
 		SourceFormatRevision: source.format, TargetFormatRevision: CurrentStoreFormatRevision,
 		ArtifactNamespace: source.storeID, BackupDatabaseSHA256: backupDigest, MigratedAt: now,
 	}
@@ -825,11 +836,11 @@ func migrateIdentityV1(db *sql.DB, source migrationSource, backupDigest string) 
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`INSERT INTO store_identity_v1(singleton,store_id,identity_scheme,document_bytes,document_digest,artifact_namespace,created_at,creator_protocol,creator_contract_digest) VALUES(1,?,?,?,?,?,?,?,NULL)`,
-		toStoreID, storeidentity.Scheme, documentBytes, storeidentity.DocumentDigest(documentBytes), source.storeID, now, "eventstore-v3-alpha.3"); err != nil {
+		toStoreID, storeidentity.Scheme, documentBytes, storeidentity.DocumentDigest(documentBytes), source.storeID, now, "eventstore-v3-alpha.4"); err != nil {
 		return "", "", "", err
 	}
 	if _, err := tx.Exec(`INSERT INTO store_identity_migration_receipts(receipt_id,from_store_id,from_identity_scheme,to_store_id,to_identity_scheme,source_head_digest,source_head_integrity_epoch,source_event_count,source_format_revision,target_format_revision,artifact_namespace,backup_database_sha256,migrated_at,receipt_bytes,receipt_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		receiptID, source.storeID, "missis-ulid-v1", toStoreID, storeidentity.Scheme, source.head, "global-json-chain-v1", source.eventCount, source.format, CurrentStoreFormatRevision, source.storeID, backupDigest, now, receiptBytes, receiptDigest); err != nil {
+		receiptID, source.storeID, "missis-ulid-v1", toStoreID, storeidentity.Scheme, source.head, source.integrityEpoch, source.eventCount, source.format, CurrentStoreFormatRevision, source.storeID, backupDigest, now, receiptBytes, receiptDigest); err != nil {
 		return "", "", "", err
 	}
 	if _, err := tx.Exec(`UPDATE store_meta SET store_id=?, format_revision=?, updated_at=? WHERE singleton=1`, toStoreID, CurrentStoreFormatRevision, now); err != nil {
@@ -860,7 +871,7 @@ func migrateFormatCurrent(ctx context.Context, db *sql.DB, source migrationSourc
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	receipt := formatMigrationReceiptV1{
 		Version: "store-format-migration-v1", StoreID: info.StoreID,
-		SourceHeadDigest: source.head, SourceHeadIntegrityEpoch: "global-json-chain-v1",
+		SourceHeadDigest: source.head, SourceHeadIntegrityEpoch: source.integrityEpoch,
 		SourceEventCount: source.eventCount, SourceFormatRevision: source.format,
 		TargetFormatRevision: CurrentStoreFormatRevision,
 		BackupDatabaseSHA256: backupDigest, MigratedAt: now,
@@ -883,7 +894,7 @@ func migrateFormatCurrent(ctx context.Context, db *sql.DB, source migrationSourc
 		source_head_digest,source_head_integrity_epoch,source_event_count,
 		backup_database_sha256,migrated_at,receipt_bytes,receipt_digest
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, receiptID, source.format, CurrentStoreFormatRevision,
-		info.StoreID, source.head, "global-json-chain-v1", source.eventCount,
+		info.StoreID, source.head, source.integrityEpoch, source.eventCount,
 		backupDigest, now, receiptBytes, receiptDigest); err != nil {
 		return "", "", "", err
 	}
@@ -898,7 +909,7 @@ func migrateFormatCurrent(ctx context.Context, db *sql.DB, source migrationSourc
 
 func declareWritableForkV1(ctx context.Context, db *sql.DB, plan WritableForkPlan, backupDigest string) (string, string, string, error) {
 	var from IdentityInfo
-	var head string
+	var head, integrityEpoch string
 	var count int64
 	if err := db.QueryRowContext(ctx, `SELECT store_id,identity_scheme,document_bytes,document_digest,artifact_namespace FROM store_identity_v1 WHERE singleton=1`).Scan(
 		&from.StoreID, &from.Scheme, &from.DocumentBytes, &from.DocumentDigest, &from.ArtifactNamespace,
@@ -911,7 +922,7 @@ func declareWritableForkV1(ctx context.Context, db *sql.DB, plan WritableForkPla
 	if from.StoreID != plan.FromStoreID {
 		return "", "", "", fmt.Errorf("fork source identity changed: planned %q, found %q", plan.FromStoreID, from.StoreID)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT head_hash FROM store_meta WHERE singleton=1`).Scan(&head); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT head_hash,integrity_epoch FROM store_meta WHERE singleton=1`).Scan(&head, &integrityEpoch); err != nil {
 		return "", "", "", err
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
@@ -929,7 +940,7 @@ func declareWritableForkV1(ctx context.Context, db *sql.DB, plan WritableForkPla
 		Version: "store-identity-fork-v1", FromStoreID: from.StoreID,
 		FromIdentityScheme: from.Scheme, FromIdentityDocument: from.DocumentBytes,
 		FromIdentityDocumentDigest: from.DocumentDigest,
-		FromHeadDigest:             head, FromHeadIntegrityEpoch: "global-json-chain-v1",
+		FromHeadDigest:             head, FromHeadIntegrityEpoch: integrityEpoch,
 		FromEventCount: count, FromFormatRevision: plan.FormatRevision,
 		ToStoreID: toStoreID, ToIdentityScheme: storeidentity.Scheme,
 		ToIdentityDocumentDigest: toDocumentDigest, ArtifactDisposition: "new-empty-namespace",
@@ -954,7 +965,7 @@ func declareWritableForkV1(ctx context.Context, db *sql.DB, plan WritableForkPla
 		target_format_revision,artifact_namespace,backup_database_sha256,migrated_at,receipt_bytes,receipt_digest
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		receiptID, from.StoreID, from.Scheme, toStoreID, storeidentity.Scheme,
-		head, "global-json-chain-v1", count, plan.FormatRevision, plan.FormatRevision,
+		head, integrityEpoch, count, plan.FormatRevision, plan.FormatRevision,
 		toStoreID, backupDigest, now, receiptBytes, receiptDigest,
 	); err != nil {
 		return "", "", "", err
@@ -963,7 +974,7 @@ func declareWritableForkV1(ctx context.Context, db *sql.DB, plan WritableForkPla
 		store_id=?,identity_scheme=?,document_bytes=?,document_digest=?,artifact_namespace=?,
 		created_at=?,creator_protocol=?,creator_contract_digest=NULL WHERE singleton=1`,
 		toStoreID, storeidentity.Scheme, documentBytes, toDocumentDigest, toStoreID,
-		now, "eventstore-v3-alpha.3"); err != nil {
+		now, "eventstore-v3-alpha.4"); err != nil {
 		return "", "", "", err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE store_meta SET store_id=?,updated_at=? WHERE singleton=1`, toStoreID, now); err != nil {

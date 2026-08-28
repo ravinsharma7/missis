@@ -9,7 +9,7 @@ jq -e '
   .version == "missis-event-tooling-lock-v1"
   and .authority_repository == "git@github.com:ravinsharma7/skunkwork.git"
   and (.authority_commit | test("^[0-9a-f]{40}$"))
-  and .protocol == "eventstore-v3-alpha.3"
+  and .protocol == "eventstore-v3-alpha.4"
   and (.snapshots | length) == 2
 ' "$lock" >/dev/null
 

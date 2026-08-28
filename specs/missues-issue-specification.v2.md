@@ -5152,7 +5152,7 @@ close/reopen, and projection rebuild.
 
 Binary release identity and durable store compatibility are independent.
 `store_format_revision` is one internal monotonically increasing integer;
-revision 6 is the current format. Unmarked stores through migration 0005 are
+revision 7 is the current format. Unmarked stores through migration 0005 are
 implicit revision 1, unmarked stores through migration 0007 are implicit
 revision 2, migration `0007_store_format_revision` records revision 2 in
 `store_meta`, and migration `0008_idempotency_request_hash` adds the nullable
@@ -5166,6 +5166,12 @@ revision 5 after its required backup.
 Migration `0011_artifact_namespace_fork_v1` adds the independently inspectable
 artifact-fork receipt index; the explicit Go step preserves store identity and
 atomically records revision 6 after its required backup.
+Migration `0012_canonical_event_epoch_v1` adds nullable exact accepted-record
+bytes, codec/content identity, per-event integrity epochs, and transition
+receipts; the explicit Go step preserves all format-6 event/hash bytes and
+atomically records revision 7 after its required backup. Newly accepted rows
+use `canonical-event-chain-v1`. A migrated store writes the first epoch
+transition receipt atomically with its first post-migration event.
 
 Opening an existing database MUST probe this revision read-only before WAL
 configuration, migration, integrity verification, or projection repair.

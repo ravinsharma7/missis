@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -22,6 +23,7 @@ import (
 	"github.com/ravinsharma7/missis/internal/idgen"
 	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/internal/storeidentity"
+	neutral "github.com/ravinsharma7/missis/pkg/eventstore"
 )
 
 var ErrConflict = errors.New("optimistic concurrency conflict")
@@ -47,6 +49,17 @@ type LinkPrecondition struct {
 type AppendOutcome struct {
 	Replayed bool
 	Events   []model.Event
+}
+
+// AcceptedRecordEncoder runs after authority fields are assigned and before
+// any event row is inserted. It lets a neutral adapter persist its own exact
+// versioned envelope while event_json remains a compatibility/index payload.
+type AcceptedRecordEncoder func(model.Event) (recordCodec string, acceptedBytes []byte, err error)
+
+type AcceptedRecord struct {
+	EventID       model.EventID
+	RecordCodec   string
+	AcceptedBytes []byte
 }
 
 type TicketSummary struct {
@@ -336,6 +349,37 @@ func (s *Store) HeadHashContext(ctx context.Context) (string, error) {
 	return headHash, err
 }
 
+// HeadIntegrityEpochContext returns the integrity algorithm that produced the
+// current head. It is part of the portable store fingerprint: a digest without
+// its epoch is ambiguous across hash-algorithm transitions.
+func (s *Store) HeadIntegrityEpochContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var epoch string
+	err := s.reader.QueryRowContext(ctx, `SELECT integrity_epoch FROM store_meta WHERE singleton = 1`).Scan(&epoch)
+	return epoch, err
+}
+
+// GenesisIntegrityEpochContext returns the epoch recorded for the first
+// accepted event. Empty stores report the active head epoch.
+func (s *Store) GenesisIntegrityEpochContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var epoch string
+	err := s.reader.QueryRowContext(ctx, `
+		SELECT COALESCE((
+			SELECT h.integrity_epoch
+			FROM events e
+			JOIN event_hashes h ON h.event_id = e.id
+			ORDER BY e.alias_seq ASC
+			LIMIT 1
+		), (SELECT integrity_epoch FROM store_meta WHERE singleton = 1))
+	`).Scan(&epoch)
+	return epoch, err
+}
+
 // GenesisHashContext returns the first accepted event hash. It is immutable
 // for a store and lets peer resolvers distinguish a replica from a same-ID
 // database containing different history.
@@ -605,12 +649,12 @@ func ensureStoreIdentityAndHashes(db *sql.DB) error {
 				singleton, store_id, identity_scheme, document_bytes, document_digest,
 				artifact_namespace, created_at, creator_protocol, creator_contract_digest
 			) VALUES (1, ?, ?, ?, ?, ?, ?, ?, NULL)
-		`, storeID, storeidentity.Scheme, documentBytes, storeidentity.DocumentDigest(documentBytes), storeID, now, "eventstore-v3-alpha.3"); err != nil {
+		`, storeID, storeidentity.Scheme, documentBytes, storeidentity.DocumentDigest(documentBytes), storeID, now, "eventstore-v3-alpha.4"); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO store_meta (singleton, store_id, head_hash, updated_at, format_revision) VALUES (1, ?, '', ?, ?)`,
-			storeID, now, CurrentStoreFormatRevision,
+			`INSERT INTO store_meta (singleton, store_id, head_hash, updated_at, format_revision, integrity_epoch) VALUES (1, ?, '', ?, ?, ?)`,
+			storeID, now, CurrentStoreFormatRevision, canonicalEventIntegrityEpochV1,
 		); err != nil {
 			return err
 		}
@@ -638,6 +682,9 @@ func ensureStoreIdentityAndHashes(db *sql.DB) error {
 	if err := verifyHashesTx(tx); err != nil {
 		return fmt.Errorf("integrity verification failed: %w", err)
 	}
+	if err := verifyFormatMigrationReceipts(context.Background(), tx); err != nil {
+		return fmt.Errorf("format migration verification failed: %w", err)
+	}
 	return tx.Commit()
 }
 
@@ -663,6 +710,52 @@ func verifyHashesTx(tx *sql.Tx) error {
 		return err
 	}
 	return verifyStoredHashChain(context.Background(), tx, events)
+}
+
+// verifyFormatMigrationReceipts is deliberately narrower than
+// CheckConsistency: strict Open calls it without refolding projections. A
+// format migration receipt is part of the interpretation boundary, so Open
+// must reject tampered bytes or denormalized index fields before serving any
+// event.
+func verifyFormatMigrationReceipts(ctx context.Context, db contextSQL) error {
+	rows, err := db.QueryContext(ctx, `SELECT
+		receipt_id,source_format_revision,target_format_revision,store_id,
+		source_head_digest,source_head_integrity_epoch,source_event_count,
+		backup_database_sha256,migrated_at,receipt_bytes,receipt_digest
+		FROM store_format_migration_receipts`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var receiptID, storeID, sourceHead, sourceEpoch, backupDigest, migratedAt, digest string
+		var sourceRevision, targetRevision int
+		var sourceEventCount int64
+		var raw []byte
+		if err := rows.Scan(&receiptID, &sourceRevision, &targetRevision, &storeID,
+			&sourceHead, &sourceEpoch, &sourceEventCount, &backupDigest, &migratedAt, &raw, &digest); err != nil {
+			return err
+		}
+		sum := sha256.Sum256(raw)
+		hexSum := hex.EncodeToString(sum[:])
+		if receiptID != "format-migration:"+hexSum || digest != "sha256:"+hexSum {
+			return fmt.Errorf("format migration receipt %q digest mismatch", receiptID)
+		}
+		var receipt formatMigrationReceiptV1
+		if err := json.Unmarshal(raw, &receipt); err != nil {
+			return fmt.Errorf("format migration receipt %q cannot be decoded: %w", receiptID, err)
+		}
+		if receipt.Version != "store-format-migration-v1" || receipt.StoreID != storeID ||
+			receipt.SourceHeadDigest != sourceHead || receipt.SourceHeadIntegrityEpoch != sourceEpoch ||
+			receipt.SourceEventCount != sourceEventCount || receipt.SourceFormatRevision != sourceRevision ||
+			receipt.TargetFormatRevision != targetRevision || receipt.BackupDatabaseSHA256 != backupDigest || receipt.MigratedAt != migratedAt {
+			return fmt.Errorf("format migration receipt %q indexed fields disagree with receipt bytes", receiptID)
+		}
+		if targetRevision > CurrentStoreFormatRevision {
+			return fmt.Errorf("format migration receipt %q targets unsupported format %d", receiptID, targetRevision)
+		}
+	}
+	return rows.Err()
 }
 
 func isBusyError(err error) bool {
@@ -880,15 +973,21 @@ func (s *Store) CheckConsistencyContext(ctx context.Context) error {
 	if err := receiptRows.Close(); err != nil {
 		return err
 	}
-	formatRows, err := tx.QueryContext(ctx, `SELECT receipt_id,store_id,target_format_revision,receipt_bytes,receipt_digest FROM store_format_migration_receipts`)
+	formatRows, err := tx.QueryContext(ctx, `SELECT
+		receipt_id,source_format_revision,target_format_revision,store_id,
+		source_head_digest,source_head_integrity_epoch,source_event_count,
+		backup_database_sha256,migrated_at,receipt_bytes,receipt_digest
+		FROM store_format_migration_receipts`)
 	if err != nil {
 		return err
 	}
 	for formatRows.Next() {
-		var receiptID, receiptStoreID, digest string
-		var targetRevision int
+		var receiptID, receiptStoreID, sourceHead, sourceEpoch, backupDigest, migratedAt, digest string
+		var sourceRevision, targetRevision int
+		var sourceEventCount int64
 		var raw []byte
-		if err := formatRows.Scan(&receiptID, &receiptStoreID, &targetRevision, &raw, &digest); err != nil {
+		if err := formatRows.Scan(&receiptID, &sourceRevision, &targetRevision, &receiptStoreID,
+			&sourceHead, &sourceEpoch, &sourceEventCount, &backupDigest, &migratedAt, &raw, &digest); err != nil {
 			formatRows.Close()
 			return err
 		}
@@ -897,6 +996,18 @@ func (s *Store) CheckConsistencyContext(ctx context.Context) error {
 		if receiptID != "format-migration:"+hexSum || digest != "sha256:"+hexSum {
 			formatRows.Close()
 			return fmt.Errorf("format migration receipt %q digest mismatch", receiptID)
+		}
+		var receipt formatMigrationReceiptV1
+		if err := json.Unmarshal(raw, &receipt); err != nil {
+			formatRows.Close()
+			return fmt.Errorf("format migration receipt %q cannot be decoded: %w", receiptID, err)
+		}
+		if receipt.Version != "store-format-migration-v1" || receipt.StoreID != receiptStoreID ||
+			receipt.SourceHeadDigest != sourceHead || receipt.SourceHeadIntegrityEpoch != sourceEpoch ||
+			receipt.SourceEventCount != sourceEventCount || receipt.SourceFormatRevision != sourceRevision ||
+			receipt.TargetFormatRevision != targetRevision || receipt.BackupDatabaseSHA256 != backupDigest || receipt.MigratedAt != migratedAt {
+			formatRows.Close()
+			return fmt.Errorf("format migration receipt %q indexed fields disagree with receipt bytes", receiptID)
 		}
 		if !ancestorIDs[receiptStoreID] || targetRevision > CurrentStoreFormatRevision {
 			formatRows.Close()
@@ -908,6 +1019,28 @@ func (s *Store) CheckConsistencyContext(ctx context.Context) error {
 		return err
 	}
 	if err := formatRows.Close(); err != nil {
+		return err
+	}
+	epochLineageRows, err := tx.QueryContext(ctx, `SELECT receipt_id,store_id FROM integrity_epoch_transition_receipts`)
+	if err != nil {
+		return err
+	}
+	for epochLineageRows.Next() {
+		var receiptID, receiptStoreID string
+		if err := epochLineageRows.Scan(&receiptID, &receiptStoreID); err != nil {
+			epochLineageRows.Close()
+			return err
+		}
+		if !ancestorIDs[receiptStoreID] {
+			epochLineageRows.Close()
+			return fmt.Errorf("integrity epoch transition receipt %q belongs to unrelated store %q", receiptID, receiptStoreID)
+		}
+	}
+	if err := epochLineageRows.Err(); err != nil {
+		epochLineageRows.Close()
+		return err
+	}
+	if err := epochLineageRows.Close(); err != nil {
 		return err
 	}
 
@@ -1034,6 +1167,241 @@ type contextSQL interface {
 }
 
 func verifyStoredHashChain(ctx context.Context, tx contextSQL, events []model.Event) error {
+	var canonicalSchemaColumns int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('events') WHERE name IN ('record_codec','accepted_bytes','content_hash')`).Scan(&canonicalSchemaColumns); err != nil {
+		return err
+	}
+	if canonicalSchemaColumns != 3 {
+		return verifyGlobalJSONHashChain(ctx, tx, events)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT h.previous_hash,h.hash,h.integrity_epoch,
+		       e.record_codec,e.accepted_bytes,e.content_hash,e.alias_seq
+		FROM event_hashes h
+		JOIN events e ON e.id = h.event_id
+		ORDER BY e.alias_seq ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var authorityStoreID string
+	if err := tx.QueryRowContext(ctx, `SELECT store_id FROM store_meta WHERE singleton=1`).Scan(&authorityStoreID); err != nil {
+		return err
+	}
+	previous := ""
+	activeObservedEpoch := ""
+	globalEventCount := int64(0)
+	var lastGlobalAlias uint64
+	var transition *integrityEpochObservation
+	for _, event := range events {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !rows.Next() {
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("event hash rows shorter than event ledger")
+		}
+		var storedPrevious, storedHash, integrityEpoch string
+		var recordCodec, contentHash sql.NullString
+		var acceptedBytes []byte
+		var aliasSeq uint64
+		if err := rows.Scan(&storedPrevious, &storedHash, &integrityEpoch, &recordCodec, &acceptedBytes, &contentHash, &aliasSeq); err != nil {
+			return err
+		}
+		var expected string
+		switch integrityEpoch {
+		case globalJSONIntegrityEpochV1:
+			if activeObservedEpoch == canonicalEventIntegrityEpochV1 {
+				return fmt.Errorf("integrity epoch regressed to %q at event %s", integrityEpoch, event.ID)
+			}
+			if recordCodec.Valid || acceptedBytes != nil || contentHash.Valid {
+				return fmt.Errorf("historical event %s fabricates canonical accepted-byte metadata", event.ID)
+			}
+			expected = computeEventHash(event, previous)
+			activeObservedEpoch = globalJSONIntegrityEpochV1
+			globalEventCount++
+			lastGlobalAlias = aliasSeq
+		case canonicalEventIntegrityEpochV1:
+			if !recordCodec.Valid {
+				return fmt.Errorf("canonical event %s is missing its record codec", event.ID)
+			}
+			if recordCodec.String != canonicalEventRecordCodecV1 && recordCodec.String != neutralEventRecordCodecV1 {
+				return fmt.Errorf("event %s uses unsupported record codec %q; exact bytes preserved", event.ID, recordCodec.String)
+			}
+			if acceptedBytes == nil || !contentHash.Valid {
+				return fmt.Errorf("canonical event %s is missing exact accepted bytes or content digest", event.ID)
+			}
+			computedContentHash := model.EventContentHashV1(acceptedBytes)
+			if contentHash.String != computedContentHash {
+				return fmt.Errorf("canonical event %s content digest mismatch: stored=%q computed=%q", event.ID, contentHash.String, computedContentHash)
+			}
+			expected = model.ComputeEventHashBytesV1(acceptedBytes, previous)
+			switch recordCodec.String {
+			case canonicalEventRecordCodecV1:
+				var decoded model.Event
+				if err := json.Unmarshal(acceptedBytes, &decoded); err != nil {
+					return fmt.Errorf("canonical event %s cannot be decoded with %s: %w", event.ID, recordCodec.String, err)
+				}
+				reencoded, err := model.CanonicalEventBytesV1(decoded)
+				if err != nil {
+					return fmt.Errorf("canonical event %s cannot be validated: %w", event.ID, err)
+				}
+				if !bytes.Equal(reencoded, acceptedBytes) {
+					return fmt.Errorf("canonical event %s bytes are not canonical for codec %s", event.ID, recordCodec.String)
+				}
+				eventBytes, err := model.CanonicalEventBytesV1(event)
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(eventBytes, acceptedBytes) {
+					return fmt.Errorf("canonical event %s compatibility payload disagrees with exact accepted bytes", event.ID)
+				}
+			case neutralEventRecordCodecV1:
+				decoded, err := neutral.DecodeAcceptedEventV1(acceptedBytes)
+				if err != nil {
+					return fmt.Errorf("canonical event %s cannot be decoded with %s: %w", event.ID, recordCodec.String, err)
+				}
+				reencoded, err := neutral.CanonicalAcceptedEventBytesV1(decoded)
+				if err != nil || !bytes.Equal(reencoded, acceptedBytes) {
+					return fmt.Errorf("canonical event %s bytes are not canonical for codec %s", event.ID, recordCodec.String)
+				}
+				if decoded.Namespace != authorityStoreID {
+					return fmt.Errorf("canonical event %s neutral namespace %q does not match authority %q", event.ID, decoded.Namespace, authorityStoreID)
+				}
+				if err := verifyNeutralCompatibilityEvent(decoded, event); err != nil {
+					return fmt.Errorf("canonical event %s compatibility indexes disagree with exact neutral envelope", event.ID)
+				}
+			}
+			if activeObservedEpoch != canonicalEventIntegrityEpochV1 {
+				transition = &integrityEpochObservation{
+					SourceHead: previous, SourceEventCount: globalEventCount,
+					ActivationAfterAliasSeq: lastGlobalAlias, FirstEventID: string(event.ID),
+					RecordCodec:      recordCodec.String,
+					FirstContentHash: contentHash.String, FirstHead: expected,
+				}
+			}
+			activeObservedEpoch = canonicalEventIntegrityEpochV1
+		default:
+			return fmt.Errorf("event %s uses unsupported integrity epoch %q", event.ID, integrityEpoch)
+		}
+		if storedPrevious != previous || storedHash != expected {
+			return fmt.Errorf("integrity mismatch at event %s: stored chain disagrees with recomputed chain", event.ID)
+		}
+		previous = expected
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	var storedHead, activeStoredEpoch string
+	if err := tx.QueryRowContext(ctx, `SELECT head_hash,integrity_epoch FROM store_meta WHERE singleton = 1`).Scan(&storedHead, &activeStoredEpoch); err != nil {
+		return err
+	}
+	if previous != storedHead {
+		return fmt.Errorf("head hash mismatch")
+	}
+	if activeObservedEpoch == "" {
+		if activeStoredEpoch != globalJSONIntegrityEpochV1 && activeStoredEpoch != canonicalEventIntegrityEpochV1 {
+			return fmt.Errorf("empty store has unsupported integrity epoch %q", activeStoredEpoch)
+		}
+	} else if activeObservedEpoch != activeStoredEpoch {
+		return fmt.Errorf("active integrity epoch mismatch: stored=%q observed=%q", activeStoredEpoch, activeObservedEpoch)
+	}
+	return verifyIntegrityEpochTransitionReceipt(ctx, tx, transition)
+}
+
+func verifyNeutralCompatibilityEvent(accepted neutral.Event, compatibility model.Event) error {
+	payload, ok := compatibility.Value.Data.(string)
+	if !ok || compatibility.ID != model.EventID(accepted.ID) ||
+		!neutralRefMatches(compatibility.Stream, accepted.Stream) ||
+		compatibility.Sequence != accepted.StreamRevision || !batchIDMatches(compatibility.BatchID, accepted.BatchID) || compatibility.Operation != model.OpObserveEffect ||
+		compatibility.Target.Kind != model.KindPart || compatibility.Target.Entity != "neutral-event:"+accepted.ID || len(compatibility.Target.Path) != 0 ||
+		compatibility.Value.Kind != model.ValueKindJSON || compatibility.Value.Text != accepted.Type || payload != string(accepted.Payload) ||
+		len(compatibility.Value.List) != 0 || compatibility.Value.Ref != nil || compatibility.Value.Retracted || compatibility.Value.OrderKey != "" ||
+		!compatibility.RecordedAt.Equal(accepted.RecordedAt) || !compatibility.EffectiveAt.Equal(accepted.EffectiveAt) ||
+		compatibility.Actor.Kind != accepted.Actor.Kind || compatibility.Actor.ID != accepted.Actor.ID || compatibility.Actor.Name != "" ||
+		len(compatibility.Inputs) != 1 || !neutralRefMatches(compatibility.Inputs[0], accepted.Subject) ||
+		len(compatibility.Sources) != 0 || len(compatibility.Causes) != 0 || len(compatibility.Effects) != 0 ||
+		len(compatibility.Supersedes) != 0 || compatibility.Reason != "" || len(compatibility.Ontologies) != 0 || compatibility.Invocation != nil {
+		return errors.New("neutral compatibility event does not derive from exact envelope")
+	}
+	return nil
+}
+
+func batchIDMatches(got *model.BatchID, want string) bool {
+	if want == "" {
+		return got == nil
+	}
+	return got != nil && string(*got) == want
+}
+
+func projectionEventFromAcceptedBytes(codec string, acceptedBytes []byte, proposed model.Event, authorityStoreID string) (model.Event, error) {
+	switch codec {
+	case canonicalEventRecordCodecV1:
+		var decoded model.Event
+		if err := json.Unmarshal(acceptedBytes, &decoded); err != nil {
+			return model.Event{}, fmt.Errorf("decode %s: %w", codec, err)
+		}
+		reencoded, err := model.CanonicalEventBytesV1(decoded)
+		if err != nil || !bytes.Equal(reencoded, acceptedBytes) {
+			return model.Event{}, fmt.Errorf("bytes are not canonical for codec %s", codec)
+		}
+		if decoded.ID != proposed.ID || !sameModelRef(decoded.Stream, proposed.Stream) || decoded.Sequence != proposed.Sequence ||
+			!decoded.RecordedAt.Equal(proposed.RecordedAt) || !decoded.EffectiveAt.Equal(proposed.EffectiveAt) {
+			return model.Event{}, errors.New("accepted authority fields differ from assigned proposal")
+		}
+		return decoded, nil
+	case neutralEventRecordCodecV1:
+		decoded, err := neutral.DecodeAcceptedEventV1(acceptedBytes)
+		if err != nil {
+			return model.Event{}, fmt.Errorf("decode %s: %w", codec, err)
+		}
+		if decoded.Namespace != authorityStoreID {
+			return model.Event{}, fmt.Errorf("neutral namespace %q does not match authority %q", decoded.Namespace, authorityStoreID)
+		}
+		if err := verifyNeutralCompatibilityEvent(decoded, proposed); err != nil {
+			return model.Event{}, err
+		}
+		return neutralCompatibilityEvent(decoded), nil
+	default:
+		return model.Event{}, fmt.Errorf("unsupported accepted record codec %q", codec)
+	}
+}
+
+func sameModelRef(left, right model.Ref) bool {
+	if left.Kind != right.Kind || left.Entity != right.Entity || len(left.Path) != len(right.Path) {
+		return false
+	}
+	for index := range left.Path {
+		if left.Path[index] != right.Path[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func neutralCompatibilityEvent(event neutral.Event) model.Event {
+	result := model.Event{
+		ID: model.EventID(event.ID), Stream: model.Ref{Kind: model.Kind(event.Stream.Kind), Entity: event.Stream.ID}, Sequence: event.StreamRevision,
+		Operation: model.OpObserveEffect, Target: model.Ref{Kind: model.KindPart, Entity: "neutral-event:" + event.ID},
+		Value:      model.Value{Kind: model.ValueKindJSON, Text: event.Type, Data: string(event.Payload)},
+		RecordedAt: event.RecordedAt, EffectiveAt: event.EffectiveAt, Actor: model.ActorRef{Kind: event.Actor.Kind, ID: event.Actor.ID},
+		Inputs: []model.Ref{{Kind: model.Kind(event.Subject.Kind), Entity: event.Subject.ID}},
+	}
+	if event.BatchID != "" {
+		batchID := model.BatchID(event.BatchID)
+		result.BatchID = &batchID
+	}
+	return result
+}
+
+func neutralRefMatches(got model.Ref, want neutral.Ref) bool {
+	return got.Kind == model.Kind(want.Kind) && got.Entity == want.ID && len(got.Path) == 0
+}
+
+func verifyGlobalJSONHashChain(ctx context.Context, tx contextSQL, events []model.Event) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT h.previous_hash, h.hash
 		FROM event_hashes h
@@ -1197,6 +1565,20 @@ func (s *Store) AppendBatchContext(ctx context.Context, events []model.Event, id
 	return outcome, err
 }
 
+// AppendEncodedBatchContext is the temporary extraction boundary for neutral
+// consumer codecs. The encoder cannot choose identity, sequence, or time; it
+// receives the event only after those authority fields are final.
+func (s *Store) AppendEncodedBatchContext(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, encoder AcceptedRecordEncoder) (AppendOutcome, error) {
+	if encoder == nil {
+		return AppendOutcome{}, fmt.Errorf("accepted record encoder is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return AppendOutcome{}, err
+	}
+	outcome, _, err := s.appendBatchWithRetryFactory(ctx, events, idempotencyKey, preconditions, result, false, nil, nil, encoder)
+	return outcome, err
+}
+
 // AppendArtifactBatchContext commits artifact metadata and proposed events in
 // one SQLite transaction. Blob bytes must already be durable in the artifact
 // backend; a failed proposal therefore cannot leave ledger/index rows behind.
@@ -1225,7 +1607,7 @@ func (s *Store) AppendArtifactTicketBatchContextWithResult(ctx context.Context, 
 	if err := ctx.Err(); err != nil {
 		return AppendOutcome{}, 0, err
 	}
-	return s.appendBatchWithRetryFactory(ctx, events, idempotencyKey, nil, result, true, artifacts, resultFactory)
+	return s.appendBatchWithRetryFactory(ctx, events, idempotencyKey, nil, result, true, artifacts, resultFactory, nil)
 }
 
 func (s *Store) AppendTicketBatch(events []model.Event, idempotencyKey string, result any) (AppendOutcome, uint64, error) {
@@ -1240,10 +1622,10 @@ func (s *Store) AppendTicketBatchContext(ctx context.Context, events []model.Eve
 }
 
 func (s *Store) appendBatchWithRetry(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord) (AppendOutcome, uint64, error) {
-	return s.appendBatchWithRetryFactory(ctx, events, idempotencyKey, preconditions, result, allocateAlias, artifacts, nil)
+	return s.appendBatchWithRetryFactory(ctx, events, idempotencyKey, preconditions, result, allocateAlias, artifacts, nil, nil)
 }
 
-func (s *Store) appendBatchWithRetryFactory(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord, resultFactory func(uint64) any) (AppendOutcome, uint64, error) {
+func (s *Store) appendBatchWithRetryFactory(ctx context.Context, events []model.Event, idempotencyKey string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord, resultFactory func(uint64) any, acceptedEncoder AcceptedRecordEncoder) (AppendOutcome, uint64, error) {
 	requestHash := ""
 	if idempotencyKey != "" {
 		requestHash = idempotencyRequestHashFromContext(ctx)
@@ -1285,7 +1667,7 @@ func (s *Store) appendBatchWithRetryFactory(ctx context.Context, events []model.
 		for i := range attemptEvents {
 			attemptEvents[i].Sequence = originalSequences[i]
 		}
-		outcome, alias, err = s.appendBatchOnce(ctx, attemptEvents, idempotencyKey, requestHash, preconditions, result, allocateAlias, artifacts, resultFactory)
+		outcome, alias, err = s.appendBatchOnce(ctx, attemptEvents, idempotencyKey, requestHash, preconditions, result, allocateAlias, artifacts, resultFactory, acceptedEncoder)
 		if err == nil || !isRetryableAppendError(err) {
 			if err != nil {
 				s.emit("append-attempt", map[string]any{
@@ -1316,7 +1698,7 @@ func (s *Store) appendBatchWithRetryFactory(ctx context.Context, events []model.
 	return outcome, alias, err
 }
 
-func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idempotencyKey, requestHash string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord, resultFactory func(uint64) any) (AppendOutcome, uint64, error) {
+func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idempotencyKey, requestHash string, preconditions []Precondition, result any, allocateAlias bool, artifacts []ArtifactRecord, resultFactory func(uint64) any, acceptedEncoder AcceptedRecordEncoder) (AppendOutcome, uint64, error) {
 	if len(events) == 0 {
 		return AppendOutcome{}, 0, fmt.Errorf("event batch is empty")
 	}
@@ -1435,7 +1817,24 @@ func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idemp
 	}
 
 	now := time.Now().UTC()
+	var authorityStoreID, activeIntegrityEpoch string
+	if err := tx.QueryRowContext(ctx, `SELECT store_id,integrity_epoch FROM store_meta WHERE singleton=1`).Scan(&authorityStoreID, &activeIntegrityEpoch); err != nil {
+		return AppendOutcome{}, 0, err
+	}
+	if activeIntegrityEpoch != globalJSONIntegrityEpochV1 && activeIntegrityEpoch != canonicalEventIntegrityEpochV1 {
+		return AppendOutcome{}, 0, fmt.Errorf("unsupported active integrity epoch %q", activeIntegrityEpoch)
+	}
+	var sourceEventCount int64
+	var activationAfterAliasSeq uint64
+	if activeIntegrityEpoch == globalJSONIntegrityEpochV1 {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(MAX(alias_seq),0) FROM events`).Scan(&sourceEventCount, &activationAfterAliasSeq); err != nil {
+			return AppendOutcome{}, 0, err
+		}
+	}
 	appended := make([]model.Event, 0, len(events))
+	acceptedBytesByID := make(map[model.EventID][]byte, len(events))
+	contentHashByID := make(map[model.EventID]string, len(events))
+	recordCodecByID := make(map[model.EventID]string, len(events))
 	runningByStream := make(map[streamKey][]model.Event, len(order))
 	for _, key := range order {
 		group := streams[key]
@@ -1467,13 +1866,37 @@ func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idemp
 			if err := model.ValidateAppend(running, event); err != nil {
 				return AppendOutcome{}, 0, err
 			}
+			recordCodec := canonicalEventRecordCodecV1
+			var acceptedBytes []byte
+			if acceptedEncoder == nil {
+				acceptedBytes, err = model.CanonicalEventBytesV1(event)
+			} else {
+				recordCodec, acceptedBytes, err = acceptedEncoder(event)
+			}
+			if err != nil {
+				return AppendOutcome{}, 0, err
+			}
+			if strings.TrimSpace(recordCodec) == "" || len(acceptedBytes) == 0 {
+				return AppendOutcome{}, 0, fmt.Errorf("accepted record encoder returned an empty codec or payload for event %s", event.ID)
+			}
+			if recordCodec != canonicalEventRecordCodecV1 && recordCodec != neutralEventRecordCodecV1 {
+				return AppendOutcome{}, 0, fmt.Errorf("unsupported accepted record codec %q", recordCodec)
+			}
+			event, err = projectionEventFromAcceptedBytes(recordCodec, acceptedBytes, event, authorityStoreID)
+			if err != nil {
+				return AppendOutcome{}, 0, fmt.Errorf("accepted record %s: %w", event.ID, err)
+			}
+			if err := model.ValidateAppend(running, event); err != nil {
+				return AppendOutcome{}, 0, fmt.Errorf("accepted record %s semantics: %w", event.ID, err)
+			}
+			contentHash := model.EventContentHashV1(acceptedBytes)
 			eventJSON, err := json.Marshal(event)
 			if err != nil {
 				return AppendOutcome{}, 0, err
 			}
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO events (id, stream_kind, stream_entity, sequence, event_json) VALUES (?, ?, ?, ?, ?)`,
-				event.ID, key.kind, key.entity, event.Sequence, eventJSON,
+				`INSERT INTO events (id, stream_kind, stream_entity, sequence, event_json, record_codec, accepted_bytes, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				event.ID, key.kind, key.entity, event.Sequence, eventJSON, recordCodec, acceptedBytes, contentHash,
 			); err != nil {
 				return AppendOutcome{}, 0, err
 			}
@@ -1482,6 +1905,9 @@ func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idemp
 				return AppendOutcome{}, 0, err
 			}
 			event.AliasSeq = aliasSeq
+			acceptedBytesByID[event.ID] = acceptedBytes
+			contentHashByID[event.ID] = contentHash
+			recordCodecByID[event.ID] = recordCodec
 			running = append(running, event)
 			appended = append(appended, event)
 		}
@@ -1492,11 +1918,18 @@ func (s *Store) appendBatchOnce(ctx context.Context, events []model.Event, idemp
 	if err := tx.QueryRowContext(ctx, `SELECT head_hash FROM store_meta WHERE singleton = 1`).Scan(&previousHash); err != nil {
 		return AppendOutcome{}, 0, err
 	}
-	for _, event := range appended {
-		hash := computeEventHash(event, previousHash)
+	for index, event := range appended {
+		acceptedBytes := acceptedBytesByID[event.ID]
+		hash := model.ComputeEventHashBytesV1(acceptedBytes, previousHash)
+		if index == 0 && activeIntegrityEpoch == globalJSONIntegrityEpochV1 {
+			if err := activateCanonicalEventEpochTx(ctx, tx, previousHash, sourceEventCount, activationAfterAliasSeq, string(event.ID), recordCodecByID[event.ID], contentHashByID[event.ID], hash, now); err != nil {
+				return AppendOutcome{}, 0, err
+			}
+			activeIntegrityEpoch = canonicalEventIntegrityEpochV1
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO event_hashes (event_id, previous_hash, hash) VALUES (?, ?, ?)`,
-			event.ID, previousHash, hash,
+			`INSERT INTO event_hashes (event_id, previous_hash, hash, integrity_epoch) VALUES (?, ?, ?, ?)`,
+			event.ID, previousHash, hash, canonicalEventIntegrityEpochV1,
 		); err != nil {
 			return AppendOutcome{}, 0, err
 		}
@@ -1768,6 +2201,34 @@ func (s *Store) LoadStreamEventsContext(ctx context.Context, stream model.Ref) (
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+func (s *Store) LoadAcceptedStreamRecordsContext(ctx context.Context, stream model.Ref) ([]AcceptedRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := s.reader.QueryContext(ctx,
+		`SELECT id,record_codec,accepted_bytes FROM events WHERE stream_kind=? AND stream_entity=? ORDER BY sequence ASC`,
+		string(stream.Kind), stream.Entity,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []AcceptedRecord
+	for rows.Next() {
+		var record AcceptedRecord
+		var codec sql.NullString
+		if err := rows.Scan(&record.EventID, &codec, &record.AcceptedBytes); err != nil {
+			return nil, err
+		}
+		if !codec.Valid || record.AcceptedBytes == nil {
+			return nil, fmt.Errorf("event %s predates exact accepted-record bytes", record.EventID)
+		}
+		record.RecordCodec = codec.String
+		records = append(records, record)
+	}
+	return records, rows.Err()
 }
 
 func (s *Store) CurrentProjection(ticketID model.TicketID, effectiveAt time.Time) (*model.Projection, error) {

@@ -97,11 +97,26 @@ func ComputeEventHashV1(event Event, previousHash string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return ComputeEventHashBytesV1(canonical, previousHash), nil
+}
+
+// ComputeEventHashBytesV1 applies the canonical-v1 chain framing directly to
+// exact bytes already accepted by the authority. Verification must use this
+// function rather than decode and re-encode historical accepted bytes.
+func ComputeEventHashBytesV1(canonical []byte, previousHash string) string {
 	input := append([]byte("MISSIS-EVENT-HASH\x00v1\x00"), []byte(previousHash)...)
 	input = append(input, 0)
 	input = append(input, canonical...)
 	sum := sha256.Sum256(input)
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
+}
+
+// EventContentHashV1 is the direct portable identity of exact accepted record
+// bytes. The integrity-chain hash is separate because it also binds the prior
+// head. The algorithm prefix makes the stored value self-describing.
+func EventContentHashV1(canonical []byte) string {
+	sum := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func writeCanonicalField(b *bytes.Buffer, name string, value any) error {

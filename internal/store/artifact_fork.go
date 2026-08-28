@@ -99,6 +99,7 @@ type artifactForkOperationV1 struct {
 	FromStoreID                string `json:"from_store_id"`
 	FromIdentityDocumentDigest string `json:"from_identity_document_digest"`
 	FromHeadDigest             string `json:"from_head_digest"`
+	FromHeadIntegrityEpoch     string `json:"from_head_integrity_epoch"`
 	FromEventCount             int64  `json:"from_event_count"`
 	ToStoreID                  string `json:"to_store_id"`
 	ToIdentityScheme           string `json:"to_identity_scheme"`
@@ -522,14 +523,14 @@ func prepareArtifactNamespaceFork(ctx context.Context, db *sql.DB, plan Writable
 	}
 
 	var from IdentityInfo
-	var head string
+	var head, integrityEpoch string
 	var eventCount int64
 	if err := db.QueryRowContext(ctx, `SELECT store_id,identity_scheme,document_bytes,document_digest,artifact_namespace FROM store_identity_v1 WHERE singleton=1`).Scan(
 		&from.StoreID, &from.Scheme, &from.DocumentBytes, &from.DocumentDigest, &from.ArtifactNamespace,
 	); err != nil {
 		return artifactForkOperationV1{}, artifactForkManifestV1{}, artifactForkCompleteV1{}, "", "", err
 	}
-	if err := db.QueryRowContext(ctx, `SELECT head_hash FROM store_meta WHERE singleton=1`).Scan(&head); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT head_hash,integrity_epoch FROM store_meta WHERE singleton=1`).Scan(&head, &integrityEpoch); err != nil {
 		return artifactForkOperationV1{}, artifactForkManifestV1{}, artifactForkCompleteV1{}, "", "", err
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&eventCount); err != nil {
@@ -555,7 +556,7 @@ func prepareArtifactNamespaceFork(ctx context.Context, db *sql.DB, plan Writable
 		if err := json.Unmarshal(operationBytes, &operation); err != nil {
 			return operation, artifactForkManifestV1{}, artifactForkCompleteV1{}, "", "", fmt.Errorf("decode artifact fork operation: %w", err)
 		}
-		if err := validateArtifactForkOperation(operation, from, head, eventCount, backupDigest); err != nil {
+		if err := validateArtifactForkOperation(operation, from, head, integrityEpoch, eventCount, backupDigest); err != nil {
 			return operation, artifactForkManifestV1{}, artifactForkCompleteV1{}, "", "", err
 		}
 		if destinationAlreadyExists {
@@ -599,7 +600,7 @@ func prepareArtifactNamespaceFork(ctx context.Context, db *sql.DB, plan Writable
 		documentBytes := document.CanonicalBytes()
 		operation = artifactForkOperationV1{
 			Version: "artifact-namespace-fork-operation-v1", FromStoreID: from.StoreID,
-			FromIdentityDocumentDigest: from.DocumentDigest, FromHeadDigest: head, FromEventCount: eventCount,
+			FromIdentityDocumentDigest: from.DocumentDigest, FromHeadDigest: head, FromHeadIntegrityEpoch: integrityEpoch, FromEventCount: eventCount,
 			ToStoreID: document.StoreID(), ToIdentityScheme: storeidentity.Scheme,
 			ToIdentityDocument: documentBytes, ToIdentityDocumentDigest: storeidentity.DocumentDigest(documentBytes),
 			ArtifactForkProtocol: "artifact-namespace-fork-v1", ReceiptVersion: "store-identity-fork-v2",
@@ -734,9 +735,9 @@ func prepareArtifactNamespaceFork(ctx context.Context, db *sql.DB, plan Writable
 	return operation, manifest, complete, manifestDigest, completeDigest, nil
 }
 
-func validateArtifactForkOperation(operation artifactForkOperationV1, from IdentityInfo, head string, count int64, backupDigest string) error {
+func validateArtifactForkOperation(operation artifactForkOperationV1, from IdentityInfo, head, integrityEpoch string, count int64, backupDigest string) error {
 	if operation.Version != "artifact-namespace-fork-operation-v1" || operation.FromStoreID != from.StoreID ||
-		operation.FromIdentityDocumentDigest != from.DocumentDigest || operation.FromHeadDigest != head || operation.FromEventCount != count ||
+		operation.FromIdentityDocumentDigest != from.DocumentDigest || operation.FromHeadDigest != head || operation.FromHeadIntegrityEpoch != integrityEpoch || operation.FromEventCount != count ||
 		operation.ArtifactForkProtocol != "artifact-namespace-fork-v1" || operation.ReceiptVersion != "store-identity-fork-v2" || operation.BackupDatabaseSHA256 != backupDigest {
 		return errors.New("existing artifact fork staging belongs to a different source snapshot")
 	}
@@ -794,7 +795,7 @@ func digestBytes(data []byte) string {
 
 func declareWritableForkV2(ctx context.Context, db *sql.DB, plan WritableForkPlan, backupDigest string, operation artifactForkOperationV1, manifest artifactForkManifestV1, complete artifactForkCompleteV1, manifestDigest, completeDigest string) (string, string, string, error) {
 	var from IdentityInfo
-	var head string
+	var head, integrityEpoch string
 	var count int64
 	if err := db.QueryRowContext(ctx, `SELECT store_id,identity_scheme,document_bytes,document_digest,artifact_namespace FROM store_identity_v1 WHERE singleton=1`).Scan(
 		&from.StoreID, &from.Scheme, &from.DocumentBytes, &from.DocumentDigest, &from.ArtifactNamespace,
@@ -804,7 +805,7 @@ func declareWritableForkV2(ctx context.Context, db *sql.DB, plan WritableForkPla
 	if err := validateIdentityInfo(from); err != nil {
 		return "", "", "", err
 	}
-	if err := db.QueryRowContext(ctx, `SELECT head_hash FROM store_meta WHERE singleton=1`).Scan(&head); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT head_hash,integrity_epoch FROM store_meta WHERE singleton=1`).Scan(&head, &integrityEpoch); err != nil {
 		return "", "", "", err
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
@@ -817,7 +818,7 @@ func declareWritableForkV2(ctx context.Context, db *sql.DB, plan WritableForkPla
 	base := writableForkReceiptV1{
 		Version: "store-identity-fork-v2", FromStoreID: from.StoreID, FromIdentityScheme: from.Scheme,
 		FromIdentityDocument: from.DocumentBytes, FromIdentityDocumentDigest: from.DocumentDigest,
-		FromHeadDigest: head, FromHeadIntegrityEpoch: "global-json-chain-v1", FromEventCount: count,
+		FromHeadDigest: head, FromHeadIntegrityEpoch: integrityEpoch, FromEventCount: count,
 		FromFormatRevision: plan.FormatRevision, ToStoreID: operation.ToStoreID, ToIdentityScheme: storeidentity.Scheme,
 		ToIdentityDocumentDigest: operation.ToIdentityDocumentDigest, ArtifactDisposition: "copied-independent-namespace-v1",
 		ArtifactNamespace: operation.ToStoreID, BackupDatabaseSHA256: backupDigest, ForkedAt: now,
@@ -845,7 +846,7 @@ func declareWritableForkV2(ctx context.Context, db *sql.DB, plan WritableForkPla
 		source_head_digest,source_head_integrity_epoch,source_event_count,source_format_revision,
 		target_format_revision,artifact_namespace,backup_database_sha256,migrated_at,receipt_bytes,receipt_digest
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, receiptID, from.StoreID, from.Scheme, operation.ToStoreID, storeidentity.Scheme,
-		head, "global-json-chain-v1", count, plan.FormatRevision, plan.FormatRevision, operation.ToStoreID, backupDigest, now, receiptBytes, receiptDigest); err != nil {
+		head, integrityEpoch, count, plan.FormatRevision, plan.FormatRevision, operation.ToStoreID, backupDigest, now, receiptBytes, receiptDigest); err != nil {
 		return "", "", "", err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_namespace_forks(
@@ -856,7 +857,7 @@ func declareWritableForkV2(ctx context.Context, db *sql.DB, plan WritableForkPla
 		return "", "", "", err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE store_identity_v1 SET store_id=?,identity_scheme=?,document_bytes=?,document_digest=?,artifact_namespace=?,created_at=?,creator_protocol=?,creator_contract_digest=NULL WHERE singleton=1`,
-		operation.ToStoreID, storeidentity.Scheme, operation.ToIdentityDocument, operation.ToIdentityDocumentDigest, operation.ToStoreID, now, "eventstore-v3-alpha.3"); err != nil {
+		operation.ToStoreID, storeidentity.Scheme, operation.ToIdentityDocument, operation.ToIdentityDocumentDigest, operation.ToStoreID, now, "eventstore-v3-alpha.4"); err != nil {
 		return "", "", "", err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE store_meta SET store_id=?,updated_at=? WHERE singleton=1`, operation.ToStoreID, now); err != nil {

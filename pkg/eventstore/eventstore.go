@@ -4,9 +4,12 @@
 package eventstore
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -14,6 +17,12 @@ import (
 var (
 	ErrIdempotencyMismatch = errors.New("eventstore: idempotency request mismatch")
 	ErrInvalidEvent        = errors.New("eventstore: invalid event")
+)
+
+const (
+	ProtocolVersionV3Alpha4 = "eventstore-v3-alpha.4"
+	RecordCodecV1           = "eventstore-record-json-v1"
+	DefaultPayloadCodec     = "application/json"
 )
 
 // Ref is an opaque typed identity. Paths, repository aliases, and filesystem
@@ -32,14 +41,21 @@ type Actor struct {
 // retained byte-for-byte by the current adapter; interpreting it belongs to
 // the consumer.
 type Event struct {
-	ID          string    `json:"id"`
-	Stream      Ref       `json:"stream"`
-	Type        string    `json:"type"`
-	Subject     Ref       `json:"subject"`
-	Payload     []byte    `json:"payload"`
-	RecordedAt  time.Time `json:"recorded_at"`
-	EffectiveAt time.Time `json:"effective_at"`
-	Actor       Actor     `json:"actor"`
+	ProtocolVersion string    `json:"protocol_version,omitempty"`
+	Namespace       string    `json:"namespace,omitempty"`
+	ID              string    `json:"id"`
+	Stream          Ref       `json:"stream"`
+	StreamRevision  uint64    `json:"stream_revision,omitempty"`
+	BatchID         string    `json:"batch_id,omitempty"`
+	Type            string    `json:"type"`
+	SchemaVersion   uint32    `json:"schema_version,omitempty"`
+	Subject         Ref       `json:"subject"`
+	PayloadCodec    string    `json:"payload_codec,omitempty"`
+	Payload         []byte    `json:"payload"`
+	RecordedAt      time.Time `json:"recorded_at"`
+	EffectiveAt     time.Time `json:"effective_at"`
+	Actor           Actor     `json:"actor"`
+	RecordCodec     string    `json:"record_codec,omitempty"`
 }
 
 type AppendRequest struct {
@@ -95,4 +111,94 @@ func ValidateEvent(event Event) error {
 		return fmt.Errorf("%w: actor id is required", ErrInvalidEvent)
 	}
 	return nil
+}
+
+type acceptedEventWireV1 struct {
+	ProtocolVersion string `json:"protocol_version"`
+	Namespace       string `json:"namespace"`
+	RecordID        string `json:"record_id"`
+	SchemaID        string `json:"schema_id"`
+	SchemaVersion   uint32 `json:"schema_version"`
+	Stream          Ref    `json:"stream"`
+	StreamRevision  uint64 `json:"stream_revision"`
+	BatchID         string `json:"batch_id"`
+	Subject         Ref    `json:"subject"`
+	RecordedAt      string `json:"recorded_at"`
+	EffectiveAt     string `json:"effective_at"`
+	Actor           Actor  `json:"actor"`
+	RecordCodec     string `json:"record_codec"`
+	PayloadCodec    string `json:"payload_codec"`
+	Payload         []byte `json:"payload_bytes"`
+}
+
+// CanonicalAcceptedEventBytesV1 encodes the complete authority-accepted
+// neutral envelope once, after namespace, stream revision, and timestamps are
+// assigned. The chain/content hashes are deliberately outside these bytes to
+// avoid circular input.
+func CanonicalAcceptedEventBytesV1(event Event) ([]byte, error) {
+	if err := ValidateEvent(event); err != nil {
+		return nil, err
+	}
+	if event.ProtocolVersion != ProtocolVersionV3Alpha4 || strings.TrimSpace(event.Namespace) == "" || event.StreamRevision == 0 || event.RecordCodec != RecordCodecV1 {
+		return nil, fmt.Errorf("%w: accepted authority fields are incomplete", ErrInvalidEvent)
+	}
+	if event.SchemaVersion == 0 || strings.TrimSpace(event.PayloadCodec) == "" {
+		return nil, fmt.Errorf("%w: schema_version and payload_codec are required", ErrInvalidEvent)
+	}
+	wire := acceptedEventWireV1{
+		ProtocolVersion: event.ProtocolVersion,
+		Namespace:       event.Namespace,
+		RecordID:        event.ID,
+		SchemaID:        event.Type,
+		SchemaVersion:   event.SchemaVersion,
+		Stream:          event.Stream,
+		StreamRevision:  event.StreamRevision,
+		BatchID:         event.BatchID,
+		Subject:         event.Subject,
+		RecordedAt:      event.RecordedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
+		EffectiveAt:     event.EffectiveAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
+		Actor:           event.Actor,
+		RecordCodec:     event.RecordCodec,
+		PayloadCodec:    event.PayloadCodec,
+		Payload:         event.Payload,
+	}
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(wire); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(output.Bytes(), []byte{'\n'}), nil
+}
+
+// DecodeAcceptedEventV1 strictly decodes the named v1 codec. Unknown fields
+// remain safely preserved in storage but require a newer decoder.
+func DecodeAcceptedEventV1(data []byte) (Event, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var wire acceptedEventWireV1
+	if err := decoder.Decode(&wire); err != nil {
+		return Event{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return Event{}, fmt.Errorf("accepted event contains trailing data")
+	}
+	recordedAt, err := time.Parse("2006-01-02T15:04:05.000000000Z", wire.RecordedAt)
+	if err != nil {
+		return Event{}, fmt.Errorf("recorded_at: %w", err)
+	}
+	effectiveAt, err := time.Parse("2006-01-02T15:04:05.000000000Z", wire.EffectiveAt)
+	if err != nil {
+		return Event{}, fmt.Errorf("effective_at: %w", err)
+	}
+	event := Event{
+		ProtocolVersion: wire.ProtocolVersion, Namespace: wire.Namespace, ID: wire.RecordID,
+		Stream: wire.Stream, StreamRevision: wire.StreamRevision, BatchID: wire.BatchID, Type: wire.SchemaID, SchemaVersion: wire.SchemaVersion,
+		Subject: wire.Subject, PayloadCodec: wire.PayloadCodec, Payload: wire.Payload,
+		RecordedAt: recordedAt, EffectiveAt: effectiveAt, Actor: wire.Actor, RecordCodec: wire.RecordCodec,
+	}
+	if _, err := CanonicalAcceptedEventBytesV1(event); err != nil {
+		return Event{}, err
+	}
+	return event, nil
 }

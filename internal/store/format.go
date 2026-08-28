@@ -23,7 +23,7 @@ const (
 	// CurrentStoreFormatRevision is independent of the CLI release and Git
 	// revision. It changes whenever durable encoding or interpretation becomes
 	// incompatible with an older writer.
-	CurrentStoreFormatRevision = 6
+	CurrentStoreFormatRevision = 7
 )
 
 // StoreFormatCompatibility is the release-visible physical compatibility
@@ -121,7 +121,8 @@ func (e *IncompatibleStoreFormatError) Unwrap() error { return ErrIncompatibleSt
 // while stores through migration 0007 are revision 2. Migration 0008 records
 // revision 3, migration 0009 plus the identity step records revision 4, and
 // migration 0010 plus its explicit receipt records revision 5, and migration
-// 0011 plus its explicit receipt records revision 6.
+// 0011 plus its explicit receipt records revision 6, and migration 0012 plus
+// its explicit receipt records revision 7.
 func inspectStoreFormat(path string) (int, error) {
 	return inspectStoreFormatMode(path, false)
 }

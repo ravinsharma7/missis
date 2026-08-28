@@ -1,9 +1,9 @@
-# Event-store v3-alpha.3 contract and extraction boundary
+# Event-store v3-alpha.4 contract and extraction boundary
 
-**Status:** authoritative v3-alpha event-store contract  
-**Owner:** ticket `#118`  
-**Protocol version:** `eventstore-v3-alpha.3`  
-**Contract bundle digest:** unassigned; manifest tooling is not implemented  
+**Status:** authoritative v3-alpha event-store contract
+**Owner:** ticket `#118`
+**Protocol version:** `eventstore-v3-alpha.4`
+**Contract bundle digest:** unassigned; manifest tooling is not implemented
 **Evidence baseline:** `reports/missis-event-store.md`, current implementation,
 and retained store fixtures as of 2026-08-27
 
@@ -27,17 +27,17 @@ number:
 | --- | --- | --- |
 | Missis product specification v2 | Ticket/Part/ontology/CLI behavior | Frozen authoritative domain contract; only correctness/security/data-loss errata may change it. |
 | Event-store protocol v3-alpha.N | Consumer-neutral record, receipt, integrity, projection-hook, and reference contract | Active authoritative alpha contract; `N` increments for incompatible alpha contract changes. |
-| SQLite store format revision 6 | Physical Missis database compatibility boundary | Adds crash-inspectable independent artifact-namespace forks to revision 5's request-bound idempotency, key tombstones, hashed identities, receipts, and strict `external-ref-v1`; still uses Missis tables and `global-json-chain-v1`. |
-| Canonical event codec v1 | Exact accepted event-byte encoding | Defined by `#45`; not yet the live ledger hash input. |
+| SQLite store format revision 7 | Physical Missis database compatibility boundary | Adds exact accepted-record bytes, codec/content identity, event integrity epochs, and a receipt-bound transition to revision 6's artifact/reference/identity foundation. |
+| Canonical event codec v1 | Exact accepted event-byte encoding | Defined by `#45`; live for newly accepted format-7 records. Format-6 history retains its original verifier. |
 | Idempotency request fingerprint v1 | Domain-separated request/operation fingerprint | Implemented by `#116`. |
 | Store identity scheme | Immutable authority identity, independent of location and mutable content | Revision 4 implements `eventstore-hash-v1`; older `missis-ulid-v1` stores are explicit migration inputs and receive an identity receipt. |
-| Integrity scheme/epoch | How accepted bytes are chained or checkpointed | Current scheme is `global-json-chain-v1`; `#57` owns its successor and transition receipt. |
+| Integrity scheme/epoch | How accepted bytes are chained or checkpointed | Format-6 history remains `global-json-chain-v1`; new format-7 records use `canonical-event-chain-v1`, with the first mixed-epoch record bound by `integrity-epoch-transition-v1`. |
 | Contract bundle digest | Digest of the exact protocol schemas, canonical vectors, and requirements used by one build/store | Proposed below; independent of physical format and product version. |
 | Projection version | Consumer-specific reducer/index interpretation | Must be declared independently per projection. |
 
 Opening a format-revision-3 database does not mean that event-store v3-alpha
 is implemented. Conversely, another adapter may implement the v3-alpha
-protocol without using SQLite format revision 6.
+protocol without using SQLite format revision 7.
 
 ### 1.1 Alpha subversions and contract identity
 
@@ -232,8 +232,8 @@ still require a rollout. Development builds may exercise the protocol
 hermetically, but MUST NOT create a stable installation manifest or be
 represented as the permanent repair for an authoritative store.
 
-Confirmed implementation state: newly created stores are physical revision 6.
-Normal open accepts revision 6 only; revisions 1–5 remain read-only inspection
+Confirmed implementation state: newly created stores are physical revision 7.
+Normal open accepts revision 7 only; revisions 1–6 remain read-only inspection
 and explicit version-targeted migration inputs. The migration command requires
 a pre-migration backup, preserves old artifact reachability through an explicit
 artifact namespace, and installs exact identity bytes plus an old/new receipt
@@ -347,6 +347,26 @@ fields are assigned, excluding the content-hash and chain/checkpoint outputs
 that would otherwise be circular. Those exact canonical record bytes are what
 V3-BYTES-001 requires the adapter to preserve.
 
+`eventstore-record-json-v1` is the first exact neutral record codec. Its JSON
+object fields occur in this fixed order:
+
+```text
+protocol_version, namespace, record_id, schema_id, schema_version,
+stream, stream_revision, batch_id, subject, recorded_at, effective_at, actor,
+record_codec, payload_codec, payload_bytes
+```
+
+`stream` and `subject` are fixed `{kind,id}` objects. `batch_id` is the empty
+string for a single unbatched append or the authority-assigned identifier
+shared by every record in one accepted multi-record batch. Timestamps are UTC with
+exactly nine fractional digits. `payload_bytes` uses JSON's canonical base64
+encoding for a byte string; it is not reparsed or normalized as JSON merely
+because `payload_codec` names JSON. HTML characters are not escaped. Duplicate
+or unknown fields are invalid for the v1 decoder; the stored bytes nevertheless
+remain available so an unknown later codec is classified as unsupported, not
+corrupt. `content_hash` is `sha256:<lowercase hex>` over these exact bytes and
+is outside the encoded object to avoid circular input.
+
 ## 3. Decision and compatibility map
 
 | Area | Classification | Proposed v3 decision | Public behavior | Owner |
@@ -448,6 +468,15 @@ Migration MUST NOT silently recompute old history in place.
 Canonical-v1 bytes and test vectors defined by `#45` are complete. Adoption,
 not definition, remains owned by `#57`.
 
+Missis format 7 names the live successor `canonical-event-chain-v1`. A store
+created directly at format 7 starts in that epoch. A migrated store retains
+its unchanged `global-json-chain-v1` head until its first new append. That
+append atomically writes `integrity-epoch-transition-v1`, binding the store
+identity, prior epoch/head/event count/last cursor, target epoch, record codec,
+first event/content digest/new head, format revision, and receipt digest. An
+epoch may not regress or transition a second time. A historical row is not
+backfilled with purported canonical bytes.
+
 ### V3-BYTES-001 — preserve exact accepted bytes
 
 The authority MUST preserve the exact versioned canonical bytes whose digest
@@ -522,10 +551,12 @@ Indexes are redundant interpretations and MUST be checkable against decoded
 canonical payloads. Unknown codec/schema versions fail as “unsupported but
 bytes preserved,” not “corrupt,” unless the stored digest itself fails.
 
-Current-state boundary: Missis format revision 6 persists `event_json` and can
-verify its `global-json-chain-v1` implementation chain, but it does **not** yet implement this
-v3-alpha exact-byte/codec contract. Ticket `#57` must introduce it through an
-integrity epoch while retaining `global-json-chain-v1` verification.
+Current-state boundary: Missis format revision 7 preserves codec plus exact
+accepted bytes and direct content digest for every newly accepted record.
+Verification hashes those persisted bytes before decoding. Format-6 events
+retain unchanged `event_json`, hash rows, head, and `global-json-chain-v1`
+verification; their new exact-byte fields remain null rather than being
+fabricated during migration.
 
 ### V3-DUR-001 — durability profile
 
@@ -801,3 +832,7 @@ permission to weaken current open behavior.
   `artifact-namespace-fork-v1`, `store-identity-fork-v2`, independent CAS
   copying, durable manifest/completion markers, inspection, and restart-safe
   recovery. External-reference resolution semantics remain one-way/read-only.
+- `eventstore-v3-alpha.4`: adds physical format revision 7,
+  `eventstore-record-json-v1`, exact accepted-byte/content identity,
+  `canonical-event-chain-v1`, and receipt-bound mixed-epoch activation while
+  preserving all format-6 event and hash evidence unchanged.

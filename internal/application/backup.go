@@ -604,6 +604,10 @@ func manifestInfoFromStore(ctx context.Context, db *store.Store) (missis.Manifes
 	if err != nil {
 		return missis.ManifestInfo{}, err
 	}
+	headIntegrityEpoch, err := db.HeadIntegrityEpochContext(ctx)
+	if err != nil {
+		return missis.ManifestInfo{}, err
+	}
 	count, err := db.EventCountContext(ctx)
 	if err != nil {
 		return missis.ManifestInfo{}, err
@@ -629,7 +633,7 @@ func manifestInfoFromStore(ctx context.Context, db *store.Store) (missis.Manifes
 		IdentityDocumentDigest: identity.DocumentDigest, IdentityMigrationReceiptDigest: receiptDigest,
 		IdentityLineageReceiptDigest: lineageDigest,
 		FormatMigrationReceiptDigest: formatReceiptDigest,
-		ArtifactNamespace:            identity.ArtifactNamespace, HeadIntegrityEpoch: "global-json-chain-v1",
+		ArtifactNamespace:            identity.ArtifactNamespace, HeadIntegrityEpoch: headIntegrityEpoch,
 		HeadHash: head, EventCount: count, SchemaVersion: schemaVersion,
 	}, nil
 }

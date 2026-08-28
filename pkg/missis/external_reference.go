@@ -169,13 +169,13 @@ type StoreIdentityClaimV1 struct {
 	LineageReceiptDigest string `json:"lineage_receipt_digest,omitempty"`
 }
 
-func NewHashedStoreIdentityClaimV1(storeID string, document []byte, genesisDigest, headDigest string, eventCount int64, formatRevision int) StoreIdentityClaimV1 {
+func NewHashedStoreIdentityClaimV1(storeID string, document []byte, genesisDigest, genesisEpoch, headDigest, headEpoch string, eventCount int64, formatRevision int) StoreIdentityClaimV1 {
 	return StoreIdentityClaimV1{
 		Version: StoreIdentityClaimVersionV1, StoreID: storeID, IdentityScheme: storeidentity.Scheme,
 		IdentityDocument: append([]byte(nil), document...), IdentityDigest: storeidentity.DocumentDigest(document),
-		GenesisDigest: genesisDigest, GenesisDigestScheme: "global-json-chain-v1",
-		HeadDigest: headDigest, HeadIntegrityEpoch: "global-json-chain-v1",
-		EventCount: eventCount, FormatRevision: formatRevision, ProtocolVersion: "eventstore-v3-alpha.3",
+		GenesisDigest: genesisDigest, GenesisDigestScheme: genesisEpoch,
+		HeadDigest: headDigest, HeadIntegrityEpoch: headEpoch,
+		EventCount: eventCount, FormatRevision: formatRevision, ProtocolVersion: "eventstore-v3-alpha.4",
 	}
 }
 
