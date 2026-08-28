@@ -1085,17 +1085,17 @@ func runShow(args []string) int {
 	}
 	if resolveExternal {
 		if len(partPath) == 0 {
-			printError(fmt.Errorf("--resolve-external requires a Part reference containing external-ref-v1"), exitInvalid, jsonMode, &ref)
+			printError(fmt.Errorf("--resolve-external requires a part reference containing external-ref-v1"), exitInvalid, jsonMode, &ref)
 			return exitInvalid
 		}
 		part := proj.Parts[strings.Join(partPath, "/")]
 		if part.ValueKind != string(model.ValueKindExternalRef) {
-			printError(fmt.Errorf("Part %s has value kind %q, want external-ref", strings.Join(partPath, "/"), part.ValueKind), exitValidation, jsonMode, &ref)
+			printError(fmt.Errorf("part %s has value kind %q, want external-ref", strings.Join(partPath, "/"), part.ValueKind), exitValidation, jsonMode, &ref)
 			return exitValidation
 		}
 		external, ok := part.Value.(missis.ExternalReferenceV1)
 		if !ok {
-			printError(fmt.Errorf("Part %s did not decode as external-ref-v1", strings.Join(partPath, "/")), exitStorage, jsonMode, &ref)
+			printError(fmt.Errorf("part %s did not decode as external-ref-v1", strings.Join(partPath, "/")), exitStorage, jsonMode, &ref)
 			return exitStorage
 		}
 		set, err := peerconfig.Load(peerConfig)

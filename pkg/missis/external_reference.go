@@ -203,7 +203,7 @@ func (c StoreIdentityClaimV1) Validate() error {
 		return err
 	}
 	if !strings.HasPrefix(c.StoreID, "store:") {
-		return fmt.Errorf("store identity claim store_id must start with store:")
+		return fmt.Errorf("store identity claim store_id must use the store: prefix")
 	}
 	if err := validateExternalToken("claim.identity_scheme", c.IdentityScheme); err != nil {
 		return err
