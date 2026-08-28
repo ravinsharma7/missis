@@ -6,11 +6,11 @@
     },
     {
       "path": "eventstore.go",
-      "sha256": "873d8dec1aaf74d80b4fcff0af90ebe3c5c438fa6e18c648afa7c04856242952"
+      "sha256": "aa89135c1f16676f5cc1b3c2c963c9b4bcf1fcb398463a2f9ca1645563d6e6b7"
     }
   ],
   "generator": "scripts/sync-eventstore-package.sh@v1",
   "module": "github.com/ravinsharma7/skunkwork/packages/eventstore",
-  "package_version": "eventstore-go-v0.1.0-alpha.1",
+  "package_version": "eventstore-go-v0.1.0-alpha.2",
   "version": "eventstore-package-distribution-v1"
 }

@@ -15,14 +15,26 @@ import (
 )
 
 var (
-	ErrIdempotencyMismatch = errors.New("eventstore: idempotency request mismatch")
-	ErrInvalidEvent        = errors.New("eventstore: invalid event")
+	ErrIdempotencyMismatch      = errors.New("eventstore: idempotency request mismatch")
+	ErrInvalidEvent             = errors.New("eventstore: invalid event")
+	ErrChangeLimitInvalid       = errors.New("eventstore: change page limit invalid")
+	ErrCursorInvalid            = errors.New("eventstore: change cursor invalid")
+	ErrCursorCorrupt            = errors.New("eventstore: change cursor corrupt")
+	ErrCursorVersionUnsupported = errors.New("eventstore: change cursor version unsupported")
+	ErrCursorForeignStore       = errors.New("eventstore: change cursor belongs to another store")
+	ErrCursorEpochMismatch      = errors.New("eventstore: change cursor integrity epoch mismatch")
+	ErrCursorFuture             = errors.New("eventstore: change cursor is ahead of store")
+	ErrCursorStale              = errors.New("eventstore: change cursor precedes retained history")
+	ErrChangeRecordUnsupported  = errors.New("eventstore: accepted change record codec unsupported")
+	ErrChangeFeedIntegrity      = errors.New("eventstore: accepted change feed integrity failure")
 )
 
 const (
-	ProtocolVersionV3Alpha4 = "eventstore-v3-alpha.4"
-	RecordCodecV1           = "eventstore-record-json-v1"
-	DefaultPayloadCodec     = "application/json"
+	ProtocolVersionV3Alpha4        = "eventstore-v3-alpha.4"
+	RecordCodecV1                  = "eventstore-record-json-v1"
+	DefaultPayloadCodec            = "application/json"
+	ChangeCursorVersionV1          = "eventstore-change-cursor-v1"
+	MaxChangePageSize       uint32 = 1000
 )
 
 // Ref is an opaque typed identity. Paths, repository aliases, and filesystem
@@ -67,6 +79,27 @@ type AppendResult struct {
 	Events   []Event `json:"events"`
 }
 
+// ChangeCursor is an opaque authority-issued checkpoint. Consumers persist
+// and return it unchanged; its representation is a versioned protocol detail,
+// not a database position or filesystem locator.
+type ChangeCursor string
+
+type ReadChangesRequest struct {
+	After ChangeCursor `json:"after"`
+	Limit uint32       `json:"limit"`
+}
+
+type Change struct {
+	Cursor ChangeCursor `json:"cursor"`
+	Event  Event        `json:"event"`
+}
+
+type ChangePage struct {
+	Changes []Change     `json:"changes"`
+	Next    ChangeCursor `json:"next"`
+	AtHead  bool         `json:"at_head"`
+}
+
 // Ledger is the smallest shared alpha interface confirmed by all three
 // consumers. New methods require executable cross-consumer evidence.
 type Ledger interface {
@@ -74,6 +107,14 @@ type Ledger interface {
 	ReadStream(context.Context, Ref) ([]Event, error)
 	StoreID(context.Context) (string, error)
 	Close() error
+}
+
+// ChangeFeed is an optional bounded, read-only traversal capability. It is
+// separate from Ledger so simple adapters do not imply resumable feed support.
+type ChangeFeed interface {
+	BeginChanges(context.Context) (ChangeCursor, error)
+	ReadChanges(context.Context, ReadChangesRequest) (ChangePage, error)
+	LatestCursor(context.Context) (ChangeCursor, error)
 }
 
 func ValidateRef(ref Ref) error {

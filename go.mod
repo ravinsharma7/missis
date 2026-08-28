@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/ansi v0.10.2
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/ravinsharma7/skunkwork/packages/eventstore v0.1.0-alpha.1
+	github.com/ravinsharma7/skunkwork/packages/eventstore v0.1.0-alpha.2
 	github.com/yuin/goldmark v1.7.13
 	golang.org/x/mod v0.37.0
 	golang.org/x/sys v0.47.0

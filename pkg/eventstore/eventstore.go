@@ -6,14 +6,26 @@ package eventstore
 import neutral "github.com/ravinsharma7/skunkwork/packages/eventstore"
 
 var (
-	ErrIdempotencyMismatch = neutral.ErrIdempotencyMismatch
-	ErrInvalidEvent        = neutral.ErrInvalidEvent
+	ErrIdempotencyMismatch      = neutral.ErrIdempotencyMismatch
+	ErrInvalidEvent             = neutral.ErrInvalidEvent
+	ErrChangeLimitInvalid       = neutral.ErrChangeLimitInvalid
+	ErrCursorInvalid            = neutral.ErrCursorInvalid
+	ErrCursorCorrupt            = neutral.ErrCursorCorrupt
+	ErrCursorVersionUnsupported = neutral.ErrCursorVersionUnsupported
+	ErrCursorForeignStore       = neutral.ErrCursorForeignStore
+	ErrCursorEpochMismatch      = neutral.ErrCursorEpochMismatch
+	ErrCursorFuture             = neutral.ErrCursorFuture
+	ErrCursorStale              = neutral.ErrCursorStale
+	ErrChangeRecordUnsupported  = neutral.ErrChangeRecordUnsupported
+	ErrChangeFeedIntegrity      = neutral.ErrChangeFeedIntegrity
 )
 
 const (
 	ProtocolVersionV3Alpha4 = neutral.ProtocolVersionV3Alpha4
 	RecordCodecV1           = neutral.RecordCodecV1
 	DefaultPayloadCodec     = neutral.DefaultPayloadCodec
+	ChangeCursorVersionV1   = neutral.ChangeCursorVersionV1
+	MaxChangePageSize       = neutral.MaxChangePageSize
 )
 
 type Ref = neutral.Ref
@@ -22,6 +34,11 @@ type Event = neutral.Event
 type AppendRequest = neutral.AppendRequest
 type AppendResult = neutral.AppendResult
 type Ledger = neutral.Ledger
+type ChangeCursor = neutral.ChangeCursor
+type ReadChangesRequest = neutral.ReadChangesRequest
+type Change = neutral.Change
+type ChangePage = neutral.ChangePage
+type ChangeFeed = neutral.ChangeFeed
 
 func ValidateRef(ref Ref) error {
 	return neutral.ValidateRef(ref)

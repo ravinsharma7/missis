@@ -14,7 +14,7 @@ actual_files="$(cd "$distribution_dir" && find . -maxdepth 1 -type f -printf '%P
 
 jq -e '
   .version == "eventstore-package-distribution-v1"
-  and .package_version == "eventstore-go-v0.1.0-alpha.1"
+  and .package_version == "eventstore-go-v0.1.0-alpha.2"
   and .module == "github.com/ravinsharma7/skunkwork/packages/eventstore"
   and .generator == "scripts/sync-eventstore-package.sh@v1"
   and [.files[].path] == ["go.mod", "eventstore.go"]
