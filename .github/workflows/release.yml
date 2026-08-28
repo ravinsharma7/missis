@@ -37,6 +37,7 @@ jobs:
           go run ./tools/coverage --registry specs/requirements-registry.v3.json
           go run ./tools/generate-onboarding --check
           bash scripts/check-workflows.sh
+          bash scripts/check-event-tooling-lock.sh
           bash testsuite/scripts/test-install.sh
           bash testsuite/scripts/test-rclone-backup.sh
           bash testsuite/benchmarks/test-benchmark-selection.sh

@@ -27,6 +27,8 @@ jobs:
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.6.1 ./...
       - name: GitHub Actions workflow lint
         run: bash scripts/check-workflows.sh
+      - name: Event-tooling contract lock
+        run: bash scripts/check-event-tooling-lock.sh
       - name: shellcheck
         run: |
           sudo apt-get update

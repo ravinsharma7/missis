@@ -7,11 +7,19 @@ AG4: propose "hill climbing" solutions when it assists long term stability of th
 
 Authoritative contracts:
 - `specs/missues-issue-specification.v2.md`
-- `specs/event-store-v3-alpha.md` — all new event-store and persistence work
-- `specs/cross-store-references-v3-alpha.md` — v3-alpha external references and peer resolution
+- `specs/event-store-v3-alpha.md` — read-only distribution snapshot for the
+  event-store contract pinned by `specs/event-tooling.lock.json`
+- `specs/cross-store-references-v3-alpha.md` — read-only distribution snapshot
+  for external references pinned by `specs/event-tooling.lock.json`
 - `specs/phase1-requirements.md`
 - `specs/requirements-registry.v3.json`
 - the repo-local missis store (`.missis-store/`), including tickets
+
+Writable consumer-neutral event-tooling contract authority is
+`git@github.com:ravinsharma7/skunkwork.git`. New neutral protocol work starts
+there. Missis product/domain changes remain here. Do not edit the two local
+neutral snapshots without updating the pinned authority commit/digests and
+passing `scripts/check-event-tooling-lock.sh` in the same reviewed change.
 
 Transient or generated context (treat as context, never as contract):
 - `reports/*` — audit and analysis outputs

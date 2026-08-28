@@ -7,12 +7,11 @@ working draft. Agents and implementers must use the active documents first.
 
 - `missues-issue-specification.v2.md` — frozen canonical v2 product and model
   contract. Only correctness/security/data-loss errata enter v2.
-- `event-store-v3-alpha.md` — authoritative consumer-neutral event-store
-  alpha contract for all new persistence, integrity, identity, artifact, and
-  extraction work. Incompatible changes increment `eventstore-v3-alpha.N`.
-- `cross-store-references-v3-alpha.md` — authoritative subordinate alpha
-  contract for external-reference identity, peer construction, resolution,
-  freshness, and failure behavior.
+- `event-store-v3-alpha.md` — read-only distribution snapshot of the
+  consumer-neutral event-store alpha contract selected by
+  `event-tooling.lock.json`.
+- `cross-store-references-v3-alpha.md` — read-only distribution snapshot of
+  the subordinate external-reference contract selected by the same lock.
 - `phase1-requirements.md` — current Phase 1 requirements.
 - `requirements-registry.v3.json` — requirement identifiers and traceability.
 - The repository's `.missis-store/` — authoritative current ticket data.
@@ -29,6 +28,20 @@ handoff to ordinary agent work. It is navigation, not an additional contract.
 Phase 1 SHOULD decisions and their rationale are stored with the corresponding
 norms in `requirements-registry.v3.json`; there is no separate backlog to
 synchronize.
+
+## Neutral contract authority
+
+Writable neutral protocol authority moved to the private
+`git@github.com:ravinsharma7/skunkwork.git` integration repository under
+ticket `#121`. Missis remains the product/release repository and consumes one
+explicit skunkwork commit through `event-tooling.lock.json`. The local
+Markdown remains present so the current requirements registry, documentation,
+source tests, and released format-6 implementation are self-contained.
+
+Do not synchronize in both directions. A reviewed skunkwork contract update
+produces a new lock and read-only snapshot here. These snapshots may be
+removed only when every local source reference has been replaced by a pinned,
+offline-verifiable contract bundle and the release/conformance checks pass.
 
 ## Protected, non-authoritative draft
 
