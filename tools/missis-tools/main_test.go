@@ -344,11 +344,21 @@ func TestArtifactCrashStagingIsReportedThenExplicitlyCollected(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, stdout, stderr := runCommand(t, "artifacts", "verify", "--store", storePath, "--artifact-root", root, "--json")
-	if code != 0 || stderr != "" || !strings.Contains(stdout, "verified-with-recoverable-staging") || !strings.Contains(stdout, staging) {
+	var verification struct {
+		Status       string   `json:"status"`
+		StagingPaths []string `json:"staging_paths"`
+	}
+	decodeErr := json.Unmarshal([]byte(stdout), &verification)
+	if code != 0 || stderr != "" || decodeErr != nil || verification.Status != "verified-with-recoverable-staging" || len(verification.StagingPaths) != 1 || filepath.Clean(verification.StagingPaths[0]) != filepath.Clean(staging) {
 		t.Fatalf("staging verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	code, stdout, stderr = runCommand(t, "artifacts", "gc", "--store", storePath, "--artifact-root", root, "--grace", "0s", "--confirm", "--json")
-	if code != 0 || stderr != "" || !strings.Contains(stdout, staging) {
+	var gc struct {
+		Status    string   `json:"status"`
+		StaleTemp []string `json:"stale_temp"`
+	}
+	decodeErr = json.Unmarshal([]byte(stdout), &gc)
+	if code != 0 || stderr != "" || decodeErr != nil || gc.Status != "deleted" || len(gc.StaleTemp) != 1 || filepath.Clean(gc.StaleTemp[0]) != filepath.Clean(staging) {
 		t.Fatalf("staging cleanup: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if _, err := os.Stat(staging); !errors.Is(err, os.ErrNotExist) {
