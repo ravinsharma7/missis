@@ -10,7 +10,7 @@ import (
 	"github.com/ravinsharma7/missis/internal/idgen"
 	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/internal/store"
-	neutral "github.com/ravinsharma7/missis/pkg/eventstore"
+	neutral "github.com/ravinsharma7/skunkwork/packages/eventstore"
 )
 
 type Adapter struct {

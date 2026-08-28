@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/ravinsharma7/missis/internal/model"
-	neutral "github.com/ravinsharma7/missis/pkg/eventstore"
+	neutral "github.com/ravinsharma7/skunkwork/packages/eventstore"
 )
 
 const cssRecorderBurstSize = 32

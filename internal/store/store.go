@@ -23,7 +23,7 @@ import (
 	"github.com/ravinsharma7/missis/internal/idgen"
 	"github.com/ravinsharma7/missis/internal/model"
 	"github.com/ravinsharma7/missis/internal/storeidentity"
-	neutral "github.com/ravinsharma7/missis/pkg/eventstore"
+	neutral "github.com/ravinsharma7/skunkwork/packages/eventstore"
 )
 
 var ErrConflict = errors.New("optimistic concurrency conflict")

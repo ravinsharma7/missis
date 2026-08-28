@@ -1,204 +1,40 @@
-// Package eventstore defines the smallest consumer-neutral ledger surface
-// currently proven by Missis and the Spy Testing fixture. It deliberately
-// excludes Missis tickets, parts, projections, aliases, and CLI concepts.
+// Package eventstore preserves the original Missis import path while the
+// canonical consumer-neutral API lives in the event-tooling module. New code
+// should import github.com/ravinsharma7/skunkwork/packages/eventstore.
 package eventstore
 
-import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"strings"
-	"time"
-)
+import neutral "github.com/ravinsharma7/skunkwork/packages/eventstore"
 
 var (
-	ErrIdempotencyMismatch = errors.New("eventstore: idempotency request mismatch")
-	ErrInvalidEvent        = errors.New("eventstore: invalid event")
+	ErrIdempotencyMismatch = neutral.ErrIdempotencyMismatch
+	ErrInvalidEvent        = neutral.ErrInvalidEvent
 )
 
 const (
-	ProtocolVersionV3Alpha4 = "eventstore-v3-alpha.4"
-	RecordCodecV1           = "eventstore-record-json-v1"
-	DefaultPayloadCodec     = "application/json"
+	ProtocolVersionV3Alpha4 = neutral.ProtocolVersionV3Alpha4
+	RecordCodecV1           = neutral.RecordCodecV1
+	DefaultPayloadCodec     = neutral.DefaultPayloadCodec
 )
 
-// Ref is an opaque typed identity. Paths, repository aliases, and filesystem
-// locations are intentionally absent from accepted identity.
-type Ref struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
-}
-
-type Actor struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
-}
-
-// Event is an immutable domain event accepted into one stream. Payload is
-// retained byte-for-byte by the current adapter; interpreting it belongs to
-// the consumer.
-type Event struct {
-	ProtocolVersion string    `json:"protocol_version,omitempty"`
-	Namespace       string    `json:"namespace,omitempty"`
-	ID              string    `json:"id"`
-	Stream          Ref       `json:"stream"`
-	StreamRevision  uint64    `json:"stream_revision,omitempty"`
-	BatchID         string    `json:"batch_id,omitempty"`
-	Type            string    `json:"type"`
-	SchemaVersion   uint32    `json:"schema_version,omitempty"`
-	Subject         Ref       `json:"subject"`
-	PayloadCodec    string    `json:"payload_codec,omitempty"`
-	Payload         []byte    `json:"payload"`
-	RecordedAt      time.Time `json:"recorded_at"`
-	EffectiveAt     time.Time `json:"effective_at"`
-	Actor           Actor     `json:"actor"`
-	RecordCodec     string    `json:"record_codec,omitempty"`
-}
-
-type AppendRequest struct {
-	IdempotencyKey string  `json:"idempotency_key"`
-	Events         []Event `json:"events"`
-}
-
-type AppendResult struct {
-	Replayed bool    `json:"replayed"`
-	Events   []Event `json:"events"`
-}
-
-// Ledger is the alpha extraction probe. New methods require executable
-// evidence from another consumer before this interface is promoted to a
-// shared package.
-type Ledger interface {
-	Append(context.Context, AppendRequest) (AppendResult, error)
-	ReadStream(context.Context, Ref) ([]Event, error)
-	StoreID(context.Context) (string, error)
-	Close() error
-}
+type Ref = neutral.Ref
+type Actor = neutral.Actor
+type Event = neutral.Event
+type AppendRequest = neutral.AppendRequest
+type AppendResult = neutral.AppendResult
+type Ledger = neutral.Ledger
 
 func ValidateRef(ref Ref) error {
-	if strings.TrimSpace(ref.Kind) == "" || strings.TrimSpace(ref.ID) == "" {
-		return fmt.Errorf("%w: reference kind and id are required", ErrInvalidEvent)
-	}
-	if ref.Kind != strings.TrimSpace(ref.Kind) || ref.ID != strings.TrimSpace(ref.ID) {
-		return fmt.Errorf("%w: reference kind and id must not have surrounding whitespace", ErrInvalidEvent)
-	}
-	return nil
+	return neutral.ValidateRef(ref)
 }
 
 func ValidateEvent(event Event) error {
-	if strings.TrimSpace(event.ID) == "" {
-		return fmt.Errorf("%w: id is required", ErrInvalidEvent)
-	}
-	if err := ValidateRef(event.Stream); err != nil {
-		return err
-	}
-	if err := ValidateRef(event.Subject); err != nil {
-		return err
-	}
-	if strings.TrimSpace(event.Type) == "" || event.Type != strings.TrimSpace(event.Type) {
-		return fmt.Errorf("%w: type is required without surrounding whitespace", ErrInvalidEvent)
-	}
-	if event.Payload == nil {
-		return fmt.Errorf("%w: payload is required", ErrInvalidEvent)
-	}
-	if event.RecordedAt.IsZero() || event.EffectiveAt.IsZero() {
-		return fmt.Errorf("%w: recorded_at and effective_at are required", ErrInvalidEvent)
-	}
-	if strings.TrimSpace(event.Actor.ID) == "" {
-		return fmt.Errorf("%w: actor id is required", ErrInvalidEvent)
-	}
-	return nil
+	return neutral.ValidateEvent(event)
 }
 
-type acceptedEventWireV1 struct {
-	ProtocolVersion string `json:"protocol_version"`
-	Namespace       string `json:"namespace"`
-	RecordID        string `json:"record_id"`
-	SchemaID        string `json:"schema_id"`
-	SchemaVersion   uint32 `json:"schema_version"`
-	Stream          Ref    `json:"stream"`
-	StreamRevision  uint64 `json:"stream_revision"`
-	BatchID         string `json:"batch_id"`
-	Subject         Ref    `json:"subject"`
-	RecordedAt      string `json:"recorded_at"`
-	EffectiveAt     string `json:"effective_at"`
-	Actor           Actor  `json:"actor"`
-	RecordCodec     string `json:"record_codec"`
-	PayloadCodec    string `json:"payload_codec"`
-	Payload         []byte `json:"payload_bytes"`
-}
-
-// CanonicalAcceptedEventBytesV1 encodes the complete authority-accepted
-// neutral envelope once, after namespace, stream revision, and timestamps are
-// assigned. The chain/content hashes are deliberately outside these bytes to
-// avoid circular input.
 func CanonicalAcceptedEventBytesV1(event Event) ([]byte, error) {
-	if err := ValidateEvent(event); err != nil {
-		return nil, err
-	}
-	if event.ProtocolVersion != ProtocolVersionV3Alpha4 || strings.TrimSpace(event.Namespace) == "" || event.StreamRevision == 0 || event.RecordCodec != RecordCodecV1 {
-		return nil, fmt.Errorf("%w: accepted authority fields are incomplete", ErrInvalidEvent)
-	}
-	if event.SchemaVersion == 0 || strings.TrimSpace(event.PayloadCodec) == "" {
-		return nil, fmt.Errorf("%w: schema_version and payload_codec are required", ErrInvalidEvent)
-	}
-	wire := acceptedEventWireV1{
-		ProtocolVersion: event.ProtocolVersion,
-		Namespace:       event.Namespace,
-		RecordID:        event.ID,
-		SchemaID:        event.Type,
-		SchemaVersion:   event.SchemaVersion,
-		Stream:          event.Stream,
-		StreamRevision:  event.StreamRevision,
-		BatchID:         event.BatchID,
-		Subject:         event.Subject,
-		RecordedAt:      event.RecordedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
-		EffectiveAt:     event.EffectiveAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
-		Actor:           event.Actor,
-		RecordCodec:     event.RecordCodec,
-		PayloadCodec:    event.PayloadCodec,
-		Payload:         event.Payload,
-	}
-	var output bytes.Buffer
-	encoder := json.NewEncoder(&output)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(wire); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSuffix(output.Bytes(), []byte{'\n'}), nil
+	return neutral.CanonicalAcceptedEventBytesV1(event)
 }
 
-// DecodeAcceptedEventV1 strictly decodes the named v1 codec. Unknown fields
-// remain safely preserved in storage but require a newer decoder.
 func DecodeAcceptedEventV1(data []byte) (Event, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var wire acceptedEventWireV1
-	if err := decoder.Decode(&wire); err != nil {
-		return Event{}, err
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return Event{}, fmt.Errorf("accepted event contains trailing data")
-	}
-	recordedAt, err := time.Parse("2006-01-02T15:04:05.000000000Z", wire.RecordedAt)
-	if err != nil {
-		return Event{}, fmt.Errorf("recorded_at: %w", err)
-	}
-	effectiveAt, err := time.Parse("2006-01-02T15:04:05.000000000Z", wire.EffectiveAt)
-	if err != nil {
-		return Event{}, fmt.Errorf("effective_at: %w", err)
-	}
-	event := Event{
-		ProtocolVersion: wire.ProtocolVersion, Namespace: wire.Namespace, ID: wire.RecordID,
-		Stream: wire.Stream, StreamRevision: wire.StreamRevision, BatchID: wire.BatchID, Type: wire.SchemaID, SchemaVersion: wire.SchemaVersion,
-		Subject: wire.Subject, PayloadCodec: wire.PayloadCodec, Payload: wire.Payload,
-		RecordedAt: recordedAt, EffectiveAt: effectiveAt, Actor: wire.Actor, RecordCodec: wire.RecordCodec,
-	}
-	if _, err := CanonicalAcceptedEventBytesV1(event); err != nil {
-		return Event{}, err
-	}
-	return event, nil
+	return neutral.DecodeAcceptedEventV1(data)
 }
