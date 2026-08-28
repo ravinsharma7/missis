@@ -36,7 +36,7 @@ func ValidateAppend(existing []Event, proposed Event) error {
 	}
 
 	all := append(append([]Event(nil), existing...), proposed)
-	proj, err := ProjectTicket(all, TicketID(proposed.Stream.Entity), proposed.EffectiveAt, MaxRecordedAt(all))
+	proj, err := ProjectStream(all, proposed.Stream, proposed.EffectiveAt, MaxRecordedAt(all))
 	if err != nil {
 		return err
 	}

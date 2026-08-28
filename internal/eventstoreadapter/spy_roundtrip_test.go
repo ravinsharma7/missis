@@ -1,0 +1,92 @@
+package eventstoreadapter
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+
+	neutral "github.com/ravinsharma7/missis/pkg/eventstore"
+)
+
+func TestSpyRunRoundTripUsesOnlyNeutralLedger(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "spy.db")
+	ledger, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Date(2026, 8, 28, 5, 45, 0, 0, time.UTC)
+	run := neutral.Ref{Kind: "run", ID: "run:spy:fixture-1"}
+	events := []neutral.Event{
+		spyEvent("event:spy:1", run, "spy.run.started", run, `{"source_capsule_ref":"artifact:sha256:source"}`, at),
+		spyEvent("event:spy:2", run, "spy.probe.observed", neutral.Ref{Kind: "probe", ID: "probe:checkout"}, `{"phase":"after","value":42}`, at.Add(time.Second)),
+		spyEvent("event:spy:3", run, "spy.evidence.attached", neutral.Ref{Kind: "artifact", ID: "artifact:sha256:evidence"}, `{"media_type":"application/json","complete":true}`, at.Add(2*time.Second)),
+		spyEvent("event:spy:4", run, "spy.run.completed", run, `{"status":"passed","coverage":"complete"}`, at.Add(3*time.Second)),
+	}
+
+	first, err := appendSpyRun(ctx, ledger, "spy-run-fixture-v1", events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Replayed {
+		t.Fatal("first append reported replay")
+	}
+	retry, err := appendSpyRun(ctx, ledger, "spy-run-fixture-v1", events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retry.Replayed {
+		t.Fatal("identical retry did not replay")
+	}
+
+	changed := append([]neutral.Event(nil), events...)
+	changed[1].Payload = []byte(`{"phase":"after","value":43}`)
+	if _, err := appendSpyRun(ctx, ledger, "spy-run-fixture-v1", changed); !errors.Is(err, neutral.ErrIdempotencyMismatch) {
+		t.Fatalf("changed retry error = %v, want idempotency mismatch", err)
+	}
+
+	storeID, err := ledger.StoreID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storeID == "" {
+		t.Fatal("empty store identity")
+	}
+	if err := ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ledger, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	got, err := ledger.ReadStream(ctx, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, events) {
+		t.Fatalf("round trip mismatch\n got: %#v\nwant: %#v", got, events)
+	}
+}
+
+func appendSpyRun(ctx context.Context, ledger neutral.Ledger, key string, events []neutral.Event) (neutral.AppendResult, error) {
+	return ledger.Append(ctx, neutral.AppendRequest{IdempotencyKey: key, Events: events})
+}
+
+func spyEvent(id string, stream neutral.Ref, eventType string, subject neutral.Ref, payload string, at time.Time) neutral.Event {
+	return neutral.Event{
+		ID:          id,
+		Stream:      stream,
+		Type:        eventType,
+		Subject:     subject,
+		Payload:     []byte(payload),
+		RecordedAt:  at,
+		EffectiveAt: at,
+		Actor:       neutral.Actor{Kind: "facility", ID: "spy-testing"},
+	}
+}

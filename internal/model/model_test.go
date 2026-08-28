@@ -107,6 +107,22 @@ func TestValidateAppendRejectsCycleAndCollision(t *testing.T) {
 	}
 }
 
+func TestValidateAppendProjectsTheProposedNonTicketStream(t *testing.T) {
+	t.Parallel()
+	stream := Ref{Kind: KindRun, Entity: "run:validation"}
+	actor := ActorRef{Kind: "test", ID: "test", Name: "test"}
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+
+	existing := []Event{
+		partCreateEvent(stream, PartID("part:run:status-1"), []string{"status"}, nil, Value{Kind: ValueKindStatus, Text: "running"}, actor, base, 1),
+	}
+	collision := partCreateEvent(stream, PartID("part:run:status-2"), []string{"status"}, nil, Value{Kind: ValueKindStatus, Text: "passed"}, actor, base.Add(time.Second), 2)
+
+	if err := ValidateAppend(existing, collision); err == nil || !strings.Contains(err.Error(), "path collision") {
+		t.Fatalf("expected non-ticket stream path collision, got %v", err)
+	}
+}
+
 func TestResolvePartPath(t *testing.T) {
 	t.Parallel()
 	// covers PH1-PART-011 PH1-REF-004 N026
