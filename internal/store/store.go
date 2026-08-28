@@ -528,8 +528,16 @@ func configureDB(db *sql.DB) error {
 		}
 	}
 	var journalMode string
-	if err := db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&journalMode); err != nil {
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
 		return err
+	}
+	// Assigning WAL mode takes a database lock even when the database is
+	// already in WAL mode. Concurrent Open calls overlap active appends, so
+	// avoid that unnecessary transition and its SQLITE_BUSY window.
+	if !strings.EqualFold(journalMode, "wal") {
+		if err := db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&journalMode); err != nil {
+			return err
+		}
 	}
 	if _, err := db.Exec(`PRAGMA synchronous = NORMAL`); err != nil {
 		return err
