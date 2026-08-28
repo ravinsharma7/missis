@@ -166,9 +166,36 @@ func open(path string, diag Diagnostics, lease *Lease) (*Store, error) {
 		writer.Close()
 		return nil, err
 	}
-	if err := ensureStoreIdentityAndHashes(writer); err != nil {
+	identityDB := writer
+	var identityReader *sql.DB
+	if !isNew {
+		// Existing-store identity and hash verification is read-only. Do not
+		// run it through the writer DSN's _txlock=immediate transaction or a
+		// concurrent append can make ordinary Open fail with SQLITE_BUSY.
+		identityReader, err = sql.Open("sqlite", path)
+		if err != nil {
+			writer.Close()
+			return nil, err
+		}
+		if _, err := identityReader.Exec(`PRAGMA busy_timeout = 10000`); err != nil {
+			identityReader.Close()
+			writer.Close()
+			return nil, err
+		}
+		identityDB = identityReader
+	}
+	if err := ensureStoreIdentityAndHashes(identityDB); err != nil {
+		if identityReader != nil {
+			identityReader.Close()
+		}
 		writer.Close()
 		return nil, err
+	}
+	if identityReader != nil {
+		if err := identityReader.Close(); err != nil {
+			writer.Close()
+			return nil, err
+		}
 	}
 	if err := ensureDerivedFresh(writer); err != nil {
 		writer.Close()
