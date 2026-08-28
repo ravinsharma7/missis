@@ -18,6 +18,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ravinsharma7/missis/internal/store"
 	"github.com/ravinsharma7/missis/internal/update"
 )
 
@@ -77,7 +78,12 @@ func TestPairedInstallSetsUpProjectAndRepeats(t *testing.T) {
 	}))
 	defer server.Close()
 	manifest := update.ReleaseManifest{
-		Version: version, Commit: commit, StoreFormatRevision: 2, PublishedAt: "2026-08-24T00:00:00Z",
+		Version: version, Commit: commit,
+		StoreFormatRevision:   store.CurrentStoreFormatRevision,
+		NormalOpenFormat:      store.FormatCompatibility().NormalOpenFormat,
+		MigratableFromFormats: store.FormatCompatibility().MigratableFromFormats,
+		MigrationSetDigest:    store.FormatCompatibility().MigrationSetDigest,
+		PublishedAt:           "2026-08-24T00:00:00Z",
 		Assets: []update.Asset{{
 			OS: runtime.GOOS, Arch: runtime.GOARCH, URL: server.URL + "/bundle", Format: format,
 			SHA256: hex.EncodeToString(archiveHash[:]), Size: int64(len(archive)), BinarySHA256: binaryHashes,
@@ -109,6 +115,30 @@ func TestPairedInstallSetsUpProjectAndRepeats(t *testing.T) {
 	for _, path := range []string{filepath.Join(project, ".missis"), filepath.Join(project, ".missis-store", "missis.db")} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("bootstrap artifact %s: %v", path, err)
+		}
+	}
+	storePath := filepath.Join(project, ".missis-store", "missis.db")
+	for _, action := range []string{"plan", "apply"} {
+		args := []string{
+			"--ref", version, "--manifest-url", server.URL + "/manifest.json",
+			"--bin-dir", binDir, "--rollout", action, "--store", storePath,
+			"--to-format", fmt.Sprintf("%d", store.CurrentStoreFormatRevision), "--json",
+		}
+		cmd := exec.Command(installerPath, args...)
+		cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"), "MISSIS_STORE=")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("rollout %s: %v\n%s", action, err, output)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(output, &result); err != nil {
+			t.Fatalf("rollout %s JSON: %v\n%s", action, err, output)
+		}
+		if action == "apply" {
+			rolloutResult, ok := result["rollout"].(map[string]any)
+			if !ok || rolloutResult["status"] != "committed" {
+				t.Fatalf("rollout apply result = %#v", result)
+			}
 		}
 	}
 }

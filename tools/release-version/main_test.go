@@ -11,3 +11,15 @@ func TestNextPatch(t *testing.T) {
 		t.Fatalf("next patch = %s", got)
 	}
 }
+
+func TestSelectExactStableRelease(t *testing.T) {
+	tags := []string{"v0.2.1", "v0.2.2"}
+	if got, err := selectVersion(tags, "v0.3.0"); err != nil || got != "v0.3.0" {
+		t.Fatalf("select exact = %q, %v", got, err)
+	}
+	for _, exact := range []string{"v0.2.2", "v0.2.1", "v0.3.0-rc.1", "dev"} {
+		if got, err := selectVersion(tags, exact); err == nil {
+			t.Fatalf("invalid exact %q selected as %q", exact, got)
+		}
+	}
+}

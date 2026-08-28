@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ravinsharma7/missis/internal/store"
 )
 
 func TestReleaseBinaryIdentity(t *testing.T) {
@@ -53,7 +55,7 @@ func TestReleaseBinaryIdentity(t *testing.T) {
 			if err := json.Unmarshal(output, &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.Version != version || got.DisplayVersion != display || got.Commit != commit || got.Dirty || got.StoreFormatRevision != 2 {
+			if got.Version != version || got.DisplayVersion != display || got.Commit != commit || got.Dirty || got.StoreFormatRevision != store.CurrentStoreFormatRevision {
 				t.Fatalf("release identity = %#v", got)
 			}
 
@@ -61,7 +63,7 @@ func TestReleaseBinaryIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(human), "version="+display+" commit="+commit+" store_format=2") {
+			if !strings.Contains(string(human), fmt.Sprintf("version=%s commit=%s store_format=%d", display, commit, store.CurrentStoreFormatRevision)) {
 				t.Fatalf("human release identity = %q", human)
 			}
 		})

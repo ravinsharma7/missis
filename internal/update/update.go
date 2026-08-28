@@ -59,18 +59,24 @@ type Asset struct {
 }
 
 type ReleaseManifest struct {
-	Version             string  `json:"version"`
-	Commit              string  `json:"commit"`
-	StoreFormatRevision int     `json:"store_format_revision"`
-	PublishedAt         string  `json:"published_at"`
-	Assets              []Asset `json:"assets"`
+	Version               string  `json:"version"`
+	Commit                string  `json:"commit"`
+	StoreFormatRevision   int     `json:"store_format_revision"`
+	NormalOpenFormat      int     `json:"normal_open_format"`
+	MigratableFromFormats []int   `json:"migratable_from_formats"`
+	MigrationSetDigest    string  `json:"migration_set_digest"`
+	PublishedAt           string  `json:"published_at"`
+	Assets                []Asset `json:"assets"`
 }
 
 type Installation struct {
-	Version             string            `json:"version"`
-	Commit              string            `json:"commit"`
-	StoreFormatRevision int               `json:"store_format_revision"`
-	Binaries            map[string]string `json:"binaries"`
+	Version               string            `json:"version"`
+	Commit                string            `json:"commit"`
+	StoreFormatRevision   int               `json:"store_format_revision"`
+	NormalOpenFormat      int               `json:"normal_open_format"`
+	MigratableFromFormats []int             `json:"migratable_from_formats"`
+	MigrationSetDigest    string            `json:"migration_set_digest"`
+	Binaries              map[string]string `json:"binaries"`
 }
 
 type Client struct {
@@ -86,6 +92,43 @@ type CheckResult struct {
 	Latest  ReleaseManifest
 	Asset   Asset
 	Status  string
+}
+
+// PreparedInstallation is a verified paired release held outside the live
+// binary names. Call Activate only after every store targeted by the same
+// rollout has been migrated and verified.
+type PreparedInstallation struct {
+	Manifest     ReleaseManifest
+	Installation Installation
+	BinDir       string
+	Staged       string
+	GOOS         string
+}
+
+func (p *PreparedInstallation) ToolPath() string {
+	name := "missis-tools"
+	if p.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(p.Staged, name)
+}
+
+func (p *PreparedInstallation) Activate() error {
+	if p == nil || p.BinDir == "" || p.Staged == "" {
+		return fmt.Errorf("prepared installation is incomplete")
+	}
+	if err := replacePair(p.BinDir, p.Staged, p.Installation, p.GOOS); err != nil {
+		return err
+	}
+	_ = os.RemoveAll(filepath.Dir(p.Staged))
+	return nil
+}
+
+func (p *PreparedInstallation) Discard() error {
+	if p == nil || p.Staged == "" {
+		return nil
+	}
+	return os.RemoveAll(filepath.Dir(p.Staged))
 }
 
 func DefaultClient() *Client {
@@ -160,8 +203,11 @@ func (c *Client) Apply(ctx context.Context, current buildinfo.Info) (ReleaseMani
 	}
 	installation := Installation{
 		Version: check.Latest.Version, Commit: check.Latest.Commit,
-		StoreFormatRevision: check.Latest.StoreFormatRevision,
-		Binaries:            check.Asset.BinarySHA256,
+		StoreFormatRevision:   check.Latest.StoreFormatRevision,
+		NormalOpenFormat:      check.Latest.NormalOpenFormat,
+		MigratableFromFormats: append([]int(nil), check.Latest.MigratableFromFormats...),
+		MigrationSetDigest:    check.Latest.MigrationSetDigest,
+		Binaries:              check.Asset.BinarySHA256,
 	}
 	if c.GOOS == "windows" {
 		if err := stageWindowsCompletion(binDir, extracted, installation); err != nil {
@@ -180,41 +226,60 @@ func (c *Client) Apply(ctx context.Context, current buildinfo.Info) (ReleaseMani
 // by the repository installers, which run outside either destination binary
 // and can therefore publish the pair directly on every supported platform.
 func (c *Client) Install(ctx context.Context, requestedVersion, binDir string) (ReleaseManifest, error) {
-	manifest, err := c.fetchManifest(ctx)
+	prepared, err := c.PrepareInstall(ctx, requestedVersion, binDir)
 	if err != nil {
 		return ReleaseManifest{}, err
 	}
+	if err := prepared.Activate(); err != nil {
+		return ReleaseManifest{}, err
+	}
+	return prepared.Manifest, nil
+}
+
+// PrepareInstall downloads, verifies, and stages both release binaries but
+// does not replace either live binary or write an installation manifest.
+func (c *Client) PrepareInstall(ctx context.Context, requestedVersion, binDir string) (*PreparedInstallation, error) {
+	manifest, err := c.fetchManifest(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if requestedVersion != "" && requestedVersion != "latest" && manifest.Version != requestedVersion {
-		return ReleaseManifest{}, fmt.Errorf("release manifest version %s does not match requested %s", manifest.Version, requestedVersion)
+		return nil, fmt.Errorf("release manifest version %s does not match requested %s", manifest.Version, requestedVersion)
 	}
 	asset, err := manifest.asset(c.GOOS, c.GOARCH)
 	if err != nil {
-		return ReleaseManifest{}, err
+		return nil, err
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return ReleaseManifest{}, err
+		return nil, err
 	}
 	stage, err := os.MkdirTemp(binDir, ".missis-update-stage-")
 	if err != nil {
-		return ReleaseManifest{}, err
+		return nil, err
 	}
-	defer os.RemoveAll(stage)
+	keepStage := false
+	defer func() {
+		if !keepStage {
+			_ = os.RemoveAll(stage)
+		}
+	}()
 	archivePath := filepath.Join(stage, "bundle")
 	if err := c.download(ctx, asset, archivePath); err != nil {
-		return ReleaseManifest{}, err
+		return nil, err
 	}
 	extracted := filepath.Join(stage, "extracted")
 	if err := extractBundle(archivePath, extracted, asset.Format); err != nil {
-		return ReleaseManifest{}, err
+		return nil, err
 	}
 	if err := verifyStagedBinaries(extracted, manifest, asset, c.GOOS); err != nil {
-		return ReleaseManifest{}, err
+		return nil, err
 	}
-	installation := Installation{Version: manifest.Version, Commit: manifest.Commit, StoreFormatRevision: manifest.StoreFormatRevision, Binaries: asset.BinarySHA256}
-	if err := replacePair(binDir, extracted, installation, c.GOOS); err != nil {
-		return ReleaseManifest{}, err
-	}
-	return manifest, nil
+	installation := installationFromRelease(manifest, asset.BinarySHA256)
+	keepStage = true
+	return &PreparedInstallation{
+		Manifest: manifest, Installation: installation,
+		BinDir: filepath.Clean(binDir), Staged: extracted, GOOS: c.GOOS,
+	}, nil
 }
 
 func (c *Client) fetchManifest(ctx context.Context) (ReleaseManifest, error) {
@@ -265,7 +330,10 @@ func (m ReleaseManifest) Validate() error {
 	if len(m.Commit) < 7 || len(m.Commit) > 64 || !isHex(m.Commit) {
 		return fmt.Errorf("release commit is invalid")
 	}
-	if m.StoreFormatRevision < 1 || len(m.Assets) == 0 {
+	if m.StoreFormatRevision < 1 || m.NormalOpenFormat != m.StoreFormatRevision ||
+		!validMigratableFormats(m.MigratableFromFormats, m.NormalOpenFormat) ||
+		len(m.MigrationSetDigest) != 64 || !isHex(m.MigrationSetDigest) ||
+		len(m.Assets) == 0 {
 		return fmt.Errorf("release manifest has invalid store format or no assets")
 	}
 	if m.PublishedAt != "" {
@@ -295,6 +363,48 @@ func (m ReleaseManifest) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validMigratableFormats(formats []int, normalOpen int) bool {
+	if len(formats) == 0 {
+		return false
+	}
+	previous := 0
+	includesNormal := false
+	for _, revision := range formats {
+		if revision < 1 || revision <= previous || revision > normalOpen {
+			return false
+		}
+		if revision == normalOpen {
+			includesNormal = true
+		}
+		previous = revision
+	}
+	return includesNormal
+}
+
+func sameFormats(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func installationFromRelease(manifest ReleaseManifest, binaries map[string]string) Installation {
+	return Installation{
+		Version:               manifest.Version,
+		Commit:                manifest.Commit,
+		StoreFormatRevision:   manifest.StoreFormatRevision,
+		NormalOpenFormat:      manifest.NormalOpenFormat,
+		MigratableFromFormats: append([]int(nil), manifest.MigratableFromFormats...),
+		MigrationSetDigest:    manifest.MigrationSetDigest,
+		Binaries:              binaries,
+	}
 }
 
 func (m ReleaseManifest) asset(goos, goarch string) (Asset, error) {
@@ -362,7 +472,11 @@ func (c *Client) pairedBinDir(current buildinfo.Info) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: %v; reinstall both binaries into one directory", ErrUnpairedInstallation, err)
 	}
-	if installation.Version != current.Version || installation.Commit != current.Commit || installation.StoreFormatRevision != current.StoreFormatRevision {
+	if installation.Version != current.Version || installation.Commit != current.Commit ||
+		installation.StoreFormatRevision != current.StoreFormatRevision ||
+		installation.NormalOpenFormat != current.NormalOpenFormat ||
+		!sameFormats(installation.MigratableFromFormats, current.MigratableFromFormats) ||
+		installation.MigrationSetDigest != current.MigrationSetDigest {
 		return "", fmt.Errorf("%w: installation manifest identity does not match running missis", ErrUnpairedInstallation)
 	}
 	for _, name := range binaryNames(c.GOOS) {
@@ -381,7 +495,11 @@ func (c *Client) pairedBinDir(current buildinfo.Info) (string, error) {
 		toolName += ".exe"
 	}
 	toolInfo, err := readBinaryInfo(filepath.Join(binDir, toolName))
-	if err != nil || toolInfo.Version != current.Version || toolInfo.Commit != current.Commit || toolInfo.StoreFormatRevision != current.StoreFormatRevision || toolInfo.Dirty {
+	if err != nil || toolInfo.Version != current.Version || toolInfo.Commit != current.Commit ||
+		toolInfo.StoreFormatRevision != current.StoreFormatRevision ||
+		toolInfo.NormalOpenFormat != current.NormalOpenFormat ||
+		!sameFormats(toolInfo.MigratableFromFormats, current.MigratableFromFormats) ||
+		toolInfo.MigrationSetDigest != current.MigrationSetDigest || toolInfo.Dirty {
 		return "", fmt.Errorf("%w: installed missis-tools identity differs from running missis", ErrUnpairedInstallation)
 	}
 	return binDir, nil
@@ -423,14 +541,26 @@ func VerifyDevelopmentPair(current buildinfo.Info) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("verify development companion: %w", err)
 	}
-	if toolInfo.Version != current.Version || toolInfo.Commit != current.Commit || toolInfo.StoreFormatRevision != current.StoreFormatRevision || toolInfo.Dirty != current.Dirty {
+	if toolInfo.Version != current.Version || toolInfo.Commit != current.Commit ||
+		toolInfo.StoreFormatRevision != current.StoreFormatRevision ||
+		toolInfo.NormalOpenFormat != current.NormalOpenFormat ||
+		!sameFormats(toolInfo.MigratableFromFormats, current.MigratableFromFormats) ||
+		toolInfo.MigrationSetDigest != current.MigrationSetDigest ||
+		toolInfo.Dirty != current.Dirty {
 		return "", fmt.Errorf("%w: development companion identity differs from running missis", ErrUnpairedInstallation)
 	}
 	return binDir, nil
 }
 
 func RegisterInstallation(binDir string, info buildinfo.Info, goos string) (Installation, error) {
-	installation := Installation{Version: info.Version, Commit: info.Commit, StoreFormatRevision: info.StoreFormatRevision, Binaries: map[string]string{}}
+	installation := Installation{
+		Version: info.Version, Commit: info.Commit,
+		StoreFormatRevision:   info.StoreFormatRevision,
+		NormalOpenFormat:      info.NormalOpenFormat,
+		MigratableFromFormats: append([]int(nil), info.MigratableFromFormats...),
+		MigrationSetDigest:    info.MigrationSetDigest,
+		Binaries:              map[string]string{},
+	}
 	for _, filename := range binaryNames(goos) {
 		hash, err := fileSHA256(filepath.Join(binDir, filename))
 		if err != nil {
@@ -459,7 +589,10 @@ func RegisterPairedInstallation(binDir string, info buildinfo.Info, goos string)
 	if err != nil {
 		return Installation{}, fmt.Errorf("verify missis-tools identity: %w", err)
 	}
-	if toolInfo.Version != info.Version || toolInfo.StoreFormatRevision != info.StoreFormatRevision {
+	if toolInfo.Version != info.Version || toolInfo.StoreFormatRevision != info.StoreFormatRevision ||
+		toolInfo.NormalOpenFormat != info.NormalOpenFormat ||
+		!sameFormats(toolInfo.MigratableFromFormats, info.MigratableFromFormats) ||
+		toolInfo.MigrationSetDigest != info.MigrationSetDigest {
 		return Installation{}, fmt.Errorf("%w: missis=%s/format-%d missis-tools=%s/format-%d", ErrUnpairedInstallation, info.Version, info.StoreFormatRevision, toolInfo.Version, toolInfo.StoreFormatRevision)
 	}
 	if info.Commit != buildinfo.UnknownCommit && toolInfo.Commit != buildinfo.UnknownCommit && info.Commit != toolInfo.Commit {
@@ -477,7 +610,10 @@ func readBinaryInfo(path string) (buildinfo.Info, error) {
 	if err := json.Unmarshal(output, &info); err != nil {
 		return buildinfo.Info{}, err
 	}
-	if info.Version == "" || info.StoreFormatRevision < 1 {
+	if info.Version == "" || info.StoreFormatRevision < 1 ||
+		info.NormalOpenFormat != info.StoreFormatRevision ||
+		!validMigratableFormats(info.MigratableFromFormats, info.NormalOpenFormat) ||
+		len(info.MigrationSetDigest) != 64 || !isHex(info.MigrationSetDigest) {
 		return buildinfo.Info{}, fmt.Errorf("binary returned incomplete build identity")
 	}
 	return info, nil
@@ -492,7 +628,11 @@ func ReadInstallation(path string) (Installation, error) {
 	if err := json.Unmarshal(raw, &installation); err != nil {
 		return Installation{}, err
 	}
-	if installation.Version == "" || installation.StoreFormatRevision < 1 || len(installation.Binaries) != 2 {
+	if installation.Version == "" || installation.StoreFormatRevision < 1 ||
+		installation.NormalOpenFormat != installation.StoreFormatRevision ||
+		!validMigratableFormats(installation.MigratableFromFormats, installation.NormalOpenFormat) ||
+		len(installation.MigrationSetDigest) != 64 || !isHex(installation.MigrationSetDigest) ||
+		len(installation.Binaries) != 2 {
 		return Installation{}, fmt.Errorf("invalid installation manifest")
 	}
 	return installation, nil
@@ -612,7 +752,11 @@ func verifyStagedBinaries(root string, release ReleaseManifest, asset Asset, goo
 		if err := json.Unmarshal(output, &info); err != nil {
 			return fmt.Errorf("decode staged %s version: %w", filename, err)
 		}
-		if info.Version != release.Version || info.Commit != release.Commit || info.StoreFormatRevision != release.StoreFormatRevision {
+		if info.Version != release.Version || info.Commit != release.Commit ||
+			info.StoreFormatRevision != release.StoreFormatRevision ||
+			info.NormalOpenFormat != release.NormalOpenFormat ||
+			!sameFormats(info.MigratableFromFormats, release.MigratableFromFormats) ||
+			info.MigrationSetDigest != release.MigrationSetDigest {
 			return fmt.Errorf("staged %s identity does not match release manifest", filename)
 		}
 	}

@@ -25,6 +25,8 @@ jobs:
         run: go vet ./...
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.6.1 ./...
+      - name: GitHub Actions workflow lint
+        run: bash scripts/check-workflows.sh
       - name: shellcheck
         run: |
           sudo apt-get update
@@ -190,8 +192,11 @@ jobs:
               $missis.display_version -ne $tools.display_version -or
               $missis.commit -ne $tools.commit -or
               $missis.dirty -ne $tools.dirty -or
-              $missis.store_format_revision -ne 2 -or
-              $tools.store_format_revision -ne 2) {
+              $missis.store_format_revision -ne 6 -or
+              $tools.store_format_revision -ne 6 -or
+              $missis.normal_open_format -ne 6 -or
+              $tools.normal_open_format -ne 6 -or
+              $missis.migration_set_digest -ne $tools.migration_set_digest) {
             throw "installed binary identities do not match: missis=$($missis | ConvertTo-Json -Compress) tools=$($tools | ConvertTo-Json -Compress)"
           }
           & (Join-Path $bin "missis.exe") --help | Out-Null

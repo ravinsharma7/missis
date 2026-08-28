@@ -2,6 +2,11 @@ name: stable-release
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Exact new stable SemVer tag (format-6 repair candidate is v0.3.0)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -21,9 +26,9 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
-      - name: Select next patch version
+      - name: Validate exact release version
         id: version
-        run: echo "version=$(go run ./tools/release-version)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(go run ./tools/release-version --exact '${{ inputs.version }}')" >> "$GITHUB_OUTPUT"
       - name: Verify
         run: |
           go test -count=1 ./...
@@ -31,6 +36,7 @@ jobs:
           go run ./tools/check-done
           go run ./tools/coverage --registry specs/requirements-registry.v3.json
           go run ./tools/generate-onboarding --check
+          bash scripts/check-workflows.sh
           bash testsuite/scripts/test-install.sh
           bash testsuite/scripts/test-rclone-backup.sh
           bash testsuite/benchmarks/test-benchmark-selection.sh
@@ -71,7 +77,11 @@ jobs:
             asset="$(jq -n --arg os "$goos" --arg arch "$goarch" --arg url "$url" --arg format "$format" --arg sha "$archive_hash" --argjson size "$archive_size" --arg missis "$missis_hash" --arg tools "$tools_hash" '{os:$os,arch:$arch,url:$url,format:$format,sha256:$sha,size:$size,binary_sha256:{missis:$missis,"missis-tools":$tools}}')"
             assets="$(jq --argjson asset "$asset" '. + [$asset]' <<<"$assets")"
           done
-          jq -n --arg version "$VERSION" --arg commit "$sha" --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson assets "$assets" '{version:$version,commit:$commit,store_format_revision:2,published_at:$published_at,assets:$assets}' > dist/release-manifest.json
+          compatibility="$(work/linux-amd64/missis --version --json)"
+          normal_open_format="$(jq -r '.normal_open_format' <<<"$compatibility")"
+          migratable_from_formats="$(jq -c '.migratable_from_formats' <<<"$compatibility")"
+          migration_set_digest="$(jq -r '.migration_set_digest' <<<"$compatibility")"
+          jq -n --arg version "$VERSION" --arg commit "$sha" --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson normal_open_format "$normal_open_format" --argjson migratable_from_formats "$migratable_from_formats" --arg migration_set_digest "$migration_set_digest" --argjson assets "$assets" '{version:$version,commit:$commit,store_format_revision:$normal_open_format,normal_open_format:$normal_open_format,migratable_from_formats:$migratable_from_formats,migration_set_digest:$migration_set_digest,published_at:$published_at,assets:$assets}' > dist/release-manifest.json
       - name: Inspect bundles
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -79,7 +89,7 @@ jobs:
           set -euo pipefail
           short_sha="${GITHUB_SHA:0:12}"
           display_version="${VERSION}+g${short_sha}"
-          jq -e --arg version "$VERSION" --arg commit "$GITHUB_SHA" '.version == $version and .commit == $commit and .store_format_revision == 2 and (.assets | length) == 9' dist/release-manifest.json >/dev/null
+          jq -e --arg version "$VERSION" --arg commit "$GITHUB_SHA" '.version == $version and .commit == $commit and .store_format_revision == 6 and .normal_open_format == 6 and .migratable_from_formats == [1,2,3,4,5,6] and (.migration_set_digest | test("^[0-9a-f]{64}$")) and (.assets | length) == 9' dist/release-manifest.json >/dev/null
           while IFS= read -r asset; do
             archive="dist/$(basename "$(jq -r '.url' <<<"$asset")")"
             test "$(stat -c %s "$archive")" = "$(jq -r '.size' <<<"$asset")"
@@ -98,12 +108,12 @@ jobs:
           done < <(jq -c '.assets[]' dist/release-manifest.json)
           mkdir -p smoke
           tar -xzf "dist/missis_${VERSION}_linux_amd64.tar.gz" -C smoke
-          PATH="$PWD/smoke:$PATH" smoke/missis --version --json | jq -e --arg version "$VERSION" --arg display "$display_version" --arg commit "$GITHUB_SHA" '.version == $version and .display_version == $display and .commit == $commit and .dirty == false and .store_format_revision == 2' >/dev/null
-          PATH="$PWD/smoke:$PATH" smoke/missis-tools --version --json | jq -e --arg version "$VERSION" --arg display "$display_version" --arg commit "$GITHUB_SHA" '.version == $version and .display_version == $display and .commit == $commit and .dirty == false and .store_format_revision == 2' >/dev/null
-          test "$(smoke/missis --version)" = "missis version=$display_version commit=$GITHUB_SHA store_format=2"
-          test "$(smoke/missis-tools --version)" = "missis-tools version=$display_version commit=$GITHUB_SHA store_format=2"
+          PATH="$PWD/smoke:$PATH" smoke/missis --version --json | jq -e --arg version "$VERSION" --arg display "$display_version" --arg commit "$GITHUB_SHA" '.version == $version and .display_version == $display and .commit == $commit and .dirty == false and .store_format_revision == 6 and .normal_open_format == 6 and .migratable_from_formats == [1,2,3,4,5,6] and (.migration_set_digest | test("^[0-9a-f]{64}$"))' >/dev/null
+          PATH="$PWD/smoke:$PATH" smoke/missis-tools --version --json | jq -e --arg version "$VERSION" --arg display "$display_version" --arg commit "$GITHUB_SHA" '.version == $version and .display_version == $display and .commit == $commit and .dirty == false and .store_format_revision == 6 and .normal_open_format == 6 and .migratable_from_formats == [1,2,3,4,5,6] and (.migration_set_digest | test("^[0-9a-f]{64}$"))' >/dev/null
+          test "$(smoke/missis --version)" = "missis version=$display_version commit=$GITHUB_SHA store_format=6"
+          test "$(smoke/missis-tools --version)" = "missis-tools version=$display_version commit=$GITHUB_SHA store_format=6"
           smoke/missis --register-install --bin-dir "$PWD/smoke" >/dev/null
-          jq -e --arg version "$VERSION" --arg commit "$GITHUB_SHA" '.version == $version and .commit == $commit and .store_format_revision == 2 and (.binaries | length) == 2' smoke/.missis-install.json >/dev/null
+          jq -e --arg version "$VERSION" --arg commit "$GITHUB_SHA" '.version == $version and .commit == $commit and .store_format_revision == 6 and .normal_open_format == 6 and .migratable_from_formats == [1,2,3,4,5,6] and (.migration_set_digest | test("^[0-9a-f]{64}$")) and (.binaries | length) == 2' smoke/.missis-install.json >/dev/null
           project="$(mktemp -d)"
           export PATH="$PWD/smoke:$PATH"
           export MISSIS_ARTIFACT_STORE="$project/artifacts"

@@ -23,6 +23,10 @@ func main() {
 	ref := flag.String("ref", "", "stable release tag (required for a local checkout)")
 	binDir := flag.String("bin-dir", "", "destination directory for both binaries")
 	project := flag.String("project", "", "existing project directory to set up after installation")
+	storePath := flag.String("store", "", "explicit store path for a paired binary/store rollout")
+	backupPath := flag.String("backup", "", "explicit pre-migration backup path for a paired binary/store rollout")
+	toFormat := flag.Int("to-format", 0, "exact target store format for rollout plan/apply")
+	rollout := flag.String("rollout", "", "store rollout action: plan, apply, inspect, or recover")
 	jsonMode := flag.Bool("json", false, "emit combined installation and setup JSON")
 	manifestURL := flag.String("manifest-url", "", "release manifest URL (tests only)")
 	flag.Parse()
@@ -64,6 +68,49 @@ func main() {
 		fmt.Fprintf(os.Stderr, "paired-install: install directory is not writable: %v\n", err)
 		os.Exit(2)
 	}
+	if *rollout == "inspect" || *rollout == "recover" {
+		var result update.StoreRolloutInspection
+		var actionErr error
+		if *rollout == "inspect" {
+			result, actionErr = update.InspectStoreRollout(*binDir)
+		} else {
+			result, actionErr = update.RecoverStoreRollout(context.Background(), *binDir)
+		}
+		if actionErr != nil {
+			fmt.Fprintf(os.Stderr, "paired-install: rollout %s: %v\n", *rollout, actionErr)
+			os.Exit(1)
+		}
+		if *jsonMode {
+			_ = json.NewEncoder(os.Stdout).Encode(result)
+		} else {
+			fmt.Printf("rollout status=%s phase=%s recovery=%s store_format=%d\n", result.Status, result.Phase, result.Recovery, result.StoreFormat)
+		}
+		return
+	}
+	if *rollout != "" && *rollout != "plan" && *rollout != "apply" {
+		fmt.Fprintf(os.Stderr, "paired-install: --rollout must be plan, apply, inspect, or recover\n")
+		os.Exit(2)
+	}
+	if *rollout == "plan" || *rollout == "apply" {
+		if strings.TrimSpace(*storePath) == "" || *toFormat < 1 {
+			fmt.Fprintf(os.Stderr, "paired-install: rollout %s requires --store and exact --to-format\n", *rollout)
+			os.Exit(2)
+		}
+		absStore, storeErr := filepath.Abs(filepath.Clean(*storePath))
+		if storeErr != nil {
+			fmt.Fprintf(os.Stderr, "paired-install: resolve store path: %v\n", storeErr)
+			os.Exit(2)
+		}
+		*storePath = absStore
+		if strings.TrimSpace(*backupPath) != "" {
+			absBackup, backupErr := filepath.Abs(filepath.Clean(*backupPath))
+			if backupErr != nil {
+				fmt.Fprintf(os.Stderr, "paired-install: resolve backup path: %v\n", backupErr)
+				os.Exit(2)
+			}
+			*backupPath = absBackup
+		}
+	}
 	if *project != "" {
 		absProject, projectErr := filepath.Abs(*project)
 		if projectErr != nil {
@@ -85,7 +132,47 @@ func main() {
 	client.ManifestURL = url
 	client.GOOS = runtime.GOOS
 	client.GOARCH = runtime.GOARCH
-	manifest, err := client.Install(context.Background(), *ref, *binDir)
+	var manifest update.ReleaseManifest
+	var rolloutResult *update.StoreRolloutInspection
+	if *rollout == "plan" || *rollout == "apply" {
+		prepared, prepareErr := client.PrepareInstall(context.Background(), *ref, *binDir)
+		if prepareErr != nil {
+			fmt.Fprintf(os.Stderr, "paired-install: %v\n", prepareErr)
+			os.Exit(1)
+		}
+		if prepared.Manifest.NormalOpenFormat != *toFormat {
+			_ = prepared.Discard()
+			fmt.Fprintf(os.Stderr, "paired-install: requested target format %d does not match release normal-open format %d\n", *toFormat, prepared.Manifest.NormalOpenFormat)
+			os.Exit(2)
+		}
+		plan, planErr := update.PlanStoreRollout(prepared, *storePath, *backupPath)
+		if planErr != nil {
+			_ = prepared.Discard()
+			fmt.Fprintf(os.Stderr, "paired-install: rollout plan: %v\n", planErr)
+			os.Exit(1)
+		}
+		manifest = prepared.Manifest
+		if *rollout == "plan" {
+			_ = prepared.Discard()
+			if *jsonMode {
+				_ = json.NewEncoder(os.Stdout).Encode(plan)
+			} else {
+				fmt.Printf("rollout %s -> %s store_format=%d->%d backup=%t lease=%t\n",
+					plan.FromRelease, plan.ToRelease, plan.StoreMigration.FromFormat,
+					plan.NormalOpenFormat, plan.RequiresStoreMigration, plan.RequiresExclusiveLease)
+			}
+			return
+		}
+		applied, applyErr := update.ApplyStoreRollout(context.Background(), prepared, *storePath, *backupPath, update.StoreRolloutOptions{})
+		if applyErr != nil {
+			fmt.Fprintf(os.Stderr, "paired-install: rollout apply: %v\n", applyErr)
+			fmt.Fprintf(os.Stderr, "paired-install: inspect with the same target installer and --rollout inspect --bin-dir %q\n", *binDir)
+			os.Exit(1)
+		}
+		rolloutResult = &applied
+	} else {
+		manifest, err = client.Install(context.Background(), *ref, *binDir)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "paired-install: %v\n", err)
 		os.Exit(1)
@@ -97,7 +184,11 @@ func main() {
 	}
 	if *project == "" {
 		if *jsonMode {
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"status": "installed", "bin_dir": *binDir, "installation": installation})
+			result := map[string]any{"status": "installed", "bin_dir": *binDir, "installation": installation}
+			if rolloutResult != nil {
+				result["rollout"] = rolloutResult
+			}
+			_ = json.NewEncoder(os.Stdout).Encode(result)
 		} else {
 			fmt.Printf("installed %s commit=%s store_format=%d in %s\n", buildinfo.ReleaseDisplay(manifest.Version, manifest.Commit), manifest.Commit, manifest.StoreFormatRevision, *binDir)
 		}

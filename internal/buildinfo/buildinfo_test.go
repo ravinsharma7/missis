@@ -12,7 +12,7 @@ func TestDisplayIncludesCommitAndStoreFormat(t *testing.T) {
 	if got := display(info); got != "v0.2.2+g1234567890ab" {
 		t.Fatalf("display = %q", got)
 	}
-	if info.StoreFormatRevision != 2 {
+	if info.StoreFormatRevision != store.CurrentStoreFormatRevision {
 		t.Fatalf("store format = %d", info.StoreFormatRevision)
 	}
 	info.Dirty = true

@@ -24,9 +24,33 @@ import (
 func testManifest(url string) ReleaseManifest {
 	hash := hex.EncodeToString(make([]byte, 32))
 	return ReleaseManifest{
-		Version: "v0.2.2", Commit: "0123456789abcdef0123456789abcdef01234567", StoreFormatRevision: 2,
+		Version: "v0.2.2", Commit: "0123456789abcdef0123456789abcdef01234567",
+		StoreFormatRevision: 2, NormalOpenFormat: 2,
+		MigratableFromFormats: []int{1, 2}, MigrationSetDigest: hash,
 		Assets: []Asset{{OS: "linux", Arch: "amd64", URL: url, Format: "tar.gz", SHA256: hash, Size: 1,
 			BinarySHA256: map[string]string{"missis": hash, "missis-tools": hash}}},
+	}
+}
+
+func testCompatibilityInfo(version, commit string, format int) buildinfo.Info {
+	formats := make([]int, format)
+	for i := range formats {
+		formats[i] = i + 1
+	}
+	return buildinfo.Info{
+		Version: version, Commit: commit,
+		StoreFormatRevision: format, NormalOpenFormat: format,
+		MigratableFromFormats: formats, MigrationSetDigest: strings.Repeat("0", 64),
+	}
+}
+
+func testInstallation(version, commit string, format int, binaries map[string]string) Installation {
+	info := testCompatibilityInfo(version, commit, format)
+	return Installation{
+		Version: version, Commit: commit,
+		StoreFormatRevision: format, NormalOpenFormat: format,
+		MigratableFromFormats: info.MigratableFromFormats,
+		MigrationSetDigest:    info.MigrationSetDigest, Binaries: binaries,
 	}
 }
 
@@ -139,7 +163,7 @@ func TestRegisterAndReplacePairedInstallation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	oldInfo := buildinfo.Info{Version: "v0.2.1", Commit: "old", StoreFormatRevision: 2}
+	oldInfo := testCompatibilityInfo("v0.2.1", "old", 2)
 	if _, err := RegisterInstallation(binDir, oldInfo, "linux"); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +177,7 @@ func TestRegisterAndReplacePairedInstallation(t *testing.T) {
 		sum := sha256.Sum256([]byte("new-" + name))
 		newHashes[name] = hex.EncodeToString(sum[:])
 	}
-	installation := Installation{Version: "v0.2.2", Commit: "new", StoreFormatRevision: 2, Binaries: newHashes}
+	installation := testInstallation("v0.2.2", "new", 2, newHashes)
 	if err := replacePair(binDir, stage, installation, "linux"); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +253,7 @@ func TestWindowsNamedPairUsesSameJournaledReplacement(t *testing.T) {
 		sum := sha256.Sum256(body)
 		hashes[strings.TrimSuffix(filename, ".exe")] = hex.EncodeToString(sum[:])
 	}
-	installation := Installation{Version: "v0.2.2", Commit: "new", StoreFormatRevision: 2, Binaries: hashes}
+	installation := testInstallation("v0.2.2", "new", 2, hashes)
 	if err := replacePair(binDir, stage, installation, "windows"); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +285,7 @@ func TestRecoverRollsBackInterruptedPair(t *testing.T) {
 		sum := sha256.Sum256(newBody)
 		newHashes[name] = hex.EncodeToString(sum[:])
 	}
-	installation := Installation{Version: "v0.2.2", Commit: "new", StoreFormatRevision: 2, Binaries: newHashes}
+	installation := testInstallation("v0.2.2", "new", 2, newHashes)
 	if err := writeJSONAtomic(filepath.Join(binDir, updateJournal), replacementJournal{Staged: stage, Installation: installation}, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +318,7 @@ func TestInstallPublishesVerifiedPairAndManifest(t *testing.T) {
 		t.Skip("shell-script fixture is POSIX-only")
 	}
 	commit := "0123456789abcdef0123456789abcdef01234567"
-	versionJSON := fmt.Sprintf(`{"version":"v0.2.2","display_version":"v0.2.2+g0123456789ab","commit":%q,"dirty":false,"store_format_revision":2}`, commit)
+	versionJSON := fmt.Sprintf(`{"version":"v0.2.2","display_version":"v0.2.2+g0123456789ab","commit":%q,"dirty":false,"store_format_revision":2,"normal_open_format":2,"migratable_from_formats":[1,2],"migration_set_digest":"%s"}`, commit, strings.Repeat("0", 64))
 	var archive bytes.Buffer
 	gz := gzip.NewWriter(&archive)
 	tw := tar.NewWriter(gz)
@@ -328,7 +352,9 @@ func TestInstallPublishesVerifiedPairAndManifest(t *testing.T) {
 	defer server.Close()
 	manifest = ReleaseManifest{
 		Version: "v0.2.2", Commit: commit, StoreFormatRevision: 2,
-		Assets: []Asset{{OS: runtime.GOOS, Arch: runtime.GOARCH, URL: server.URL + "/bundle.tar.gz", Format: "tar.gz", SHA256: hex.EncodeToString(archiveSum[:]), Size: int64(archive.Len()), BinarySHA256: binaryHashes}},
+		NormalOpenFormat: 2, MigratableFromFormats: []int{1, 2},
+		MigrationSetDigest: strings.Repeat("0", 64),
+		Assets:             []Asset{{OS: runtime.GOOS, Arch: runtime.GOARCH, URL: server.URL + "/bundle.tar.gz", Format: "tar.gz", SHA256: hex.EncodeToString(archiveSum[:]), Size: int64(archive.Len()), BinarySHA256: binaryHashes}},
 	}
 	binDir := t.TempDir()
 	client := &Client{ManifestURL: server.URL + "/release-manifest.json", HTTP: server.Client(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}

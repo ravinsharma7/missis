@@ -19,16 +19,26 @@ var (
 )
 
 type Info struct {
-	Version             string `json:"version"`
-	DisplayVersion      string `json:"display_version"`
-	Commit              string `json:"commit"`
-	CommitNote          string `json:"commit_note,omitempty"`
-	Dirty               bool   `json:"dirty"`
-	StoreFormatRevision int    `json:"store_format_revision"`
+	Version               string `json:"version"`
+	DisplayVersion        string `json:"display_version"`
+	Commit                string `json:"commit"`
+	CommitNote            string `json:"commit_note,omitempty"`
+	Dirty                 bool   `json:"dirty"`
+	StoreFormatRevision   int    `json:"store_format_revision"`
+	NormalOpenFormat      int    `json:"normal_open_format"`
+	MigratableFromFormats []int  `json:"migratable_from_formats"`
+	MigrationSetDigest    string `json:"migration_set_digest"`
 }
 
 func Read() Info {
-	result := Info{Version: "dev", Commit: UnknownCommit, StoreFormatRevision: store.CurrentStoreFormatRevision}
+	compatibility := store.FormatCompatibility()
+	result := Info{
+		Version: "dev", Commit: UnknownCommit,
+		StoreFormatRevision:   compatibility.NormalOpenFormat,
+		NormalOpenFormat:      compatibility.NormalOpenFormat,
+		MigratableFromFormats: compatibility.MigratableFromFormats,
+		MigrationSetDigest:    compatibility.MigrationSetDigest,
+	}
 	releaseBuild := releaseVersion != "" && releaseCommit != ""
 	if releaseVersion != "" {
 		result.Version = releaseVersion
