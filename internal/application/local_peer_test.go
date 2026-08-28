@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +48,27 @@ func TestLocalPeerAccessErrorsHaveStableRecourse(t *testing.T) {
 	}
 }
 
+func TestLocalPeerRejectsUnconfirmedPlatform(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("Linux is the confirmed local-peer profile")
+	}
+	peer := NewLocalPeer(peerconfig.BindingV1{Handle: "unsupported", SQLitePath: "unused.db"}, nil)
+	_, err := peer.OpenExternalResolutionSnapshot(context.Background())
+	var access *missis.ExternalAuthorityError
+	if !errors.As(err, &access) || access.Code != "peer-platform-unsupported" || access.OperatorAction == "" {
+		t.Fatalf("unsupported-platform error = %#v", err)
+	}
+}
+
+func requireConfirmedLocalPeerPlatform(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("local-peer filesystem profile is not confirmed on %s", runtime.GOOS)
+	}
+}
+
 func TestLocalPeerResolvesAfterMoveWithoutChangingReference(t *testing.T) {
+	requireConfirmedLocalPeerPlatform(t)
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, 8, 28, 8, 0, 0, 0, time.UTC)
@@ -146,6 +167,7 @@ func TestResolutionSnapshotStaysCoherentAcrossAppend(t *testing.T) {
 }
 
 func TestConfiguredExpectedStoreIDConstrainsLocalPeer(t *testing.T) {
+	requireConfirmedLocalPeerPlatform(t)
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)
@@ -171,6 +193,7 @@ func TestConfiguredExpectedStoreIDConstrainsLocalPeer(t *testing.T) {
 }
 
 func TestLocalPeerFoldsAcceptedEventsWithoutRepairingProjection(t *testing.T) {
+	requireConfirmedLocalPeerPlatform(t)
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, 8, 28, 9, 30, 0, 0, time.UTC)
